@@ -75,11 +75,13 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                     logger.info(f"🎯 Speaker recognized: {best_match} (confidence: {best_similarity:.2f})")
                     
                     # Check if we have a saved name for this speaker
+                    speaker_display_name = best_match
                     if hasattr(self, 'speaker_names') and best_match in self.speaker_names:
                         real_name = self.speaker_names[best_match]
+                        speaker_display_name = real_name
                         logger.info(f"✨ This is {real_name} returning!")
                     
-                    await self._emit_speaker_change(best_match, best_similarity)
+                    await self._emit_speaker_change(speaker_display_name, best_similarity)
 
                 # Adapt the profile with new utterance
                 try:
@@ -161,6 +163,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                     'speaker_id': speaker_name,
                     'speaker_name': speaker_name,
                     'auto_enrolled': True,
+                    'needs_name': True,  # Flag to indicate we need to ask for their name
                     'num_samples': len(fingerprints),
                     'consistency': avg_consistency,
                     'timestamp': datetime.now().isoformat()
@@ -230,3 +233,23 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
         except Exception as e:
             logger.error(f"Error loading speaker names: {e}")
             self.speaker_names = {}
+    
+    def update_speaker_name(self, speaker_id: str, real_name: str):
+        """Update the real name for a speaker ID"""
+        self.speaker_names[speaker_id] = real_name
+        self._save_speaker_names()
+        logger.info(f"Updated speaker name: {speaker_id} -> {real_name}")
+    
+    def _save_speaker_names(self):
+        """Save speaker name mappings to file"""
+        try:
+            names_file = os.path.join(self.profile_dir, "speaker_names.json")
+            data = {
+                'mappings': self.speaker_names,
+                'updated_at': datetime.now().isoformat()
+            }
+            with open(names_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.debug(f"Saved speaker names to {names_file}")
+        except Exception as e:
+            logger.error(f"Error saving speaker names: {e}")

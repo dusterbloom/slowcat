@@ -32,7 +32,7 @@ from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCC
 
 # Import voice recognition components
 from voice_recognition import AutoEnrollVoiceRecognition
-from processors import AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor
+from processors import AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor, VideoSamplerProcessor, SpeakerNameManager
 
 load_dotenv(override=True)
 
@@ -58,6 +58,8 @@ LANGUAGE_CONFIG = {
 You are running a voice AI tech stack entirely locally, on macOS. Whisper for speech-to-text, a Qwen3 model with 235 billion parameters for language understanding, and Kokoro for speech synthesis. The pipeline also uses Silero VAD and the open source, native audio smart-turn v2 model.
 
 You also have speaker recognition capabilities! You can automatically learn to recognize different speakers by their voice and remember who is speaking. If you recognize someone who has spoken before, you'll know it's them.
+
+You also have vision capabilities! You can see through the user's webcam when enabled. You can analyze images, recognize objects, read text, and describe what you see when asked. Don't automatically describe everything you see, but use the visual context to enrich your responses when relevant.
 
 Your goal is to demonstrate your capabilities in a succinct way.
 
@@ -155,9 +157,11 @@ macOS上で完全にローカルで音声AI技術スタックを実行してい�
 
 Stai eseguendo uno stack tecnologico di IA vocale completamente locale, su macOS. Whisper per il riconoscimento vocale, un modello Qwen3 con 235 miliardi di parametri per la comprensione del linguaggio e Kokoro per la sintesi vocale. La pipeline utilizza anche Silero VAD e il modello open source nativo smart-turn v2.
 
+Hai anche capacità di visione! Puoi vedere attraverso la webcam dell'utente quando è attiva. Puoi analizzare immagini, riconoscere oggetti, leggere testo e descrivere ciò che vedi quando richiesto. Non descrivere automaticamente ogni cosa che vedi, ma usa il contesto visivo per arricchire le tue risposte quando è rilevante.
+
 Il tuo obiettivo è dimostrare le tue capacità in modo conciso.
 
-Il tuo input è testo trascritto in tempo reale dalla voce dell'utente. Potrebbero esserci errori di trascrizione. Adatta automaticamente le tue risposte per tenere conto di questi errori.
+Il tuo input è testo trascritto in tempo reale dalla voce dell'utente. Potrebbero esserci errori di trascrizione. Adatta automaticamente le tue risposte per tenere conto di questi errori. Quando la webcam è attiva, ricevi anche frame video che puoi analizzare.
 
 Il tuo output verrà convertito in audio, quindi non includere caratteri speciali nelle tue risposte e non utilizzare markdown o formattazione speciale.
 
@@ -238,6 +242,9 @@ async def run_bot(webrtc_connection, language="en"):
         params=TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            video_in_enabled=False,  # Disable video for now - causing stability issues
+            # video_in_width=640,     # Video resolution
+            # video_in_height=480,
             vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
             turn_analyzer=LocalSmartTurnAnalyzerV2(
                 smart_turn_model_path="",  # Download from HuggingFace
@@ -280,6 +287,18 @@ async def run_bot(webrtc_connection, language="en"):
     audio_tee = None
     vad_bridge = None
     speaker_context = None
+    speaker_name_manager = None
+    
+    #
+    # Video components
+    #
+    video_sampler = None
+    if transport._params.video_in_enabled:
+        logger.info("📹 Video input enabled, creating video sampler")
+        video_sampler = VideoSamplerProcessor(
+            sample_interval=30.0,  # Sample every 30 seconds to avoid overload
+            enabled=True
+        )
     
     if VOICE_RECOGNITION_CONFIG["enabled"]:
         logger.info("🎤 Initializing voice recognition...")
@@ -307,19 +326,45 @@ async def run_bot(webrtc_connection, language="en"):
             unknown_speaker_name="User"
         )
         
+        # Create speaker name manager
+        speaker_name_manager = SpeakerNameManager(voice_recognition)
+        
         # Connect voice recognition to speaker context
         async def on_speaker_changed(data):
             speaker_context.update_speaker(data)
         
-        voice_recognition.set_callbacks(on_speaker_changed=on_speaker_changed)
+        async def on_speaker_enrolled(data):
+            """Handle when a new speaker is auto-enrolled"""
+            logger.info(f"New speaker enrolled: {data}")
+            if data.get('needs_name', False):
+                speaker_id = data['speaker_id']
+                # Start name collection in the manager
+                speaker_name_manager.start_name_collection(speaker_id)
+                # Queue a message to ask for the speaker's name
+                await task.queue_frames([
+                    context_aggregator.user().get_context_frame(),
+                    llm.get_chat_completions_frame([{
+                        "role": "system", 
+                        "content": f"A new speaker has been detected and enrolled as '{speaker_id}'. Please politely ask them for their name so we can remember them for future conversations. Keep it brief and natural."
+                    }])
+                ])
+        
+        voice_recognition.set_callbacks(
+            on_speaker_changed=on_speaker_changed,
+            on_speaker_enrolled=on_speaker_enrolled
+        )
 
     #
     # RTVI events for Pipecat client UI
     #
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-    # Build pipeline with optional voice recognition
+    # Build pipeline with optional voice recognition and video
     pipeline_components = [transport.input()]
+    
+    # Add video sampler early in pipeline if video is enabled
+    if video_sampler:
+        pipeline_components.append(video_sampler)
     
     if audio_tee:
         pipeline_components.append(audio_tee)
@@ -334,6 +379,9 @@ async def run_bot(webrtc_connection, language="en"):
     
     if speaker_context:
         pipeline_components.append(speaker_context)
+    
+    if speaker_name_manager:
+        pipeline_components.append(speaker_name_manager)
     
     pipeline_components.extend([
         context_aggregator.user(),
