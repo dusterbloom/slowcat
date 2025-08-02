@@ -1,12 +1,12 @@
-# slowcat
+# slowcat 🐱
 
-Local voice agents on macOS with Pipecat
+*A purr-fectly tuned local voice agent for macOS*
 
-![screenshot](assets/debug-console-screenshot.png)
+Fast, local voice agents powered by Pipecat - achieving sub-800ms voice-to-voice latency on Apple Silicon.
 
 Pipecat is an open-source, vendor-neutral framework for building real-time voice (and video) AI applications.
 
-This repository contains an example of a voice agent running with all local models on macOS. On an M-series mac, you can achieve voice-to-voice latency of <800 ms with relatively strong models.
+This repository showcases a fully local voice agent stack running entirely on macOS. With Apple Silicon (M-series chips), you can achieve lightning-fast voice-to-voice latency under 800ms using powerful local models - no cloud dependencies required! 🚀
 
 The [server/bot.py](server/bot.py) file uses these models:
 
@@ -34,16 +34,45 @@ One easy, high-performance, way to run a local LLM server on macOS is [LM Studio
 
 The core voice agent code lives in a single file: [server/bot.py](server/bot.py). There's one custom service here that's not included in Pipecat core: we implemented a local Kokoro TTS frame processor on top of the excellent [mlx-audio library](https://github.com/Blaizzy/mlx-audio).
 
+## Using Python
 ```shell
 cd server/
-
 python -m venv venv
 source venv/bin/activate
-
 pip install -r requirements.txt
-
 python bot.py
 ```
+
+## Using the run script
+```shell
+cd server/
+./run_bot.sh
+```
+
+## Using uv (faster Python package manager)
+```shell
+cd server/
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+python bot.py
+```
+
+## Running in different languages 🌍
+
+Slowcat speaks multiple languages! Configure your voice agent for different locales:
+
+### Spanish (Español)
+```shell
+python bot.py --language es
+```
+
+### French (Français)
+```shell
+python bot.py --language fr
+```
+
+*Note: Make sure your LLM server supports the target language for best results.*
 
 # Start the web client
 
@@ -59,11 +88,15 @@ npm run dev
 # Navigate to URL shown in terminal in your web browser
 ```
 
-## Changes Made
+## What Makes Slowcat Special
 
-This fork includes several improvements and customizations:
+This enhanced fork brings several performance and usability improvements:
 
-- Enhanced Kokoro TTS integration with MLX
-- Optimized bot configuration for better performance
-- Added run script for easier server startup
-- Updated dependencies for macOS compatibility
+✨ **Enhanced Kokoro TTS** - Seamless MLX integration for natural speech synthesis  
+⚡ **Performance Optimized** - Fine-tuned configuration for minimal latency  
+🛠️ **Developer Friendly** - Convenient run scripts and improved setup process  
+🍎 **macOS Native** - Optimized dependencies for Apple Silicon compatibility
+
+---
+
+*Built with ❤️ for the local AI community*
