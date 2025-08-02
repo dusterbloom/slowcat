@@ -1,4 +1,6 @@
-# Local voice agents on macOS with Pipecat
+# slowcat
+
+Local voice agents on macOS with Pipecat
 
 ![screenshot](assets/debug-console-screenshot.png)
 
@@ -55,4 +57,13 @@ npm i
 npm run dev
 
 # Navigate to URL shown in terminal in your web browser
-```# slowcat
+```
+
+## Changes Made
+
+This fork includes several improvements and customizations:
+
+- Enhanced Kokoro TTS integration with MLX
+- Optimized bot configuration for better performance
+- Added run script for easier server startup
+- Updated dependencies for macOS compatibility
