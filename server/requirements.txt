@@ -1,3 +1,4 @@
+# Note: This project requires Python 3.12 or earlier due to mlx-audio dependencies
 python-dotenv
 fastapi[all]
 uvicorn

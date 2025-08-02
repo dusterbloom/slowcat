@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.services.tts_service import TTSService
 from pipecat.utils.tracing.service_decorators import traced_tts
+from pipecat.transcriptions.language import Language
 
 
 class KokoroTTSService(TTSService):
@@ -31,6 +32,52 @@ class KokoroTTSService(TTSService):
     for audio generation to avoid blocking the pipeline.
     """
 
+    def _get_voice_language_mapping(self):
+        """Map voice names to their respective languages"""
+        return {
+            # Italian
+            'if_sara': 'it', 'im_nicola': 'it',
+            # French
+            'ff_siwis': 'fr',
+            # English (US)
+            'af_bella': 'en', 'af_sarah': 'en', 'af_sky': 'en', 'af_alloy': 'en', 
+            'af_nova': 'en', 'af_heart': 'en', 'af_jessica': 'en', 'af_kore': 'en',
+            'af_nicole': 'en', 'af_river': 'en', 'af_aoede': 'en',
+            'am_adam': 'en', 'am_echo': 'en', 'am_michael': 'en', 'am_liam': 'en',
+            'am_eric': 'en', 'am_fenrir': 'en', 'am_onyx': 'en', 'am_puck': 'en',
+            # English (UK)
+            'bf_alice': 'en', 'bf_emma': 'en', 'bf_isabella': 'en', 'bf_lily': 'en',
+            'bm_daniel': 'en', 'bm_george': 'en', 'bm_lewis': 'en', 'bm_fable': 'en',
+            # Japanese
+            'jf_alpha': 'ja', 'jf_gongitsune': 'ja', 'jf_nezumi': 'ja', 'jf_tebukuro': 'ja',
+            'jm_kumo': 'ja',
+            # Chinese
+            'zf_xiaobei': 'zh', 'zf_xiaoni': 'zh', 'zf_xiaoxiao': 'zh', 'zf_xiaoyi': 'zh',
+            'zm_yunxi': 'zh', 'zm_yunxia': 'zh', 'zm_yunyang': 'zh', 'zm_yunjian': 'zh',
+            # Portuguese
+            'pf_dora': 'pt', 'pm_alex': 'pt', 'pm_santa': 'pt'
+        }
+
+    def _get_language_from_voice(self, voice_name):
+        """Get the language code for a given voice"""
+        voice_lang_map = self._get_voice_language_mapping()
+        return voice_lang_map.get(voice_name, 'en')  # Default to English
+
+    def _get_kokoro_language_code(self, lang_code):
+        """Convert our language codes to Kokoro's expected language codes"""
+        # Based on Kokoro pipeline code - uses single letter codes
+        kokoro_lang_map = {
+            'en': 'a',      # American English 
+            'it': 'i',      # Italian
+            'fr': 'f',      # French (fr-fr)
+            'es': 'e',      # Spanish
+            'ja': 'j',      # Japanese
+            'zh': 'z',      # Mandarin Chinese
+            'pt': 'p',      # Portuguese (Brazilian)
+            'de': 'a',      # German not available, fallback to English
+        }
+        return kokoro_lang_map.get(lang_code, 'a')  # Default to American English
+
     def __init__(
         self,
         *,
@@ -39,6 +86,7 @@ class KokoroTTSService(TTSService):
         device: Optional[str] = None,
         sample_rate: int = 24000,
         max_workers: int = 1,
+        language: Optional[Language] = None,
         **kwargs,
     ):
         """Initialize the Kokoro TTS service.
@@ -49,6 +97,7 @@ class KokoroTTSService(TTSService):
             device: The device to run on (None for default MLX device).
             sample_rate: Output sample rate (default: 24000).
             max_workers: Number of threads for audio generation (default: 1).
+            language: The language for synthesis (optional, auto-detected from voice).
             **kwargs: Additional arguments passed to the parent TTSService.
         """
         super().__init__(sample_rate=sample_rate, **kwargs)
@@ -57,6 +106,20 @@ class KokoroTTSService(TTSService):
         self._voice = voice
         self._device = device
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        
+        # Auto-detect language from voice if not provided
+        if language is None:
+            self._language_code = self._get_language_from_voice(voice)
+        else:
+            # Convert Language enum to string code
+            lang_map = {
+                Language.EN: 'en', Language.IT: 'it', Language.FR: 'fr',
+                Language.ES: 'es', Language.JA: 'ja', Language.ZH: 'zh',
+                Language.PT: 'pt', Language.DE: 'de'
+            }
+            self._language_code = lang_map.get(language, 'en')
+        
+        self._kokoro_language = self._get_kokoro_language_code(self._language_code)
 
         # Initialize model in a separate thread to avoid blocking
         self._model = None
@@ -66,6 +129,8 @@ class KokoroTTSService(TTSService):
             "model": model,
             "voice": voice,
             "sample_rate": sample_rate,
+            "language": self._language_code,
+            "kokoro_language": self._kokoro_language,
         }
 
     def _initialize_model(self):
@@ -95,6 +160,7 @@ class KokoroTTSService(TTSService):
                 text=text,
                 voice=self._voice,
                 speed=1.0,
+                lang_code=self._kokoro_language,
             ):
                 audio_segments.append(result.audio)
 
