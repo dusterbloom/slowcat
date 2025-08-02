@@ -50,6 +50,8 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
         try:
             fingerprint = self.encoder.embed_utterance(audio_array)
             fingerprint = np.nan_to_num(fingerprint)
+            # Normalize the fingerprint for cosine similarity
+            fingerprint = fingerprint / np.linalg.norm(fingerprint)
             
             best_match = None
             best_similarity = 0
@@ -69,6 +71,8 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             else:
                 active_similarity_threshold = self.similarity_threshold
 
+            logger.debug(f"Best match: {best_match} with similarity: {best_similarity:.3f} (threshold: {active_similarity_threshold:.3f})")
+            
             if best_match and best_similarity >= active_similarity_threshold:
                 if best_match != self.current_speaker:
                     self.current_speaker = best_match

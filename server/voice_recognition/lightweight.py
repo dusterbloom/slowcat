@@ -95,6 +95,7 @@ class LightweightVoiceRecognition:
 
         try:
             audio_array = np.frombuffer(self.utterance_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+            logger.debug(f"Processing audio array: shape={audio_array.shape}, min={audio_array.min():.3f}, max={audio_array.max():.3f}")
             await self._process_speaker_identification(audio_array)
         except Exception as e:
             logger.error(f"Error processing utterance for speaker recognition: {e}")

@@ -214,25 +214,32 @@ DEFAULT_LANGUAGE = "en"
 VOICE_RECOGNITION_CONFIG = {
     "enabled": os.getenv("ENABLE_VOICE_RECOGNITION", "true").lower() == "true",
     "profile_dir": "data/speaker_profiles",
-    "confidence_threshold": 0.75,
-    "min_utterance_duration_seconds": 1.0,
+    "confidence_threshold": 0.65,  # Lowered for better recognition
+    "min_utterance_duration_seconds": 2.0,  # Increased for better embeddings
     "auto_enroll": {
         "min_utterances": 3,
-        "consistency_threshold": 0.85,
-        "min_consistency_threshold": 0.70,
+        "consistency_threshold": 0.75,  # Lowered for real-world conditions
+        "min_consistency_threshold": 0.60,  # Lowered for better enrollment
         "enrollment_window_minutes": 30,
         "new_speaker_grace_period_seconds": 60,
-        "new_speaker_similarity_threshold": 0.65
+        "new_speaker_similarity_threshold": 0.55  # Lowered for new speakers
     }
 }
 
 
-async def run_bot(webrtc_connection, language="en"):
+async def run_bot(webrtc_connection, language="en", llm_model=None):
     # Log voice recognition status
     if VOICE_RECOGNITION_CONFIG["enabled"]:
         logger.info("🎙️ Voice recognition is ENABLED")
     else:
         logger.info("🔇 Voice recognition is DISABLED (set ENABLE_VOICE_RECOGNITION=true to enable)")
+    
+    # Log video status
+    video_enabled = os.getenv("ENABLE_VIDEO", "false").lower() == "true"
+    if video_enabled:
+        logger.info("📹 Video is ENABLED")
+    else:
+        logger.info("📷 Video is DISABLED (set ENABLE_VIDEO=true to enable)")
     
     # Get language-specific configuration
     lang_config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG[DEFAULT_LANGUAGE])
@@ -242,10 +249,13 @@ async def run_bot(webrtc_connection, language="en"):
         params=TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            video_in_enabled=False,  # Disable video for now - causing stability issues
-            # video_in_width=640,     # Video resolution
-            # video_in_height=480,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+            video_in_enabled=os.getenv("ENABLE_VIDEO", "false").lower() == "true",  # Control via env var
+            video_in_width=640,     # Video resolution
+            video_in_height=480,
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(
+                stop_secs=0.15,  # Reduced for faster response
+                start_secs=0.1,  # Quick start detection
+            )),
             turn_analyzer=LocalSmartTurnAnalyzerV2(
                 smart_turn_model_path="",  # Download from HuggingFace
                 params=SmartTurnParams(),
@@ -253,7 +263,17 @@ async def run_bot(webrtc_connection, language="en"):
         ),
     )
 
-    stt = WhisperSTTServiceMLX(model=MLXModel.LARGE_V3_TURBO_Q4, language=lang_config["whisper_language"])
+    # Choose faster model based on language
+    if language == "en":
+        # Use faster distil model for English
+        stt_model = MLXModel.DISTIL_LARGE_V3
+        logger.info("Using DISTIL_LARGE_V3 for faster English STT")
+    else:
+        # Use turbo model for other languages (MEDIUM or LARGE_V3_TURBO_Q4 for multilingual support)
+        stt_model = MLXModel.MEDIUM
+        logger.info(f"Using LARGE_V3_TURBO_Q4 for {language} language")
+    
+    stt = WhisperSTTServiceMLX(model=stt_model, language=lang_config["whisper_language"])
 
     tts = KokoroTTSService(
         model="prince-canuma/Kokoro-82M", 
@@ -262,11 +282,18 @@ async def run_bot(webrtc_connection, language="en"):
         sample_rate=24000
     )
 
+    # Use provided LLM model or default
+    if llm_model:
+        logger.info(f"🤖 Using LLM model: {llm_model}")
+        selected_model = llm_model
+    else:
+        selected_model = "gemma-3-12b-it-qat"  # Default model
+        logger.info(f"🤖 Using default LLM model: {selected_model}")
+    
     llm = OpenAILLMService(
         api_key=None,
-        model="gemma-3-12b-it-qat",  # Medium-sized model. Uses ~8.5GB of RAM.
-        # model="mlx-community/Qwen3-235B-A22B-Instruct-2507-3bit-DWQ", # Large model. Uses ~110GB of RAM!
-        base_url="http://192.168.1.59:1234/v1",
+        model=selected_model,
+        base_url=os.getenv("LLM_BASE_URL", "http://192.168.1.59:1234/v1"),
         max_tokens=4096,
     )
 
@@ -445,9 +472,10 @@ async def offer(request: dict, background_tasks: BackgroundTasks):
             pcs_map.pop(webrtc_connection.pc_id, None)
 
         # Run example function with SmallWebRTC transport arguments.
-        # Get language from app state if available
+        # Get language and llm_model from app state if available
         language = getattr(app.state, 'language', DEFAULT_LANGUAGE)
-        background_tasks.add_task(run_bot, pipecat_connection, language)
+        llm_model = getattr(app.state, 'llm_model', None)
+        background_tasks.add_task(run_bot, pipecat_connection, language, llm_model)
 
     answer = pipecat_connection.get_answer()
     # Updating the peer connection inside the map
@@ -477,9 +505,20 @@ if __name__ == "__main__":
         choices=list(LANGUAGE_CONFIG.keys()),
         help=f"Language for the bot (default: {DEFAULT_LANGUAGE})"
     )
+    parser.add_argument(
+        "--llm", dest="llm_model", default=None,
+        help="LLM model to use (e.g., mistral:7b, llama2:13b, gemma:2b). Default: gemma-3-12b-it-qat"
+    )
     args = parser.parse_args()
 
-    # Set language in app state
+    # Set language and llm_model in app state
     app.state.language = args.language
+    app.state.llm_model = args.llm_model
+    
     logger.info(f"Starting bot with language: {args.language}")
+    if args.llm_model:
+        logger.info(f"Using custom LLM model: {args.llm_model}")
+    else:
+        logger.info("Using default LLM model: gemma-3-12b-it-qat")
+    
     uvicorn.run(app, host=args.host, port=args.port)
