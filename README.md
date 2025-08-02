@@ -117,7 +117,22 @@ This enhanced fork brings several performance and usability improvements:
 ✨ **Enhanced Kokoro TTS** - Seamless MLX integration for natural speech synthesis  
 ⚡ **Performance Optimized** - Fine-tuned configuration for minimal latency  
 🛠️ **Developer Friendly** - Convenient run scripts and improved setup process  
-🍎 **macOS Native** - Optimized dependencies for Apple Silicon compatibility
+🍎 **macOS Native** - Optimized dependencies for Apple Silicon compatibility  
+🎤 **Voice Recognition** - Automatic speaker identification and enrollment
+
+### Voice Recognition Features
+
+Slowcat now includes automatic voice recognition capabilities powered by Resemblyzer:
+
+- **Automatic Speaker Enrollment** - Learns to recognize speakers after just 3 utterances
+- **Persistent Speaker Profiles** - Remembers speakers across sessions
+- **Real-time Identification** - Identifies speakers as they talk
+- **Privacy-First** - All processing happens locally, no cloud dependencies
+
+To disable voice recognition, set the environment variable:
+```shell
+ENABLE_VOICE_RECOGNITION=false python bot.py
+```
 
 ---
 

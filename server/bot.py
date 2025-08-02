@@ -30,6 +30,10 @@ from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIPro
 from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
 from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCConnection
 
+# Import voice recognition components
+from voice_recognition import AutoEnrollVoiceRecognition
+from processors import AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor
+
 load_dotenv(override=True)
 
 app = FastAPI()
@@ -48,10 +52,12 @@ LANGUAGE_CONFIG = {
     "en": {
         "voice": "af_heart",  # Can use any of: af_bella, af_sarah, af_sky, af_alloy, af_nova, af_jessica, etc.
         "whisper_language": Language.EN,
-        "greeting": "Hello, I'm Pipecat!",
+        "greeting": "Hello, I'm Slowcat!",
         "system_instruction": """You are Pipecat, a friendly, helpful chatbot.
 
 You are running a voice AI tech stack entirely locally, on macOS. Whisper for speech-to-text, a Qwen3 model with 235 billion parameters for language understanding, and Kokoro for speech synthesis. The pipeline also uses Silero VAD and the open source, native audio smart-turn v2 model.
+
+You also have speaker recognition capabilities! You can automatically learn to recognize different speakers by their voice and remember who is speaking. If you recognize someone who has spoken before, you'll know it's them.
 
 Your goal is to demonstrate your capabilities in a succinct way.
 
@@ -61,15 +67,17 @@ Your output will be converted to audio so don't include special characters in yo
 
 Respond to what the user said in a creative and helpful way. Keep your responses brief unless you are explicitly asked for long or detailed responses. Normally you should use one or two sentences at most. Keep each sentence short. Prefer simple sentences. Try not to use long sentences with multiple comma clauses.
 
-Start the conversation by saying, "Hello, I'm Pipecat!" Then stop and wait for the user."""
+Start the conversation by saying, "Hello, I'm Slowcat!" Then stop and wait for the user."""
     },
     "es": {
         "voice": "ef_dora",  # Spanish female voice
         "whisper_language": Language.ES,
-        "greeting": "¡Hola, soy Pipecat!",
+        "greeting": "¡Hola, soy Slowcat!",
         "system_instruction": """Eres Pipecat, un chatbot amigable y servicial.
 
 Estás ejecutando una pila tecnológica de IA de voz completamente local, en macOS. Whisper para voz a texto, un modelo Qwen3 con 235 mil millones de parámetros para comprensión del lenguaje, y Kokoro para síntesis de voz. La pipeline también usa Silero VAD y el modelo open source de smart-turn v2 nativo.
+
+¡También tienes capacidades de reconocimiento de voz! Puedes aprender automáticamente a reconocer diferentes hablantes por su voz y recordar quién está hablando. Si reconoces a alguien que ha hablado antes, sabrás que son ellos.
 
 Tu objetivo es demostrar tus capacidades de manera concisa.
 
@@ -79,15 +87,17 @@ Tu salida será convertida a audio, así que no incluyas caracteres especiales e
 
 Responde a lo que dijo el usuario de manera creativa y útil. Mantén tus respuestas breves a menos que se te pida explícitamente respuestas largas o detalladas. Normalmente deberías usar una o dos oraciones como máximo. Mantén cada oración corta. Prefiere oraciones simples. Trata de no usar oraciones largas con múltiples cláusulas con comas.
 
-Comienza la conversación diciendo "¡Hola, soy Pipecat!" Luego detente y espera al usuario."""
+Comienza la conversación diciendo "¡Hola, soy Slowcat!" Luego detente y espera al usuario."""
     },
     "fr": {
         "voice": "ff_siwis",
         "whisper_language": Language.FR,
-        "greeting": "Bonjour, je suis Pipecat!",
+        "greeting": "Bonjour, je suis Slowcat!",
         "system_instruction": """Tu es Pipecat, un chatbot amical et serviable.
 
 Tu exécutes une pile technologique d'IA vocale entièrement locale, sur macOS. Whisper pour la reconnaissance vocale, un modèle Qwen3 avec 235 milliards de paramètres pour la compréhension du langage, et Kokoro pour la synthèse vocale. Le pipeline utilise également Silero VAD et le modèle open source smart-turn v2 natif.
+
+Tu as aussi des capacités de reconnaissance vocale! Tu peux automatiquement apprendre à reconnaître différents interlocuteurs par leur voix et te souvenir de qui parle. Si tu reconnais quelqu'un qui a déjà parlé, tu sauras que c'est lui.
 
 Ton objectif est de démontrer tes capacités de manière concise.
 
@@ -97,15 +107,17 @@ Ta sortie sera convertie en audio, donc n'inclue pas de caractères spéciaux da
 
 Réponds à ce que l'utilisateur a dit de manière créative et utile. Garde tes réponses brèves sauf si on te demande explicitement des réponses longues ou détaillées. Normalement, tu devrais utiliser une ou deux phrases au maximum. Garde chaque phrase courte. Préfère les phrases simples. Essaie de ne pas utiliser de longues phrases avec plusieurs propositions séparées par des virgules.
 
-Commence la conversation en disant "Bonjour, je suis Pipecat!" Puis arrête-toi et attends l'utilisateur."""
+Commence la conversation en disant "Bonjour, je suis Slowcat!" Puis arrête-toi et attends l'utilisateur."""
     },
     "de": {
         "voice": "af_heart",  # German voice not yet available in Kokoro
         "whisper_language": Language.DE,
-        "greeting": "Hallo, ich bin Pipecat!",
+        "greeting": "Hallo, ich bin Slowcat!",
         "system_instruction": """Du bist Pipecat, ein freundlicher, hilfreicher Chatbot.
 
 Du führst einen Sprach-KI-Technologie-Stack vollständig lokal auf macOS aus. Whisper für Sprache-zu-Text, ein Qwen3-Modell mit 235 Milliarden Parametern für Sprachverständnis und Kokoro für Sprachsynthese. Die Pipeline verwendet auch Silero VAD und das Open-Source-native Smart-Turn-v2-Modell.
+
+Du hast auch Sprechererkennung! Du kannst automatisch lernen, verschiedene Sprecher an ihrer Stimme zu erkennen und dich daran erinnern, wer spricht. Wenn du jemanden erkennst, der schon einmal gesprochen hat, weißt du, dass er es ist.
 
 Dein Ziel ist es, deine Fähigkeiten auf prägnante Weise zu demonstrieren.
 
@@ -115,7 +127,7 @@ Deine Ausgabe wird in Audio konvertiert, also füge keine Sonderzeichen in deine
 
 Antworte auf das, was der Benutzer gesagt hat, auf kreative und hilfreiche Weise. Halte deine Antworten kurz, es sei denn, du wirst explizit um lange oder detaillierte Antworten gebeten. Normalerweise solltest du höchstens ein oder zwei Sätze verwenden. Halte jeden Satz kurz. Bevorzuge einfache Sätze. Versuche, keine langen Sätze mit mehreren Komma-Klauseln zu verwenden.
 
-Beginne das Gespräch mit den Worten "Hallo, ich bin Pipecat!" Dann halte an und warte auf den Benutzer."""
+Beginne das Gespräch mit den Worten "Hallo, ich bin Slowcat!" Dann halte an und warte auf den Benutzer."""
     },
     "ja": {
         "voice": "jf_alpha",  # Japanese female voice
@@ -138,8 +150,8 @@ macOS上で完全にローカルで音声AI技術スタックを実行してい�
     "it": {
         "voice": "im_nicola",
         "whisper_language": Language.IT,
-        "greeting": "Ciao, sono Pipecat!",
-        "system_instruction": """Sei Pipecat, un chatbot amichevole e disponibile.
+        "greeting": "Ciao, sono Slowcat!",
+        "system_instruction": """Sei Slowcat, un chatbot amichevole e disponibile.
 
 Stai eseguendo uno stack tecnologico di IA vocale completamente locale, su macOS. Whisper per il riconoscimento vocale, un modello Qwen3 con 235 miliardi di parametri per la comprensione del linguaggio e Kokoro per la sintesi vocale. La pipeline utilizza anche Silero VAD e il modello open source nativo smart-turn v2.
 
@@ -151,7 +163,7 @@ Il tuo output verrà convertito in audio, quindi non includere caratteri special
 
 Rispondi a ciò che l'utente ha detto in modo creativo e utile. Mantieni le tue risposte brevi a meno che non ti venga chiesto esplicitamente risposte lunghe o dettagliate. Normalmente dovresti usare al massimo una o due frasi. Mantieni ogni frase breve. Preferisci frasi semplici. Cerca di non usare frasi lunghe con più proposizioni separate da virgole.
 
-Inizia la conversazione dicendo "Ciao, sono Pipecat!" Poi fermati e aspetta l'utente."""
+Inizia la conversazione dicendo "Ciao, sono Slowcat!" Poi fermati e aspetta l'utente."""
     },
     "zh": {
         "voice": "zf_xiaobei",  # Chinese female voice
@@ -174,7 +186,7 @@ Inizia la conversazione dicendo "Ciao, sono Pipecat!" Poi fermati e aspetta l'ut
     "pt": {
         "voice": "pf_dora",  # Portuguese female voice
         "whisper_language": Language.PT,
-        "greeting": "Olá, eu sou Pipecat!",
+        "greeting": "Olá, eu sou Slowcat!",
         "system_instruction": """Você é Pipecat, um chatbot amigável e prestativo.
 
 Você está executando uma pilha de tecnologia de IA de voz totalmente local, no macOS. Whisper para conversão de fala em texto, um modelo Qwen3 com 235 bilhões de parâmetros para compreensão de linguagem e Kokoro para síntese de voz. O pipeline também usa Silero VAD e o modelo nativo de smart-turn v2 de código aberto.
@@ -187,15 +199,37 @@ Sua saída será convertida em áudio, então não inclua caracteres especiais e
 
 Responda ao que o usuário disse de forma criativa e útil. Mantenha suas respostas breves, a menos que seja explicitamente solicitado respostas longas ou detalhadas. Normalmente você deve usar no máximo uma ou duas frases. Mantenha cada frase curta. Prefira frases simples. Tente não usar frases longas com múltiplas cláusulas separadas por vírgulas.
 
-Comece a conversa dizendo "Olá, eu sou Pipecat!" Então pare e espere pelo usuário."""
+Comece a conversa dizendo "Olá, eu sou Slowcat!" Então pare e espere pelo usuário."""
     }
 }
 
 # Default language
 DEFAULT_LANGUAGE = "en"
 
+# Voice recognition configuration
+VOICE_RECOGNITION_CONFIG = {
+    "enabled": os.getenv("ENABLE_VOICE_RECOGNITION", "true").lower() == "true",
+    "profile_dir": "data/speaker_profiles",
+    "confidence_threshold": 0.75,
+    "min_utterance_duration_seconds": 1.0,
+    "auto_enroll": {
+        "min_utterances": 3,
+        "consistency_threshold": 0.85,
+        "min_consistency_threshold": 0.70,
+        "enrollment_window_minutes": 30,
+        "new_speaker_grace_period_seconds": 60,
+        "new_speaker_similarity_threshold": 0.65
+    }
+}
+
 
 async def run_bot(webrtc_connection, language="en"):
+    # Log voice recognition status
+    if VOICE_RECOGNITION_CONFIG["enabled"]:
+        logger.info("🎙️ Voice recognition is ENABLED")
+    else:
+        logger.info("🔇 Voice recognition is DISABLED (set ENABLE_VOICE_RECOGNITION=true to enable)")
+    
     # Get language-specific configuration
     lang_config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG[DEFAULT_LANGUAGE])
     
@@ -240,22 +274,76 @@ async def run_bot(webrtc_connection, language="en"):
     context_aggregator = llm.create_context_aggregator(context)
 
     #
+    # Voice recognition components
+    #
+    voice_recognition = None
+    audio_tee = None
+    vad_bridge = None
+    speaker_context = None
+    
+    if VOICE_RECOGNITION_CONFIG["enabled"]:
+        logger.info("🎤 Initializing voice recognition...")
+        logger.info(f"   Profile directory: {VOICE_RECOGNITION_CONFIG['profile_dir']}")
+        logger.info(f"   Auto-enrollment after {VOICE_RECOGNITION_CONFIG['auto_enroll']['min_utterances']} utterances")
+        # Create voice recognition
+        voice_recognition = AutoEnrollVoiceRecognition(VOICE_RECOGNITION_CONFIG)
+        await voice_recognition.initialize()
+        logger.info("✅ Voice recognition initialized and ready!")
+        
+        # Create audio tee to split audio stream
+        audio_tee = AudioTeeProcessor(enabled=True)
+        audio_tee.register_audio_consumer(voice_recognition.process_audio_frame)
+        
+        # Create VAD event bridge
+        vad_bridge = VADEventBridge()
+        vad_bridge.set_callbacks(
+            on_started=voice_recognition.on_user_started_speaking,
+            on_stopped=voice_recognition.on_user_stopped_speaking
+        )
+        
+        # Create speaker context processor
+        speaker_context = SpeakerContextProcessor(
+            format_style="natural",
+            unknown_speaker_name="User"
+        )
+        
+        # Connect voice recognition to speaker context
+        async def on_speaker_changed(data):
+            speaker_context.update_speaker(data)
+        
+        voice_recognition.set_callbacks(on_speaker_changed=on_speaker_changed)
+
+    #
     # RTVI events for Pipecat client UI
     #
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-    pipeline = Pipeline(
-        [
-            transport.input(),
-            stt,
-            rtvi,
-            context_aggregator.user(),
-            llm,
-            tts,
-            transport.output(),
-            context_aggregator.assistant(),
-        ]
-    )
+    # Build pipeline with optional voice recognition
+    pipeline_components = [transport.input()]
+    
+    if audio_tee:
+        pipeline_components.append(audio_tee)
+    
+    if vad_bridge:
+        pipeline_components.append(vad_bridge)
+    
+    pipeline_components.extend([
+        stt,
+        rtvi,
+    ])
+    
+    if speaker_context:
+        pipeline_components.append(speaker_context)
+    
+    pipeline_components.extend([
+        context_aggregator.user(),
+        llm,
+        tts,
+        transport.output(),
+        context_aggregator.assistant(),
+    ])
+
+    pipeline = Pipeline(pipeline_components)
 
     task = PipelineTask(
         pipeline,
