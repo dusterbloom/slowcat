@@ -62,17 +62,39 @@ python bot.py
 
 Slowcat speaks multiple languages! Configure your voice agent for different locales:
 
-### Spanish (Español)
+### Language Support Matrix
+
+| Language | Code | Whisper Support | Kokoro TTS Support | Voice Used |
+|----------|------|----------------|-------------------|------------|
+| English  | `en` | ✅ | ✅ | af_heart |
+| Spanish  | `es` | ✅ | ✅ | ef_dora |
+| French   | `fr` | ✅ | ✅ | ff_siwis |
+| German   | `de` | ✅ | ⚠️ | af_heart (English voice) |
+| Japanese | `ja` | ✅ | ✅ | jf_alpha |
+| Italian  | `it` | ✅ | ✅ | im_nicola |
+| Chinese  | `zh` | ✅ | ✅ | zf_xiaobei |
+| Portuguese | `pt` | ✅ | ✅ | pf_dora |
+
+⚠️ = Falls back to English voice (speech recognition works, but synthesis uses English voice)
+
+### Examples
+
+**Spanish (Español)**
 ```shell
 python bot.py --language es
 ```
 
-### French (Français)
+**French (Français)**
 ```shell
 python bot.py --language fr
 ```
 
-*Note: Make sure your LLM server supports the target language for best results.*
+**Japanese (日本語)**
+```shell
+python bot.py --language ja
+```
+
+*Note: Both Whisper (speech recognition) and Kokoro TTS (speech synthesis) must support your chosen language for full functionality. Make sure your LLM server also supports the target language for best results.*
 
 # Start the web client
 
@@ -98,5 +120,9 @@ This enhanced fork brings several performance and usability improvements:
 🍎 **macOS Native** - Optimized dependencies for Apple Silicon compatibility
 
 ---
+
+## Acknowledgments
+
+This project is based on the excellent work by [kwindla](https://github.com/kwindla) in the original [macos-local-voice-agents](https://github.com/kwindla/macos-local-voice-agents) repository. Thank you for creating such a solid foundation for local voice AI on macOS!
 
 *Built with ❤️ for the local AI community*

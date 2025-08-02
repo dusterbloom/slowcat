@@ -64,7 +64,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 Start the conversation by saying, "Hello, I'm Pipecat!" Then stop and wait for the user."""
     },
     "es": {
-        "voice": "af_heart",  # Spanish voice not yet available in Kokoro
+        "voice": "ef_dora",  # Spanish female voice
         "whisper_language": Language.ES,
         "greeting": "¡Hola, soy Pipecat!",
         "system_instruction": """Eres Pipecat, un chatbot amigable y servicial.

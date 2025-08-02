@@ -54,6 +54,8 @@ class KokoroTTSService(TTSService):
             # Chinese
             'zf_xiaobei': 'zh', 'zf_xiaoni': 'zh', 'zf_xiaoxiao': 'zh', 'zf_xiaoyi': 'zh',
             'zm_yunxi': 'zh', 'zm_yunxia': 'zh', 'zm_yunyang': 'zh', 'zm_yunjian': 'zh',
+            # Spanish
+            'ef_dora': 'es', 'em_alex': 'es', 'em_santa': 'es',
             # Portuguese
             'pf_dora': 'pt', 'pm_alex': 'pt', 'pm_santa': 'pt'
         }
