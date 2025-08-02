@@ -33,10 +33,24 @@ from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCC
 # Import voice recognition components
 from voice_recognition import AutoEnrollVoiceRecognition
 from processors import AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor, VideoSamplerProcessor, SpeakerNameManager
+from processors.local_memory import LocalMemoryProcessor
+from processors.memory_context_injector import MemoryContextInjector
 
 load_dotenv(override=True)
 
 app = FastAPI()
+
+@app.get("/memory/{user_id}")
+async def get_memory(user_id: str):
+    """Debug endpoint to check memory contents"""
+    import json
+    from pathlib import Path
+    
+    memory_file = Path(f"data/memory/{user_id}_memory.json")
+    if memory_file.exists():
+        with open(memory_file, 'r') as f:
+            return json.load(f)
+    return {"error": "No memory found for user"}
 
 pcs_map: Dict[str, SmallWebRTCConnection] = {}
 
@@ -68,6 +82,8 @@ Your input is text transcribed in realtime from the user's voice. There may be t
 Your output will be converted to audio so don't include special characters in your answers and do not use any markdown or special formatting.
 
 Respond to what the user said in a creative and helpful way. Keep your responses brief unless you are explicitly asked for long or detailed responses. Normally you should use one or two sentences at most. Keep each sentence short. Prefer simple sentences. Try not to use long sentences with multiple comma clauses.
+
+IMPORTANT: When you see a message starting with [System: New speaker detected and enrolled as Speaker_X], you should politely ask for the person's name. Use phrases like "Hi! I noticed this is the first time we're talking. What's your name?" or "Nice to meet you! Could you tell me your name so I can remember you for future conversations?"
 
 Start the conversation by saying, "Hello, I'm Slowcat!" Then stop and wait for the user."""
     },
@@ -167,6 +183,8 @@ Il tuo output verrà convertito in audio, quindi non includere caratteri special
 
 Rispondi a ciò che l'utente ha detto in modo creativo e utile. Mantieni le tue risposte brevi a meno che non ti venga chiesto esplicitamente risposte lunghe o dettagliate. Normalmente dovresti usare al massimo una o due frasi. Mantieni ogni frase breve. Preferisci frasi semplici. Cerca di non usare frasi lunghe con più proposizioni separate da virgole.
 
+IMPORTANTE: Quando vedi un messaggio che inizia con [System: New speaker detected and enrolled as Speaker_X], devi chiedere educatamente il nome della persona. Usa frasi come "Ciao! Ho notato che è la prima volta che ci parliamo. Come ti chiami?" o "Piacere di conoscerti! Posso chiederti il tuo nome così posso ricordarti per le prossime conversazioni?"
+
 Inizia la conversazione dicendo "Ciao, sono Slowcat!" Poi fermati e aspetta l'utente."""
     },
     "zh": {
@@ -214,15 +232,15 @@ DEFAULT_LANGUAGE = "en"
 VOICE_RECOGNITION_CONFIG = {
     "enabled": os.getenv("ENABLE_VOICE_RECOGNITION", "true").lower() == "true",
     "profile_dir": "data/speaker_profiles",
-    "confidence_threshold": 0.65,  # Lowered for better recognition
-    "min_utterance_duration_seconds": 2.0,  # Increased for better embeddings
+    "confidence_threshold": 0.45,  # Significantly lowered for single speaker
+    "min_utterance_duration_seconds": 1.5,  # Slightly reduced
     "auto_enroll": {
         "min_utterances": 3,
-        "consistency_threshold": 0.75,  # Lowered for real-world conditions
-        "min_consistency_threshold": 0.60,  # Lowered for better enrollment
+        "consistency_threshold": 0.50,  # Much lower for same speaker consistency
+        "min_consistency_threshold": 0.35,  # Very low threshold for enrollment
         "enrollment_window_minutes": 30,
         "new_speaker_grace_period_seconds": 60,
-        "new_speaker_similarity_threshold": 0.55  # Lowered for new speakers
+        "new_speaker_similarity_threshold": 0.40  # Lower for recognizing enrolled speakers
     }
 }
 
@@ -306,6 +324,33 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         ],
     )
     context_aggregator = llm.create_context_aggregator(context)
+    
+    #
+    # Memory components
+    #
+    memory_processor = None
+    memory_injector = None
+    
+    # Check if memory is enabled
+    memory_enabled = os.getenv("ENABLE_MEMORY", "true").lower() == "true"
+    if memory_enabled:
+        logger.info("🧠 Memory is ENABLED - conversations will be persisted locally")
+        # Create local memory processor
+        memory_processor = LocalMemoryProcessor(
+            data_dir="data/memory",
+            user_id="default_user",  # Will be updated dynamically when speaker is identified
+            max_history_items=200,
+            include_in_context=10
+        )
+        
+        # Create memory context injector
+        memory_injector = MemoryContextInjector(
+            memory_processor=memory_processor,
+            system_prompt="Based on our previous conversations:",
+            inject_as_system=True
+        )
+    else:
+        logger.info("🚫 Memory is DISABLED (set ENABLE_MEMORY=true to enable)")
 
     #
     # Voice recognition components
@@ -326,6 +371,9 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
             sample_interval=30.0,  # Sample every 30 seconds to avoid overload
             enabled=True
         )
+    
+    # Initialize callback refs for voice recognition
+    callback_refs = {}
     
     if VOICE_RECOGNITION_CONFIG["enabled"]:
         logger.info("🎤 Initializing voice recognition...")
@@ -356,9 +404,26 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         # Create speaker name manager
         speaker_name_manager = SpeakerNameManager(voice_recognition)
         
-        # Connect voice recognition to speaker context
+        # Store references for callbacks
+        callback_refs = {
+            'speaker_context': speaker_context,
+            'memory_processor': memory_processor,
+            'speaker_name_manager': speaker_name_manager,
+            'task': None,  # Will be set after task creation
+            'context_aggregator': context_aggregator,
+            'llm': llm
+        }
+        
+        # Connect voice recognition to speaker context and memory
         async def on_speaker_changed(data):
-            speaker_context.update_speaker(data)
+            callback_refs['speaker_context'].update_speaker(data)
+            # Update memory processor with speaker ID if available
+            if callback_refs['memory_processor'] and data.get('speaker_id'):
+                speaker_id = data['speaker_id']
+                # Use speaker name if available, otherwise use speaker ID
+                user_id = data.get('speaker_name', speaker_id)
+                callback_refs['memory_processor'].set_user_id(user_id)
+                logger.info(f"📝 Memory switched to user: {user_id}")
         
         async def on_speaker_enrolled(data):
             """Handle when a new speaker is auto-enrolled"""
@@ -366,15 +431,12 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
             if data.get('needs_name', False):
                 speaker_id = data['speaker_id']
                 # Start name collection in the manager
-                speaker_name_manager.start_name_collection(speaker_id)
-                # Queue a message to ask for the speaker's name
-                await task.queue_frames([
-                    context_aggregator.user().get_context_frame(),
-                    llm.get_chat_completions_frame([{
-                        "role": "system", 
-                        "content": f"A new speaker has been detected and enrolled as '{speaker_id}'. Please politely ask them for their name so we can remember them for future conversations. Keep it brief and natural."
-                    }])
-                ])
+                callback_refs['speaker_name_manager'].start_name_collection(speaker_id)
+                
+                # Update speaker context to inject system message
+                if callback_refs['speaker_context']:
+                    callback_refs['speaker_context'].handle_speaker_enrolled(data)
+                    logger.info("Speaker context updated with enrollment data")
         
         voice_recognition.set_callbacks(
             on_speaker_changed=on_speaker_changed,
@@ -399,19 +461,33 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
     if vad_bridge:
         pipeline_components.append(vad_bridge)
     
-    pipeline_components.extend([
-        stt,
-        rtvi,
-    ])
+    # STT outputs TranscriptionFrame
+    pipeline_components.append(stt)
     
+    # Memory processor should capture STT output immediately
+    if memory_processor:
+        pipeline_components.append(memory_processor)
+    
+    # Speaker context modifies TranscriptionFrame.user_id
     if speaker_context:
         pipeline_components.append(speaker_context)
     
+    # RTVI processor
+    pipeline_components.append(rtvi)
+    
+    # Speaker name manager
     if speaker_name_manager:
         pipeline_components.append(speaker_name_manager)
     
+    # Context aggregator processes user messages
+    pipeline_components.append(context_aggregator.user())
+    
+    # Memory injector adds context before LLM
+    if memory_injector:
+        pipeline_components.append(memory_injector)
+    
+    # LLM, TTS, and output
     pipeline_components.extend([
-        context_aggregator.user(),
         llm,
         tts,
         transport.output(),
@@ -428,6 +504,10 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         ),
         observers=[RTVIObserver(rtvi)],
     )
+    
+    # Set the task reference for voice recognition callbacks
+    if VOICE_RECOGNITION_CONFIG["enabled"] and 'callback_refs' in locals():
+        callback_refs['task'] = task
 
     @rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):

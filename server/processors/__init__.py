@@ -4,5 +4,7 @@ from .vad_event_bridge import VADEventBridge
 from .speaker_context import SpeakerContextProcessor
 from .video_sampler import VideoSamplerProcessor
 from .speaker_name_manager import SpeakerNameManager
+from .local_memory import LocalMemoryProcessor
+from .memory_context_injector import MemoryContextInjector
 
-__all__ = ["AudioTeeProcessor", "VADEventBridge", "SpeakerContextProcessor", "VideoSamplerProcessor", "SpeakerNameManager"]
+__all__ = ["AudioTeeProcessor", "VADEventBridge", "SpeakerContextProcessor", "VideoSamplerProcessor", "SpeakerNameManager", "LocalMemoryProcessor", "MemoryContextInjector"]

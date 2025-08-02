@@ -29,6 +29,7 @@ python bot.py --language es  # Spanish, French (fr), Japanese (ja), etc.
 
 **Environment Variables**:
 - `ENABLE_VOICE_RECOGNITION`: Enable/disable speaker recognition (default: true)
+- `ENABLE_MEMORY`: Enable/disable local conversation memory (default: true)
 - `OPENAI_BASE_URL`: LLM endpoint (default: http://localhost:1234/v1)
 
 ### Client (Next.js)
@@ -62,6 +63,13 @@ npm run lint   # Run ESLint
 - Automatic speaker enrollment
 - Real-time identification using Resemblyzer
 - Profiles stored in `server/data/speaker_profiles/`
+- Adjusted thresholds for single-speaker scenarios
+
+### Local Memory (server/processors/)
+- Persistent conversation history without cloud services
+- Per-speaker memory when voice recognition is enabled
+- Stores last 200 conversations, includes last 10 in context
+- Memory files in `server/data/memory/`
 
 ## Important Constraints
 

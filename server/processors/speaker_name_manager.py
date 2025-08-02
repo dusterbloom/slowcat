@@ -22,14 +22,16 @@ class SpeakerNameManager(FrameProcessor):
         self.waiting_for_name = False
         self.pending_speaker_id = None
         self.name_patterns = [
-            # Direct name responses
+            # English patterns
             r"(?:my name is|i'm|i am|call me)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
+            # Italian patterns
+            r"(?:mi chiamo|sono|il mio nome è)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
             # Just the name
             r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\.?$",
-            # Name with "It's"
-            r"(?:it's|its)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
-            # "Name is X"
-            r"(?:name is)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
+            # Name with "It's" / "È"
+            r"(?:it's|its|è)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
+            # "Name is X" / "Nome è X"
+            r"(?:name is|nome è)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
         ]
     
     def start_name_collection(self, speaker_id: str):
@@ -67,6 +69,7 @@ class SpeakerNameManager(FrameProcessor):
         if self.waiting_for_name and self.pending_speaker_id:
             if isinstance(frame, TranscriptionFrame):
                 # Check if this transcription contains a name
+                logger.debug(f"Checking for name in: '{frame.text}'")
                 name = self.extract_name(frame.text)
                 if name:
                     logger.info(f"Detected name '{name}' for {self.pending_speaker_id}")

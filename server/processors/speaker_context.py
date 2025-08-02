@@ -23,6 +23,7 @@ class SpeakerContextProcessor(FrameProcessor):
         self.current_speaker = unknown_speaker_name
         self.speaker_confidence = 0.0
         self.speaker_history: Dict[str, datetime] = {}
+        self._pending_system_message: Optional[str] = None
     
     def update_speaker(self, speaker_data: Dict[str, Any]):
         """Update current speaker information"""
@@ -35,6 +36,17 @@ class SpeakerContextProcessor(FrameProcessor):
         
         logger.info(f"Speaker context updated: {self.current_speaker} (confidence: {self.speaker_confidence:.2f})")
     
+    def handle_speaker_enrolled(self, enrollment_data: Dict[str, Any]):
+        """Handle when a new speaker is enrolled"""
+        speaker_id = enrollment_data.get('speaker_id', '')
+        auto_enrolled = enrollment_data.get('auto_enrolled', False)
+        
+        if auto_enrolled:
+            logger.info(f"New speaker auto-enrolled: {speaker_id}")
+            # Queue a system message to trigger name question
+            self._pending_system_message = f"[System: New speaker detected and enrolled as {speaker_id}. This is their first time using the system.]"
+            logger.info(f"Queued system message for new speaker")
+    
     async def process_frame(self, frame: Frame, direction):
         """Process frames and add speaker context where appropriate"""
         # Handle system frames through parent
@@ -42,10 +54,18 @@ class SpeakerContextProcessor(FrameProcessor):
         
         # Modify frames in-place without blocking
         if isinstance(frame, TranscriptionFrame):
+            # Check if we have a pending system message to prepend
+            if self._pending_system_message:
+                # Prepend the system message to the transcription
+                original_text = frame.text
+                frame.text = f"{self._pending_system_message} {original_text}"
+                logger.info(f"Injected system message into transcription: {self._pending_system_message}")
+                self._pending_system_message = None  # Clear after using
+            
             # Add speaker info to the transcription
             if self.current_speaker != self.unknown_speaker_name and self.speaker_confidence > 0.7:
                 # Only add speaker context if we're confident
-                frame.user = self.current_speaker
+                frame.user_id = self.current_speaker
                 logger.debug(f"Added speaker context to transcription: {self.current_speaker}")
         
         elif isinstance(frame, LLMMessagesFrame) and self.format_style == "system":

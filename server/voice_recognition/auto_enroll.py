@@ -48,6 +48,20 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     async def _process_speaker_identification(self, audio_array: np.ndarray):
         """Enhanced identification with auto-enrollment, processing a complete utterance."""
         try:
+            # Preprocess audio for consistency
+            audio_array = audio_array.astype(np.float32)
+            
+            # Remove silence at beginning and end
+            energy = np.abs(audio_array)
+            threshold = np.max(energy) * 0.01
+            indices = np.where(energy > threshold)[0]
+            if len(indices) > 0:
+                audio_array = audio_array[indices[0]:indices[-1]]
+            
+            # Log audio duration
+            duration = len(audio_array) / 16000  # Assuming 16kHz
+            logger.debug(f"Processing utterance of {duration:.2f} seconds")
+            
             fingerprint = self.encoder.embed_utterance(audio_array)
             fingerprint = np.nan_to_num(fingerprint)
             # Normalize the fingerprint for cosine similarity
@@ -122,6 +136,14 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
 
         session_centroid = np.mean(self.current_unknown_fingerprints, axis=0)
         similarity = self._calculate_similarity(fingerprint, session_centroid)
+        
+        # Debug: show similarity scores between all utterances
+        if len(self.current_unknown_fingerprints) > 1:
+            all_sims = []
+            for fp in self.current_unknown_fingerprints:
+                sim = self._calculate_similarity(fingerprint, fp)
+                all_sims.append(sim)
+            logger.debug(f"Similarities to previous utterances: {[f'{s:.3f}' for s in all_sims]}, avg: {np.mean(all_sims):.3f}")
 
         if similarity >= self.min_consistency_threshold:
             self.current_unknown_fingerprints.append(fingerprint)
@@ -133,6 +155,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                 self.unknown_session_start_time = None
         else:
             logger.warning(f"Inconsistent utterance from unknown speaker (similarity: {similarity:.2f} < {self.min_consistency_threshold}). Resetting session.")
+            logger.info(f"Debug: Previous fingerprints count: {len(self.current_unknown_fingerprints)}, threshold: {self.min_consistency_threshold}")
             self.current_unknown_fingerprints = [fingerprint]
             self.unknown_session_start_time = current_time
 
