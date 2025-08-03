@@ -130,7 +130,7 @@ class ToolHandlers:
     
     async def search_web(self, query: str, num_results: int = 3) -> list:
         """
-        Search the web using DuckDuckGo Instant Answer API (free, no key required)
+        Search the web using Brave Search API or fallback to DuckDuckGo
         
         Args:
             query: Search query
@@ -142,9 +142,81 @@ class ToolHandlers:
         try:
             logger.info(f"Searching web for: {query}")
             
-            # Use DuckDuckGo Instant Answer API (free, no auth required)
-            # Note: This API is limited but good for basic queries
-            # Use timeout for all requests
+            # Check if Brave Search API key is available
+            from config import config
+            brave_key = config.mcp.brave_search_api_key
+            logger.info(f"Brave API key present: {bool(brave_key)}")
+            if brave_key:
+                logger.info(f"Using Brave Search (key length: {len(brave_key)})")
+                return await self._search_brave(query, num_results)
+            else:
+                logger.info("No Brave API key, falling back to DuckDuckGo")
+                return await self._search_duckduckgo(query, num_results)
+            
+        except Exception as e:
+            logger.error(f"Error searching web: {e}")
+            return [{"title": "Search Error", "snippet": str(e), "source": "Error"}]
+    
+    async def _search_brave(self, query: str, num_results: int) -> list:
+        """Search using Brave Search API"""
+        try:
+            from config import config
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                url = "https://api.search.brave.com/res/v1/web/search"
+                headers = {
+                    "X-Subscription-Token": config.mcp.brave_search_api_key,
+                    "Accept": "application/json"
+                }
+                params = {
+                    "q": query,
+                    "count": num_results
+                }
+                
+                async with session.get(url, headers=headers, params=params) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Brave Search API returned status {resp.status}")
+                        # Fallback to DuckDuckGo
+                        return await self._search_duckduckgo(query, num_results)
+                    
+                    data = await resp.json()
+                    results = []
+                    
+                    # Extract web results
+                    for result in data.get("web", {}).get("results", [])[:num_results]:
+                        title = result.get("title", "")
+                        snippet = result.get("description", "")
+                        
+                        # Skip results with significant non-ASCII characters (likely non-English)
+                        if title and snippet:
+                            # Check if mostly ASCII (English)
+                            ascii_ratio = sum(1 for c in snippet if ord(c) < 128) / len(snippet)
+                            if ascii_ratio > 0.8:  # At least 80% ASCII
+                                results.append({
+                                    "title": title,
+                                    "snippet": snippet,
+                                    "url": result.get("url", ""),
+                                    "source": "Brave Search"
+                                })
+                    
+                    # Add answer box if available
+                    if data.get("summarizer") and not results:
+                        results.append({
+                            "title": "Quick Answer",
+                            "snippet": data["summarizer"].get("summary", ""),
+                            "source": "Brave AI Summary"
+                        })
+                    
+                    return results if results else [{"title": "No results found", "snippet": f"No results for: {query}", "source": "Brave Search"}]
+                    
+        except Exception as e:
+            logger.error(f"Brave Search error: {e}")
+            # Fallback to DuckDuckGo
+            return await self._search_duckduckgo(query, num_results)
+    
+    async def _search_duckduckgo(self, query: str, num_results: int) -> list:
+        """Original DuckDuckGo search implementation"""
+        try:
             timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 # DuckDuckGo API
@@ -219,7 +291,7 @@ class ToolHandlers:
                     return results[:num_results]
             
         except Exception as e:
-            logger.error(f"Error searching web: {e}")
+            logger.error(f"DuckDuckGo search error: {e}")
             return [{"title": "Search Error", "snippet": str(e), "source": "Error"}]
     
     async def remember_information(self, key: str, value: str) -> Dict[str, str]:
@@ -425,6 +497,8 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await file_tools.search_files(**arguments)
     elif function_name == "list_files":
         return await file_tools.list_files(**arguments)
+    elif function_name == "write_file":
+        return await file_tools.write_file(**arguments)
     else:
         logger.error(f"Unknown tool function: {function_name}")
         return {"error": f"Unknown function: {function_name}"}

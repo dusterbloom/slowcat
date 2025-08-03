@@ -202,6 +202,32 @@ AVAILABLE_TOOLS: List[ChatCompletionToolParam] = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a text or markdown file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path or filename (e.g., 'notes.txt' or '/Users/YourDesktop/todo.md')"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to write to the file"
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "Whether to overwrite if file exists (default: false)",
+                        "default": False
+                    }
+                },
+                "required": ["file_path", "content"]
+            }
+        }
     }
 ]
 
@@ -254,10 +280,19 @@ def format_tool_response_for_voice(tool_name: str, result: Any) -> str:
             if result[0].get("title") == "Search Error":
                 return "I had trouble searching for that information"
             
-            # Summarize results based on type
-            first_result = result[0]
+            # Check if we have good results from Brave
+            has_brave_results = any(r.get("source") == "Brave Search" for r in result)
+            
+            # If it's a Brave AI Summary
+            if result[0].get("source") == "Brave AI Summary":
+                snippet = result[0].get("snippet", "")
+                # Clean up snippet for voice
+                if len(snippet) > 200:
+                    snippet = snippet[:200] + "..."
+                return snippet
             
             # If it's a quick answer or definition
+            first_result = result[0]
             if first_result.get("title") in ["Quick Answer", "Definition", "Summary"]:
                 snippet = first_result.get("snippet", "")
                 # Clean up snippet for voice
@@ -265,7 +300,22 @@ def format_tool_response_for_voice(tool_name: str, result: Any) -> str:
                     snippet = snippet[:150] + "..."
                 return snippet
             
-            # Otherwise summarize multiple results
+            # For Brave Search results with URLs
+            if has_brave_results:
+                summary = "I found: "
+                for i, item in enumerate(result[:2]):  # Top 2 for voice
+                    if isinstance(item, dict) and item.get("source") == "Brave Search":
+                        title = item.get("title", "Unknown")
+                        snippet = item.get("snippet", "")
+                        # Clean up and shorten
+                        if snippet:
+                            snippet = snippet[:80] + "..."
+                        if i > 0:
+                            summary += " Also, "
+                        summary += f"{snippet}"
+                return summary
+            
+            # Otherwise fallback to original format
             summary = "Here's what I found: "
             for i, item in enumerate(result[:2]):  # Top 2 for voice
                 if isinstance(item, dict):
@@ -424,6 +474,28 @@ def format_tool_response_for_voice(tool_name: str, result: Any) -> str:
             
             return response
         return "I couldn't list that directory"
+    
+    elif tool_name == "write_file":
+        if isinstance(result, dict):
+            if "error" in result:
+                error = result['error']
+                if "already exists" in error:
+                    return "That file already exists. Should I overwrite it?"
+                elif "Only .txt and .md" in error:
+                    return "I can only create text or markdown files"
+                else:
+                    return f"I couldn't write the file: {error}"
+            
+            if result.get("success"):
+                name = result.get("name", "the file")
+                # Clean filename for speech
+                if '.' in name:
+                    name = name.rsplit('.', 1)[0]
+                name = name.replace("_", " ").replace("-", " ")
+                
+                return f"I've created {name} on your Desktop"
+            
+        return "I couldn't write that file"
     
     # Default formatting
     return str(result)

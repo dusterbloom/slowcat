@@ -317,6 +317,65 @@ class FileTools:
         except Exception as e:
             logger.error(f"Error listing directory {directory}: {e}")
             return {"error": str(e)}
+    
+    async def write_file(self, file_path: str, content: str, overwrite: bool = False) -> Dict[str, Any]:
+        """
+        Write content to a text file
+        
+        Args:
+            file_path: Path to the file to write
+            content: Content to write to the file
+            overwrite: Whether to overwrite existing files (default: False)
+            
+        Returns:
+            Success status and file info
+        """
+        try:
+            # Normalize the path
+            file_path = self._normalize_path(file_path)
+            
+            # Only allow .txt and .md files for safety
+            if not file_path.endswith(('.txt', '.md')):
+                return {"error": "Only .txt and .md files are allowed"}
+            
+            path = Path(file_path)
+            
+            # If path is relative or just a filename, put it on Desktop
+            if not path.is_absolute():
+                path = self.home_path / "Desktop" / file_path
+                logger.info(f"Using Desktop for relative path: {path}")
+            
+            path = path.resolve()
+            
+            # Security check - must be in allowed directory
+            if not self._is_path_allowed(path):
+                return {"error": f"Access denied: Cannot write to {file_path}"}
+            
+            # Check if file exists
+            if path.exists() and not overwrite:
+                return {"error": f"File already exists: {path.name}. Set overwrite=true to replace it."}
+            
+            # Create parent directory if needed
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write the file
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            # Get file info
+            stat = path.stat()
+            
+            return {
+                "success": True,
+                "path": str(path),
+                "name": path.name,
+                "size": stat.st_size,
+                "created": path.exists()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error writing file {file_path}: {e}")
+            return {"error": str(e)}
 
 
 # Global instance

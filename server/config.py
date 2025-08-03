@@ -157,6 +157,8 @@ Your input is text transcribed in realtime from the user's voice. There may be t
 
 Your output will be converted to audio so don't include special characters in your answers and do not use any markdown or special formatting.
 
+IMPORTANT: Always respond in English only. Never use Chinese, Spanish, or any other language unless specifically asked by the user.
+
 Respond to what the user said in a creative and helpful way. Keep your responses brief unless you are explicitly asked for long or detailed responses. Normally you should use one or two sentences at most. Keep each sentence short. Prefer simple sentences. Try not to use long sentences with multiple comma clauses.
 
 IMPORTANT: When you see a message starting with [System: New speaker detected and enrolled as Speaker_X], you should politely ask for the person's name. Use phrases like "Hi! I noticed this is the first time we're talking. What's your name?" or "Nice to meet you! Could you tell me your name so I can remember you for future conversations?"
@@ -338,6 +340,7 @@ class MCPConfig:
     browser_headless: bool = True
     memory_persist: bool = True
     user_home_path: Optional[str] = field(default_factory=lambda: os.getenv("USER_HOME_PATH", "").strip() or None)
+    brave_search_api_key: Optional[str] = field(default_factory=lambda: os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or None)
     
     # Voice-optimized settings
     announce_tool_use: bool = True  # Say "Let me check that" before using tools

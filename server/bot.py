@@ -8,11 +8,14 @@ from typing import Dict
 # Add local pipecat to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "pipecat", "src"))
 
-# Import centralized config
-from config import config, get_voice_recognition_config
-
 import uvicorn
 from dotenv import load_dotenv
+
+# Load environment variables BEFORE importing config
+load_dotenv(override=True)
+
+# Import centralized config AFTER loading .env
+from config import config, get_voice_recognition_config
 from fastapi import BackgroundTasks, FastAPI
 from loguru import logger
 
@@ -41,7 +44,10 @@ from processors import AudioTeeProcessor, VADEventBridge, SpeakerContextProcesso
 from processors.local_memory import LocalMemoryProcessor
 from processors.memory_context_injector import MemoryContextInjector
 
-load_dotenv(override=True)
+# Debug: Check if Brave API key is loaded
+brave_key_from_env = os.getenv("BRAVE_SEARCH_API_KEY")
+logger.info(f"BRAVE_SEARCH_API_KEY from env: {bool(brave_key_from_env)} (length: {len(brave_key_from_env) if brave_key_from_env else 0})")
+logger.info(f"Config brave_search_api_key: {bool(config.mcp.brave_search_api_key)} (length: {len(config.mcp.brave_search_api_key) if config.mcp.brave_search_api_key else 0})")
 
 app = FastAPI()
 
@@ -97,6 +103,25 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
     
     # Get language-specific configuration
     lang_config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG[config.default_language])
+    
+    # Add language consistency instruction based on selected language
+    language_consistency_note = {
+        "en": "\n\nIMPORTANT: Always respond in English only. Never mix languages or use other languages in your response unless specifically asked by the user.",
+        "es": "\n\nIMPORTANTE: Siempre responde solo en español. Nunca mezcles idiomas ni uses otros idiomas en tu respuesta a menos que el usuario lo solicite específicamente.",
+        "fr": "\n\nIMPORTANT: Répondez toujours en français uniquement. Ne mélangez jamais les langues ou n'utilisez pas d'autres langues dans votre réponse sauf si l'utilisateur le demande spécifiquement.",
+        "ja": "\n\n重要：常に日本語のみで応答してください。ユーザーから特に要求されない限り、言語を混ぜたり、他の言語を使用したりしないでください。",
+        "it": "\n\nIMPORTANTE: Rispondi sempre solo in italiano. Non mescolare mai le lingue o usare altre lingue nella tua risposta a meno che l'utente non lo chieda specificamente.",
+        "zh": "\n\n重要提示：始终只用中文回复。除非用户特别要求，否则不要混合语言或在回复中使用其他语言。",
+        "pt": "\n\nIMPORTANTE: Sempre responda apenas em português. Nunca misture idiomas ou use outros idiomas em sua resposta, a menos que o usuário solicite especificamente.",
+        "de": "\n\nWICHTIG: Antworten Sie immer nur auf Deutsch. Mischen Sie niemals Sprachen oder verwenden Sie andere Sprachen in Ihrer Antwort, es sei denn, der Benutzer fragt ausdrücklich danach."
+    }
+    
+    # Modify the system instruction to include language consistency
+    modified_instruction = lang_config["system_instruction"]
+    if language in language_consistency_note:
+        modified_instruction += language_consistency_note[language]
+    lang_config = dict(lang_config)  # Make a copy to modify
+    lang_config["system_instruction"] = modified_instruction
     
     transport = SmallWebRTCTransport(
         webrtc_connection=webrtc_connection,
