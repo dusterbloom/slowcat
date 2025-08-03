@@ -9,5 +9,7 @@ pipecat-ai[openai,deepgram,rime,silero,mlx-whisper]>=0.0.76
 aiortc
 nltk
 resemblyzer>=0.1.3
+beautifulsoup4>=4.12.0
+html2text>=2020.1.16
 
 

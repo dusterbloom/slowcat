@@ -24,7 +24,9 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from openai import NOT_GIVEN
 from pipecat.services.openai.llm import OpenAILLMService
+from services.tool_enabled_llm import ToolEnabledLLMService
 from kokoro_tts import KokoroTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX, MLXModel
 from pipecat.transcriptions.language import Language
@@ -142,13 +144,37 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         selected_model = config.models.default_llm_model
         logger.info(f"🤖 Using default LLM model: {selected_model}")
     
-    llm = OpenAILLMService(
-        api_key=None,
-        model=selected_model,
-        base_url=config.network.llm_base_url,
-        max_tokens=config.models.llm_max_tokens,
-    )
+    # Use tool-enabled LLM if MCP is enabled
+    if config.mcp.enabled:
+        llm = ToolEnabledLLMService(
+            api_key=None,
+            model=selected_model,
+            base_url=config.network.llm_base_url,
+            max_tokens=config.models.llm_max_tokens,
+        )
+        logger.info(f"🔧 Tool-enabled LLM service initialized")
+        logger.info(f"📏 Context length: {config.models.llm_context_length} (set LLM_CONTEXT_LENGTH in .env)")
+    else:
+        llm = OpenAILLMService(
+            api_key=None,
+            model=selected_model,
+            base_url=config.network.llm_base_url,
+            max_tokens=config.models.llm_max_tokens,
+        )
+        logger.info(f"🤖 LLM service initialized")
 
+    # Import tools if MCP is enabled
+    tools = NOT_GIVEN
+    tool_choice = NOT_GIVEN
+    if config.mcp.enabled:
+        from tools_config import AVAILABLE_TOOLS, TOOL_CHOICE_AUTO
+        tools = AVAILABLE_TOOLS
+        tool_choice = TOOL_CHOICE_AUTO
+        logger.info(f"🛠️ Loaded {len(tools)} tools for function calling")
+        # Debug: log tool names
+        tool_names = [t["function"]["name"] for t in tools]
+        logger.info(f"📋 Available tools: {', '.join(tool_names)}")
+    
     context = OpenAILLMContext(
         [
             {
@@ -156,7 +182,13 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
                 "content": lang_config["system_instruction"],
             }
         ],
+        tools=tools,
+        tool_choice=tool_choice,
     )
+    
+    # Debug: verify context has tools
+    logger.info(f"🔍 Context tools type: {type(context.tools)}")
+    logger.info(f"🔍 Context tool_choice: {context.tool_choice}")
     context_aggregator = llm.create_context_aggregator(context)
     
     #

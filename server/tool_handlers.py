@@ -1,0 +1,423 @@
+"""
+Tool handlers for LM Studio function calling
+Implements the actual functionality for each tool
+"""
+
+import json
+import aiohttp
+import asyncio
+from typing import Dict, Any, Optional
+from loguru import logger
+import os
+from pathlib import Path
+import math
+import re
+from bs4 import BeautifulSoup
+import html2text
+
+class ToolHandlers:
+    """Handles tool function execution for Slowcat"""
+    
+    def __init__(self, memory_dir: str = "data/tool_memory"):
+        """Initialize tool handlers with memory storage"""
+        self.memory_dir = Path(memory_dir)
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.memory_file = self.memory_dir / "tool_memory.json"
+        self._load_memory()
+    
+    def _load_memory(self):
+        """Load persisted memory from file"""
+        if self.memory_file.exists():
+            try:
+                with open(self.memory_file, 'r') as f:
+                    self.memory = json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading tool memory: {e}")
+                self.memory = {}
+        else:
+            self.memory = {}
+    
+    def _save_memory(self):
+        """Save memory to file"""
+        try:
+            with open(self.memory_file, 'w') as f:
+                json.dump(self.memory, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving tool memory: {e}")
+    
+    async def get_weather(self, location: str, units: str = "celsius") -> Dict[str, Any]:
+        """
+        Get weather for a location using Open-Meteo API (free, no key required)
+        
+        Args:
+            location: City name or coordinates
+            units: Temperature units (celsius/fahrenheit)
+            
+        Returns:
+            Weather data dict
+        """
+        try:
+            logger.info(f"Getting weather for {location} in {units}")
+            
+            # First, geocode the location using Open-Meteo's geocoding API
+            # Use timeout for all requests
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # Geocoding API
+                geocode_url = f"https://geocoding-api.open-meteo.com/v1/search?name={location}&count=1&language=en&format=json"
+                async with session.get(geocode_url) as resp:
+                    if resp.status != 200:
+                        return {"error": f"Failed to geocode location: {location}"}
+                    
+                    geo_data = await resp.json()
+                    if not geo_data.get("results"):
+                        return {"error": f"Location not found: {location}"}
+                    
+                    # Get first result
+                    result = geo_data["results"][0]
+                    lat = result["latitude"]
+                    lon = result["longitude"]
+                    city_name = result.get("name", location)
+                    country = result.get("country", "")
+                    
+                # Weather API
+                temp_unit = "fahrenheit" if units == "fahrenheit" else "celsius"
+                weather_url = (
+                    f"https://api.open-meteo.com/v1/forecast?"
+                    f"latitude={lat}&longitude={lon}"
+                    f"&current=temperature_2m,weather_code,wind_speed_10m"
+                    f"&temperature_unit={temp_unit}"
+                )
+                
+                async with session.get(weather_url) as resp:
+                    if resp.status != 200:
+                        return {"error": "Failed to get weather data"}
+                    
+                    weather_data = await resp.json()
+                    current = weather_data.get("current", {})
+                    
+                    # Map weather codes to conditions
+                    weather_code = current.get("weather_code", 0)
+                    conditions = self._get_weather_condition(weather_code)
+                    
+                    return {
+                        "location": f"{city_name}, {country}" if country else city_name,
+                        "temperature": round(current.get("temperature_2m", 0)),
+                        "conditions": conditions,
+                        "wind_speed": round(current.get("wind_speed_10m", 0)),
+                        "units": units
+                    }
+            
+        except Exception as e:
+            logger.error(f"Error getting weather: {e}")
+            return {"error": str(e)}
+    
+    def _get_weather_condition(self, code: int) -> str:
+        """Convert Open-Meteo weather code to human-readable condition"""
+        # Based on WMO Weather interpretation codes
+        weather_codes = {
+            0: "clear sky",
+            1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+            45: "foggy", 48: "foggy",
+            51: "light drizzle", 53: "moderate drizzle", 55: "dense drizzle",
+            61: "light rain", 63: "moderate rain", 65: "heavy rain",
+            71: "light snow", 73: "moderate snow", 75: "heavy snow",
+            80: "light showers", 81: "moderate showers", 82: "heavy showers",
+            95: "thunderstorm", 96: "thunderstorm with hail"
+        }
+        return weather_codes.get(code, "unknown conditions")
+    
+    async def search_web(self, query: str, num_results: int = 3) -> list:
+        """
+        Search the web using DuckDuckGo Instant Answer API (free, no key required)
+        
+        Args:
+            query: Search query
+            num_results: Number of results to return
+            
+        Returns:
+            List of search results
+        """
+        try:
+            logger.info(f"Searching web for: {query}")
+            
+            # Use DuckDuckGo Instant Answer API (free, no auth required)
+            # Note: This API is limited but good for basic queries
+            # Use timeout for all requests
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # DuckDuckGo API
+                url = "https://api.duckduckgo.com/"
+                params = {
+                    "q": query,
+                    "format": "json",
+                    "no_html": "1",
+                    "skip_disambig": "1"
+                }
+                
+                async with session.get(url, params=params) as resp:
+                    # DuckDuckGo API can return 202 or 200
+                    if resp.status not in [200, 202]:
+                        logger.error(f"Search API returned status {resp.status}")
+                        return []
+                    
+                    # Get response text first
+                    text = await resp.text()
+                    if not text:
+                        return []
+                    
+                    try:
+                        data = json.loads(text)
+                    except json.JSONDecodeError:
+                        logger.error("Failed to parse search response")
+                        return []
+                    
+                    results = []
+                    
+                    # Abstract (summary)
+                    if data.get("Abstract"):
+                        results.append({
+                            "title": data.get("Heading", "Summary"),
+                            "snippet": data["Abstract"][:200] + "...",
+                            "source": data.get("AbstractSource", "DuckDuckGo")
+                        })
+                    
+                    # Definition
+                    if data.get("Definition") and len(results) < num_results:
+                        results.append({
+                            "title": "Definition",
+                            "snippet": data["Definition"][:200] + "...",
+                            "source": data.get("DefinitionSource", "Dictionary")
+                        })
+                    
+                    # Answer (for factual queries)
+                    if data.get("Answer") and len(results) < num_results:
+                        results.append({
+                            "title": "Quick Answer",
+                            "snippet": data["Answer"],
+                            "source": data.get("AnswerType", "Instant Answer")
+                        })
+                    
+                    # Related topics
+                    for topic in data.get("RelatedTopics", [])[:num_results - len(results)]:
+                        if isinstance(topic, dict) and topic.get("Text"):
+                            results.append({
+                                "title": topic.get("Text", "").split(" - ")[0][:50],
+                                "snippet": topic.get("Text", "")[:200] + "...",
+                                "source": "Related Topic"
+                            })
+                    
+                    # If no structured results, return a generic response
+                    if not results:
+                        results.append({
+                            "title": f"Search results for: {query}",
+                            "snippet": "For more detailed results, try searching on a web browser.",
+                            "source": "Limited API"
+                        })
+                    
+                    return results[:num_results]
+            
+        except Exception as e:
+            logger.error(f"Error searching web: {e}")
+            return [{"title": "Search Error", "snippet": str(e), "source": "Error"}]
+    
+    async def remember_information(self, key: str, value: str) -> Dict[str, str]:
+        """
+        Store information in persistent memory
+        
+        Args:
+            key: Key to store under
+            value: Information to store
+            
+        Returns:
+            Confirmation dict
+        """
+        try:
+            logger.info(f"Remembering: {key} = {value}")
+            self.memory[key] = value
+            self._save_memory()
+            return {"status": "saved", "key": key}
+            
+        except Exception as e:
+            logger.error(f"Error remembering information: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def recall_information(self, key: str) -> Optional[str]:
+        """
+        Retrieve information from memory
+        
+        Args:
+            key: Key to retrieve
+            
+        Returns:
+            Stored value or None
+        """
+        try:
+            logger.info(f"Recalling: {key}")
+            return self.memory.get(key)
+            
+        except Exception as e:
+            logger.error(f"Error recalling information: {e}")
+            return None
+    
+    async def calculate(self, expression: str) -> Dict[str, Any]:
+        """
+        Perform safe mathematical calculations
+        
+        Args:
+            expression: Math expression to evaluate
+            
+        Returns:
+            Calculation result
+        """
+        try:
+            logger.info(f"Calculating: {expression}")
+            
+            # Clean the expression
+            expression = expression.strip()
+            
+            # Define safe functions
+            safe_dict = {
+                'abs': abs, 'round': round, 'min': min, 'max': max,
+                'sqrt': math.sqrt, 'pow': pow, 'sum': sum,
+                'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
+                'pi': math.pi, 'e': math.e
+            }
+            
+            # Basic safety check - only allow numbers, operators, and safe functions
+            if re.search(r'[^0-9+\-*/().\s\w]', expression):
+                return {"error": "Invalid characters in expression"}
+            
+            # Evaluate the expression safely
+            try:
+                result = eval(expression, {"__builtins__": {}}, safe_dict)
+                return {
+                    "expression": expression,
+                    "result": result,
+                    "formatted": f"{expression} = {result}"
+                }
+            except Exception as e:
+                return {"error": f"Calculation error: {str(e)}"}
+                
+        except Exception as e:
+            logger.error(f"Error in calculate: {e}")
+            return {"error": str(e)}
+    
+    async def browse_url(self, url: str, max_length: int = 2000) -> Dict[str, Any]:
+        """
+        Fetch and extract text content from a URL
+        
+        Args:
+            url: URL to fetch
+            max_length: Maximum characters to return
+            
+        Returns:
+            Extracted text content
+        """
+        try:
+            logger.info(f"Browsing URL: {url}")
+            
+            # Validate URL
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            
+            # Use timeout for all requests
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # Set headers to appear as a browser
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+                }
+                
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    if resp.status != 200:
+                        return {"error": f"Failed to fetch URL: HTTP {resp.status}"}
+                    
+                    # Get content type
+                    content_type = resp.headers.get('Content-Type', '')
+                    
+                    # Only process HTML/text content
+                    if 'text' not in content_type and 'html' not in content_type:
+                        return {"error": f"Unsupported content type: {content_type}"}
+                    
+                    # Read the content
+                    html_content = await resp.text()
+                    
+                    # Parse HTML and extract text
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # Remove script and style elements
+                    for element in soup(['script', 'style', 'meta', 'link']):
+                        element.decompose()
+                    
+                    # Get page title
+                    title = soup.find('title')
+                    title_text = title.text.strip() if title else "No title"
+                    
+                    # Convert to markdown for better structure
+                    h = html2text.HTML2Text()
+                    h.ignore_links = False
+                    h.ignore_images = True
+                    h.skip_internal_links = True
+                    h.inline_links = True
+                    h.wrap_links = False
+                    h.body_width = 0  # Don't wrap lines
+                    
+                    # Get text content
+                    text_content = h.handle(str(soup))
+                    
+                    # Clean up excessive whitespace
+                    text_content = re.sub(r'\n{3,}', '\n\n', text_content)
+                    text_content = text_content.strip()
+                    
+                    # Truncate if needed
+                    if len(text_content) > max_length:
+                        text_content = text_content[:max_length] + "..."
+                    
+                    return {
+                        "url": url,
+                        "title": title_text,
+                        "content": text_content,
+                        "length": len(text_content),
+                        "truncated": len(text_content) > max_length
+                    }
+                    
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout fetching URL: {url}")
+            return {"error": "Request timed out"}
+        except Exception as e:
+            logger.error(f"Error browsing URL: {e}")
+            return {"error": str(e)}
+
+# Global instance
+tool_handlers = ToolHandlers()
+
+async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> Any:
+    """
+    Execute a tool call by name with arguments
+    
+    Args:
+        function_name: Name of the function to call
+        arguments: Arguments for the function
+        
+    Returns:
+        Tool execution result
+    """
+    logger.info(f"Executing tool: {function_name} with args: {arguments}")
+    
+    # Map function names to handlers
+    if function_name == "get_weather":
+        return await tool_handlers.get_weather(**arguments)
+    elif function_name == "search_web":
+        return await tool_handlers.search_web(**arguments)
+    elif function_name == "remember_information":
+        return await tool_handlers.remember_information(**arguments)
+    elif function_name == "recall_information":
+        return await tool_handlers.recall_information(**arguments)
+    elif function_name == "calculate":
+        return await tool_handlers.calculate(**arguments)
+    elif function_name == "browse_url":
+        return await tool_handlers.browse_url(**arguments)
+    else:
+        logger.error(f"Unknown tool function: {function_name}")
+        return {"error": f"Unknown function: {function_name}"}

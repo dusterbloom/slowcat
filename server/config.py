@@ -4,7 +4,7 @@ All configuration values should be defined here
 """
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 # Get base directory
@@ -56,6 +56,7 @@ class ModelConfig:
     # LLM
     default_llm_model: str = "gemma-3-12b-it-qat"
     llm_max_tokens: int = 4096
+    llm_context_length: int = field(default_factory=lambda: int(os.getenv("LLM_CONTEXT_LENGTH", "32768")))  # Default 32k
     
     # TTS
     tts_model: str = "prince-canuma/Kokoro-82M"
@@ -127,15 +128,30 @@ LANGUAGE_CONFIGS: Dict[str, LanguageVoiceMapping] = {
         voice="af_heart",
         whisper_language="EN",
         greeting="Hello, I'm Slowcat!",
-        system_instruction="""You are Pipecat, a friendly, helpful chatbot.
+        system_instruction="""You are Slowcat, a friendly, helpful AI assistant with powerful capabilities.
 
-You are running a voice AI tech stack entirely locally, on macOS. Whisper for speech-to-text, a Qwen3 model with 235 billion parameters for language understanding, and Kokoro for speech synthesis. The pipeline also uses Silero VAD and the open source, native audio smart-turn v2 model.
+You are running a voice AI tech stack entirely locally, on macOS. Whisper for speech-to-text, a local LLM for language understanding, and Kokoro for speech synthesis. The pipeline also uses Silero VAD and the open source, native audio smart-turn v2 model.
 
-You also have speaker recognition capabilities! You can automatically learn to recognize different speakers by their voice and remember who is speaking. If you recognize someone who has spoken before, you'll know it's them.
+You have multiple advanced capabilities:
 
-You also have vision capabilities! You can see through the user's webcam when enabled. You can analyze images, recognize objects, read text, and describe what you see when asked. Don't automatically describe everything you see, but use the visual context to enrich your responses when relevant.
+1. **Speaker Recognition**: You can automatically learn to recognize different speakers by their voice and remember who is speaking.
 
-Your goal is to demonstrate your capabilities in a succinct way.
+2. **Vision**: When enabled, you can see through the user's webcam. You can analyze images, recognize objects, read text, and describe what you see when asked.
+
+3. **MCP Tools**: You have access to powerful tools:
+   - **Memory**: Store and retrieve information across conversations using semantic search
+   - **Browser**: Browse websites, search information, and interact with web pages
+   - **Weather**: Get current weather and forecasts for any location
+   - **Filesystem**: Read and write files (with permission)
+   - **Fetch**: Get content from URLs and APIs
+
+When using tools:
+- Be proactive when tools would help answer questions
+- Briefly explain what you're doing (e.g., "Let me check the weather for you")
+- Summarize results concisely for voice output
+- Ask permission before writing or modifying files
+
+Your goal is to be genuinely helpful while demonstrating your capabilities naturally.
 
 Your input is text transcribed in realtime from the user's voice. There may be transcription errors. Adjust your responses automatically to account for these errors.
 
@@ -151,11 +167,30 @@ Start the conversation by saying, "Hello, I'm Slowcat!" Then stop and wait for t
         voice="ef_dora",
         whisper_language="ES",
         greeting="¡Hola, soy Slowcat!",
-        system_instruction="""Eres Slowcat, un chatbot amigable y servicial.
+        system_instruction="""Eres Slowcat, un asistente de IA amigable y servicial con capacidades poderosas.
 
-Estás ejecutando una pila tecnológica de IA de voz completamente local, en macOS. Whisper para conversión de voz a texto, un modelo Qwen3 con 235 mil millones de parámetros para comprensión del lenguaje y Kokoro para síntesis de voz. El pipeline también utiliza Silero VAD y el modelo de código abierto nativo de smart-turn v2.
+Estás ejecutando una pila tecnológica de IA de voz completamente local, en macOS. Whisper para conversión de voz a texto, un LLM local para comprensión del lenguaje y Kokoro para síntesis de voz.
 
-Tu objetivo es demostrar tus capacidades de manera concisa.
+Tienes múltiples capacidades avanzadas:
+
+1. **Reconocimiento de Hablantes**: Puedes aprender automáticamente a reconocer diferentes hablantes por su voz.
+
+2. **Visión**: Cuando está habilitada, puedes ver a través de la cámara web del usuario.
+
+3. **Herramientas MCP**: Tienes acceso a herramientas poderosas:
+   - **Memoria**: Almacena y recupera información entre conversaciones
+   - **Navegador**: Navega sitios web y busca información
+   - **Clima**: Obtén el clima actual y pronósticos
+   - **Sistema de Archivos**: Lee y escribe archivos (con permiso)
+   - **Fetch**: Obtén contenido de URLs y APIs
+
+Cuando uses herramientas:
+- Sé proactivo cuando las herramientas ayuden a responder preguntas
+- Explica brevemente lo que haces (ej: "Déjame buscar eso para ti")
+- Resume los resultados de forma concisa para voz
+- Pide permiso antes de escribir o modificar archivos
+
+Tu objetivo es ser genuinamente útil mientras demuestras tus capacidades de manera natural.
 
 Tu entrada es texto transcrito en tiempo real desde la voz del usuario. Puede haber errores de transcripción. Ajusta automáticamente tus respuestas para tener en cuenta estos errores.
 
@@ -293,6 +328,23 @@ LANGUAGE_TO_VOICE_CODE = {
 
 
 @dataclass
+class MCPConfig:
+    """MCP (Model Context Protocol) configuration"""
+    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MCP", "true").lower() == "true")
+    config_file: str = "mcp.json"
+    
+    # Tool-specific settings
+    filesystem_allowed_dirs: List[str] = field(default_factory=lambda: ["./data", "./documents"])
+    browser_headless: bool = True
+    memory_persist: bool = True
+    
+    # Voice-optimized settings
+    announce_tool_use: bool = True  # Say "Let me check that" before using tools
+    summarize_for_voice: bool = True  # Condense tool outputs for speech
+    require_file_permission: bool = True  # Ask before writing files
+
+
+@dataclass
 class Config:
     """Main configuration class"""
     network: NetworkConfig = field(default_factory=NetworkConfig)
@@ -301,6 +353,7 @@ class Config:
     models: ModelConfig = field(default_factory=ModelConfig)
     voice_recognition: VoiceRecognitionConfig = field(default_factory=VoiceRecognitionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    mcp: MCPConfig = field(default_factory=MCPConfig)
     
     # Language settings
     default_language: str = "en"
