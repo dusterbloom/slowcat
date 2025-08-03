@@ -14,6 +14,7 @@ import math
 import re
 from bs4 import BeautifulSoup
 import html2text
+from file_tools import file_tools
 
 class ToolHandlers:
     """Handles tool function execution for Slowcat"""
@@ -418,6 +419,12 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await tool_handlers.calculate(**arguments)
     elif function_name == "browse_url":
         return await tool_handlers.browse_url(**arguments)
+    elif function_name == "read_file":
+        return await file_tools.read_file(**arguments)
+    elif function_name == "search_files":
+        return await file_tools.search_files(**arguments)
+    elif function_name == "list_files":
+        return await file_tools.list_files(**arguments)
     else:
         logger.error(f"Unknown tool function: {function_name}")
         return {"error": f"Unknown function: {function_name}"}

@@ -25,110 +25,55 @@ class ToolEnabledLLMService(OpenAILLMService):
         """Initialize the tool-enabled LLM service"""
         super().__init__(**kwargs)
         logger.info("Initialized ToolEnabledLLMService with function calling support")
+        
+        # Register all tools as function handlers
+        self._register_tool_handlers()
     
-    async def run_function_calls(self, function_calls: List[FunctionCallFromLLM]):
-        """
-        Execute function calls requested by the LLM.
+    def _register_tool_handlers(self):
+        """Register tool handlers with Pipecat's function registry"""
+        from tools_config import AVAILABLE_TOOLS
         
-        Args:
-            function_calls: List of function calls to execute
-        """
-        logger.info(f"Running {len(function_calls)} function calls")
-        
-        for call in function_calls:
-            try:
-                # Extract function details
-                function_name = call.function_name
-                arguments = call.arguments
-                tool_call_id = call.tool_call_id
-                
-                logger.info(f"Executing function: {function_name}")
-                
-                # Execute the tool
-                result = await execute_tool_call(function_name, arguments)
-                
-                # Format result for voice
-                voice_response = format_tool_response_for_voice(function_name, result)
-                
-                # Log the execution (limit size to prevent memory issues)
-                result_str = str(result)
-                if len(result_str) > 200:
-                    logger.info(f"Tool {function_name} result: {result_str[:200]}...")
-                else:
-                    logger.info(f"Tool {function_name} result: {result_str}")
-                logger.info(f"Voice response: {voice_response[:100]}..." if len(voice_response) > 100 else f"Voice response: {voice_response}")
-                
-                # Add tool response to context
-                # The response will be sent back to the model in the next request
-                if hasattr(call, 'context') and call.context:
-                    # Ensure result is JSON serializable and not too large
+        # Register each tool as a function handler
+        for tool_def in AVAILABLE_TOOLS:
+            function_name = tool_def["function"]["name"]
+            
+            # Create a closure to capture the function name
+            def make_handler(fn_name):
+                async def handler(function_call_params):
+                    """Handler that executes tool and returns result"""
                     try:
+                        # Extract arguments from the new params object
+                        arguments = function_call_params.arguments
+                        result_callback = function_call_params.result_callback
+                        
+                        # Execute the tool
+                        result = await execute_tool_call(fn_name, arguments)
+                        
+                        # Ensure result is JSON serializable
                         if isinstance(result, (dict, list)):
                             result_content = json.dumps(result)
                         else:
                             result_content = str(result)
                         
-                        # Truncate if too large to prevent memory issues
+                        # Truncate if too large
                         if len(result_content) > 4000:
                             result_content = result_content[:4000] + "... [truncated]"
-                            
-                    except Exception as json_error:
-                        logger.warning(f"Could not JSON serialize result: {json_error}")
-                        result_content = str(result)[:4000]
-                    
-                    call.context.add_message({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": result_content
-                    })
+                        
+                        # Return result through callback
+                        await result_callback(result_content)
+                        
+                    except Exception as e:
+                        logger.error(f"Error executing {fn_name}: {e}")
+                        if hasattr(function_call_params, 'result_callback'):
+                            await function_call_params.result_callback(f"Error: {str(e)}")
                 
-                # NOTE: Disabled immediate voice feedback to prevent TTS conflicts
-                # The model will generate its own response after tool execution
-                # if self._should_announce_tool_use(function_name):
-                #     announcement = self._get_tool_announcement(function_name)
-                #     await self.push_frame(TextFrame(text=announcement))
-                
-            except Exception as e:
-                logger.error(f"Error executing function {function_name}: {e}", exc_info=True)
-                # Add error to context
-                if hasattr(call, 'context') and call.context:
-                    try:
-                        call.context.add_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": f"Error: {str(e)}"
-                        })
-                    except Exception as context_error:
-                        logger.error(f"Error adding error to context: {context_error}")
-    
-    def _should_announce_tool_use(self, function_name: str) -> bool:
-        """
-        Determine if we should announce tool usage for voice UX.
-        
-        Args:
-            function_name: Name of the function being called
+                return handler
             
-        Returns:
-            True if we should announce, False otherwise
-        """
-        # Announce tools that might take time
-        announce_tools = ["search_web", "get_weather"]
-        return function_name in announce_tools
-    
-    def _get_tool_announcement(self, function_name: str) -> str:
-        """
-        Get voice announcement for tool usage.
-        
-        Args:
-            function_name: Name of the function being called
+            # Register the handler
+            self.register_function(
+                function_name,
+                make_handler(function_name),
+                cancel_on_interruption=True
+            )
             
-        Returns:
-            Announcement text
-        """
-        announcements = {
-            "get_weather": "Let me check the weather for you.",
-            "search_web": "Let me search for that information.",
-            "remember_information": "I'll remember that.",
-            "recall_information": "Let me recall that information."
-        }
-        return announcements.get(function_name, "Processing your request.")
+        logger.info(f"Registered {len(AVAILABLE_TOOLS)} tool handlers")

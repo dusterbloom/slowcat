@@ -130,6 +130,78 @@ AVAILABLE_TOOLS: List[ChatCompletionToolParam] = [
                 "required": ["url"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a local file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file to read"
+                    },
+                    "max_length": {
+                        "type": "integer",
+                        "description": "Maximum characters to read (default: 5000)",
+                        "default": 5000
+                    }
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search for files containing specific text",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text to search for"
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "Directory to search in (default: current directory)",
+                        "default": "."
+                    },
+                    "file_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "File extensions to search (e.g., ['.txt', '.md'])"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files and directories in a folder",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "Directory to list (default: current directory)",
+                        "default": "."
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern for filtering (e.g., '*.txt')",
+                        "default": "*"
+                    }
+                },
+                "required": []
+            }
+        }
     }
 ]
 
@@ -254,6 +326,104 @@ def format_tool_response_for_voice(tool_name: str, result: Any) -> str:
             else:
                 return f"I found the page {title} but couldn't extract any text."
         return "I couldn't read that webpage"
+    
+    elif tool_name == "read_file":
+        if isinstance(result, dict):
+            if "error" in result:
+                return f"I couldn't read the file: {result['error']}"
+            
+            name = result.get("name", "the file")
+            content = result.get("content", "")
+            
+            if content:
+                # For voice, give a brief summary
+                lines = content.split('\n')
+                preview = ' '.join(lines[:3])[:200]  # First 3 lines, max 200 chars
+                
+                if result.get("truncated"):
+                    return f"From {name}: {preview}... The file contains more content."
+                else:
+                    return f"From {name}: {preview}"
+            else:
+                return f"The file {name} appears to be empty."
+        return "I couldn't read that file"
+    
+    elif tool_name == "search_files":
+        if isinstance(result, list):
+            if len(result) == 0:
+                return "I didn't find any files matching that search."
+            
+            if result[0].get("error"):
+                return f"Search error: {result[0]['error']}"
+            
+            # Summarize results
+            count = len(result)
+            if count == 1:
+                return f"I found 1 file: {result[0]['name']}"
+            else:
+                files = ', '.join(r['name'] for r in result[:3])
+                if count > 3:
+                    return f"I found {count} files. The first few are: {files}, and more."
+                else:
+                    return f"I found {count} files: {files}"
+        return "I couldn't search for files"
+    
+    elif tool_name == "list_files":
+        if isinstance(result, dict):
+            if "error" in result:
+                return f"I couldn't list the directory: {result['error']}"
+            
+            files = result.get("files", [])
+            dirs = result.get("directories", [])
+            directory = result.get("directory", "the directory")
+            
+            # Extract just the folder name for voice
+            if "/" in directory:
+                folder_name = directory.split("/")[-1] or "your home"
+            else:
+                folder_name = directory
+            
+            response = f"In {folder_name}, "
+            
+            if dirs:
+                response += f"I see {len(dirs)} folders"
+                if len(dirs) <= 3:
+                    # Clean folder names for voice (remove special chars)
+                    clean_dirs = [d.replace("_", " ").replace("-", " ") for d in dirs]
+                    response += f": {', '.join(clean_dirs)}"
+                else:
+                    response += f" including {dirs[0]} and {dirs[1]}"
+            
+            if files:
+                if dirs:
+                    response += ", and "
+                else:
+                    response += "I see "
+                response += f"{len(files)} files"
+                if len(files) <= 3 and files:
+                    # Clean file names for voice (remove extensions and special chars)
+                    clean_files = []
+                    for f in files[:3]:
+                        name = f['name']
+                        # Remove file extension for cleaner speech
+                        if '.' in name:
+                            name = name.rsplit('.', 1)[0]
+                        # Replace special characters
+                        name = name.replace("_", " ").replace("-", " ")
+                        clean_files.append(name)
+                    response += f" including {', '.join(clean_files)}"
+                elif len(files) > 3:
+                    # Just mention first file type
+                    first_file = files[0]['name']
+                    if '.' in first_file:
+                        ext = first_file.rsplit('.', 1)[1]
+                        response += f", mostly {ext} files"
+            
+            if not dirs and not files:
+                response = f"{folder_name} appears to be empty"
+            
+            return response
+        return "I couldn't list that directory"
     
     # Default formatting
     return str(result)

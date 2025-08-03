@@ -337,6 +337,7 @@ class MCPConfig:
     filesystem_allowed_dirs: List[str] = field(default_factory=lambda: ["./data", "./documents"])
     browser_headless: bool = True
     memory_persist: bool = True
+    user_home_path: Optional[str] = field(default_factory=lambda: os.getenv("USER_HOME_PATH", "").strip() or None)
     
     # Voice-optimized settings
     announce_tool_use: bool = True  # Say "Let me check that" before using tools
