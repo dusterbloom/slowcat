@@ -59,7 +59,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                 audio_array = audio_array[indices[0]:indices[-1]]
             
             # Log audio duration
-            duration = len(audio_array) / 16000  # Assuming 16kHz
+            duration = len(audio_array) / self.sample_rate
             logger.debug(f"Processing utterance of {duration:.2f} seconds")
             
             fingerprint = self.encoder.embed_utterance(audio_array)
@@ -207,7 +207,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
         auto_dir = os.path.join(self.profile_dir, 'auto_enrolled')
         os.makedirs(auto_dir, exist_ok=True)
         
-        filepath = os.path.join(auto_dir, f"{name}.json")
+        filepath = os.path.join(auto_dir, f"{name}{self.config.get('enrolled_profile_extension', '.json')}")
         data = {
             'name': name,
             'fingerprints': [fp.tolist() for fp in fingerprints],
@@ -225,7 +225,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             return
             
         for filename in os.listdir(auto_dir):
-            if filename.endswith('.json'):
+            if filename.endswith(self.config.get('enrolled_profile_extension', '.json')):
                 filepath = os.path.join(auto_dir, filename)
                 try:
                     with open(filepath, 'r') as f:
@@ -249,7 +249,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     def _load_speaker_names(self):
         """Load speaker name mappings"""
         try:
-            names_file = os.path.join(self.profile_dir, "speaker_names.json")
+            names_file = os.path.join(self.profile_dir, self.config.get('speaker_names_file', 'speaker_names.json'))
             if os.path.exists(names_file):
                 with open(names_file, 'r') as f:
                     data = json.load(f)
@@ -270,7 +270,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     def _save_speaker_names(self):
         """Save speaker name mappings to file"""
         try:
-            names_file = os.path.join(self.profile_dir, "speaker_names.json")
+            names_file = os.path.join(self.profile_dir, self.config.get('speaker_names_file', 'speaker_names.json'))
             data = {
                 'mappings': self.speaker_names,
                 'updated_at': datetime.now().isoformat()

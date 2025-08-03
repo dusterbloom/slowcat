@@ -28,6 +28,9 @@ class LightweightVoiceRecognition:
     """
     
     def __init__(self, config: Dict[str, Any]):
+        # Store config for subclasses
+        self.config = config
+        
         # Configuration
         self.enabled = config.get('enabled', True) and RESEMBLYZER_AVAILABLE
         self.sample_rate = 16000  # Fixed for consistency with Resemblyzer
@@ -48,6 +51,7 @@ class LightweightVoiceRecognition:
         
         # Profile storage
         self.profile_dir = config.get('profile_dir', 'data/speaker_profiles')
+        self.profile_extension = config.get('profile_file_extension', '.pkl')
         
         # Initialize encoder if available
         if self.enabled:
@@ -127,7 +131,7 @@ class LightweightVoiceRecognition:
 
     def _save_profile(self, name: str, fingerprints: List[np.ndarray]):
         """Save speaker profile to disk"""
-        filepath = os.path.join(self.profile_dir, f"{name}.pkl")
+        filepath = os.path.join(self.profile_dir, f"{name}{self.profile_extension}")
         with open(filepath, 'wb') as f:
             pickle.dump(fingerprints, f)
     
@@ -137,8 +141,8 @@ class LightweightVoiceRecognition:
             return
             
         for filename in os.listdir(self.profile_dir):
-            if filename.endswith('.pkl'):
-                name = filename[:-4]
+            if filename.endswith(self.profile_extension):
+                name = filename[:-len(self.profile_extension)]
                 filepath = os.path.join(self.profile_dir, filename)
                 try:
                     with open(filepath, 'rb') as f:

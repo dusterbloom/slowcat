@@ -1,8 +1,13 @@
 import json
 import os
+import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
+
+# Add parent directory to path for config import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import config
 
 from pipecat.frames.frames import (
     Frame,
@@ -36,7 +41,7 @@ class LocalMemoryProcessor(FrameProcessor):
         self.max_history_items = max_history_items
         self.include_in_context = include_in_context
         self.current_session: List[Dict] = []
-        self.memory_file = self.data_dir / f"{self.user_id}_memory.json"
+        self.memory_file = self.data_dir / f"{self.user_id}_memory{config.memory.file_extension if hasattr(config.memory, 'file_extension') else '.json'}"
         self._load_memory()
         
     def _load_memory(self):
@@ -144,6 +149,6 @@ class LocalMemoryProcessor(FrameProcessor):
             
             # Switch to new user
             self.user_id = user_id
-            self.memory_file = self.data_dir / f"{user_id}_memory.json"
+            self.memory_file = self.data_dir / f"{user_id}_memory{config.memory.file_extension if hasattr(config.memory, 'file_extension') else '.json'}"
             self.current_session = []
             self._load_memory()
