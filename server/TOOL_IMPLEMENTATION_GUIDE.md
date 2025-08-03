@@ -1,16 +1,21 @@
-# Tool Implementation Best Practices Guide for Slowcat
+# Tool Implementation Guide
 
-## Overview
-
-This guide provides best practices for implementing tools in Slowcat that work seamlessly with LM Studio's OpenAI-compatible API and Pipecat's function calling framework.
+This guide explains how tools (function calling) are implemented in Slowcat using Pipecat and LM Studio.
 
 ## Architecture Overview
 
-Slowcat uses a three-layer tool architecture:
+The tool system is built on Pipecat's function calling framework and leverages LM Studio's OpenAI-compatible API:
 
-1. **Tool Definitions** (`tools_config.py`): OpenAI-format tool schemas
-2. **Tool Handlers** (`tool_handlers.py`): Actual implementation logic
-3. **Voice Formatting** (`tools_config.py`): Natural language formatting for TTS
+```
+tools/
+├── definitions.py    # FunctionSchema definitions (single source of truth)
+├── handlers.py       # Tool execution logic
+├── formatters.py     # Voice formatting utilities
+└── __init__.py       # Module exports
+
+services/
+└── llm_with_tools.py # Unified LLM service with tool support
+```
 
 ## Best Practices
 

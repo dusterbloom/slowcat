@@ -33,7 +33,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from openai import NOT_GIVEN
 from pipecat.services.openai.llm import OpenAILLMService
-from services.tool_enabled_llm import ToolEnabledLLMService
+from services.llm_with_tools import LLMWithToolsService
 from kokoro_tts import KokoroTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX, MLXModel
 from pipecat.transcriptions.language import Language
@@ -107,6 +107,7 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
     
     # Get language-specific configuration
     lang_config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG[config.default_language])
+    logger.info(f"🌍 Using language: {language}")
     
     # Add language consistency instruction based on selected language
     language_consistency_note = {
@@ -176,7 +177,7 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
     
     # Use tool-enabled LLM if MCP is enabled
     if config.mcp.enabled:
-        llm = ToolEnabledLLMService(
+        llm = LLMWithToolsService(
             api_key=None,
             model=selected_model,
             base_url=config.network.llm_base_url,
@@ -184,6 +185,13 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         )
         logger.info(f"🔧 Tool-enabled LLM service initialized")
         logger.info(f"📏 Context length: {config.models.llm_context_length} (set LLM_CONTEXT_LENGTH in .env)")
+        
+        # Get tools in proper ToolsSchema format
+        from tools import get_tools, get_tool_names
+        tools = get_tools()
+        tool_names = get_tool_names()
+        logger.info(f"🛠️ Loaded {len(tool_names)} tools for function calling")
+        logger.info(f"📋 Available tools: {', '.join(tool_names)}")
     else:
         llm = OpenAILLMService(
             api_key=None,
@@ -192,44 +200,35 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
             max_tokens=config.models.llm_max_tokens,
         )
         logger.info(f"🤖 LLM service initialized")
-
-    # Import tools if MCP is enabled
-    tools = NOT_GIVEN
-    tool_choice = NOT_GIVEN
-    if config.mcp.enabled:
-        from tools_config import AVAILABLE_TOOLS, TOOL_CHOICE_AUTO
-        tools = AVAILABLE_TOOLS
-        tool_choice = TOOL_CHOICE_AUTO
-        logger.info(f"🛠️ Loaded {len(tools)} tools for function calling")
-        # Debug: log tool names
-        tool_names = [t["function"]["name"] for t in tools]
-        logger.info(f"📋 Available tools: {', '.join(tool_names)}")
+        tools = NOT_GIVEN
     
     context = OpenAILLMContext(
         [
             {
-                "role": "user",
+                "role": "system",
                 "content": lang_config["system_instruction"],
             }
         ],
-        tools=tools,
-        tool_choice=tool_choice,
+        tools=tools
     )
     
     # Debug: verify context has tools
     logger.info(f"🔍 Context tools type: {type(context.tools)}")
-    logger.info(f"🔍 Context tool_choice: {context.tool_choice}")
     
-    # Extra debug - check if tools are actually set
+    # Check if tools are properly set
     if context.tools is NOT_GIVEN:
-        logger.error("❌ Context tools is NOT_GIVEN!")
-    elif context.tools is None:
-        logger.error("❌ Context tools is None!")
-    elif isinstance(context.tools, list) and len(context.tools) > 0:
-        logger.info(f"✅ Context has {len(context.tools)} tools")
-        logger.info(f"First tool: {context.tools[0]['function']['name']}")
+        logger.info("📋 No tools configured (MCP disabled)")
+    elif hasattr(context.tools, 'standard_tools'):
+        logger.info(f"✅ Context has {len(context.tools.standard_tools)} tools in ToolsSchema format")
+        if context.tools.standard_tools:
+            logger.info(f"First tool: {context.tools.standard_tools[0].name}")
+    elif isinstance(context.tools, list):
+        # Tools may be converted to list format by Pipecat adapter
+        logger.info(f"✅ Context has {len(context.tools)} tools in list format")
+        if context.tools and isinstance(context.tools[0], dict):
+            logger.info(f"First tool: {context.tools[0].get('function', {}).get('name', 'unknown')}")
     else:
-        logger.error(f"❌ Context tools in unexpected format: {context.tools}")
+        logger.warning(f"⚠️ Context tools in unexpected format: {type(context.tools)}")
     context_aggregator = llm.create_context_aggregator(context)
     
     #

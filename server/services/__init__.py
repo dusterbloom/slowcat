@@ -1,4 +1,4 @@
 """Services module"""
-from .tool_enabled_llm import ToolEnabledLLMService
+from .llm_with_tools import LLMWithToolsService
 
-__all__ = ["ToolEnabledLLMService"]
+__all__ = ["LLMWithToolsService"]
