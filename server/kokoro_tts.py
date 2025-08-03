@@ -4,6 +4,7 @@
 
 import asyncio
 import concurrent.futures
+import threading
 from typing import AsyncGenerator, Optional
 
 import numpy as np
@@ -108,6 +109,7 @@ class KokoroTTSService(TTSService):
         self._voice = voice
         self._device = device
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._generation_lock = threading.Lock()
         
         # Auto-detect language from voice if not provided
         if language is None:
@@ -157,14 +159,16 @@ class KokoroTTSService(TTSService):
 
             logger.debug(f"Generating audio for: {text}")
 
-            audio_segments = []
-            for result in self._model.generate(
-                text=text,
-                voice=self._voice,
-                speed=1.0,
-                lang_code=self._kokoro_language,
-            ):
-                audio_segments.append(result.audio)
+            # Use lock to prevent concurrent Metal GPU access
+            with self._generation_lock:
+                audio_segments = []
+                for result in self._model.generate(
+                    text=text,
+                    voice=self._voice,
+                    speed=1.0,
+                    lang_code=self._kokoro_language,
+                ):
+                    audio_segments.append(result.audio)
 
             if len(audio_segments) == 0:
                 raise ValueError("No audio generated")
