@@ -141,7 +141,11 @@ class KokoroTTSService(TTSService):
         """Initialize the Kokoro model. This runs in a separate thread."""
         try:
             logger.debug(f"Loading Kokoro model: {self._model_name}")
-            self._model = load_model(self._model_name)
+            # Force synchronization to avoid MLX Metal issues
+            with self._generation_lock:
+                self._model = load_model(self._model_name)
+                # Ensure Metal commands are flushed
+                mx.eval(mx.array([0]))
             logger.debug("Kokoro model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Kokoro model: {e}")
@@ -161,6 +165,9 @@ class KokoroTTSService(TTSService):
 
             # Use lock to prevent concurrent Metal GPU access
             with self._generation_lock:
+                # Ensure previous Metal operations are complete
+                mx.synchronize()
+                
                 audio_segments = []
                 for result in self._model.generate(
                     text=text,
@@ -177,6 +184,13 @@ class KokoroTTSService(TTSService):
             else:
                 audio_array = mx.concatenate(audio_segments, axis=0)
 
+            # Ensure all Metal operations are complete before conversion
+            mx.eval(audio_array)
+            
+            # Additional synchronization to prevent Metal encoder conflicts
+            # Force Metal command buffer completion
+            mx.synchronize()
+            
             # Convert MLX array to NumPy array
             audio_np = np.array(audio_array, copy=False)
 

@@ -8,7 +8,7 @@ import {
 
 export default function Home() {
   // Use the same ENABLE_VIDEO env variable as server
-  const videoEnabled = process.env.NEXT_PUBLIC_ENABLE_VIDEO === "true";
+  const videoEnabled = process.env.NEXT_PUBLIC_ENABLE_VIDEO === "false" ? false : true;
   
   return (
     <ThemeProvider>

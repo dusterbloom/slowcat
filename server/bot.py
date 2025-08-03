@@ -14,6 +14,10 @@ from dotenv import load_dotenv
 # Load environment variables BEFORE importing config
 load_dotenv(override=True)
 
+# Enable offline mode for HuggingFace transformers
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 # Import centralized config AFTER loading .env
 from config import config, get_voice_recognition_config
 from fastapi import BackgroundTasks, FastAPI
@@ -158,7 +162,8 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         model=config.models.tts_model, 
         voice=lang_config["voice"], 
         language=lang_config["whisper_language"],
-        sample_rate=config.audio.tts_sample_rate
+        sample_rate=config.audio.tts_sample_rate,
+        max_workers=config.audio.tts_max_workers  # Ensure single thread for Metal safety
     )
 
     # Use provided LLM model or default
@@ -214,6 +219,17 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
     # Debug: verify context has tools
     logger.info(f"🔍 Context tools type: {type(context.tools)}")
     logger.info(f"🔍 Context tool_choice: {context.tool_choice}")
+    
+    # Extra debug - check if tools are actually set
+    if context.tools is NOT_GIVEN:
+        logger.error("❌ Context tools is NOT_GIVEN!")
+    elif context.tools is None:
+        logger.error("❌ Context tools is None!")
+    elif isinstance(context.tools, list) and len(context.tools) > 0:
+        logger.info(f"✅ Context has {len(context.tools)} tools")
+        logger.info(f"First tool: {context.tools[0]['function']['name']}")
+    else:
+        logger.error(f"❌ Context tools in unexpected format: {context.tools}")
     context_aggregator = llm.create_context_aggregator(context)
     
     #
