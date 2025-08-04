@@ -1,5 +1,5 @@
-#  Slowcat 🐈‍⬛
-![Alt text](assets/slowcat3.svg "slowcat logo")
+#  🐈‍⬛
+![Alt text](https://raw.githubusercontent.com/dusterbloom/slowcat/refs/heads/main/assets/slowcat2.svg "Slowcat logo ")
 
 *A purr-fectly tuned local voice agent for macOS*
 
