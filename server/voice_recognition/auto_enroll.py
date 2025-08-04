@@ -27,11 +27,9 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
         super().__init__(config)
         self.config = config
 
-
         self.min_utterances = config.min_utterances_for_enrollment
         self.consistency_threshold = config.consistency_threshold
     
-
         self.min_consistency_threshold = self.config.min_consistency_threshold
         self.enrollment_window = self.config.enrollment_window_minutes
         
@@ -54,7 +52,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     async def _process_speaker_identification(self, audio_array: np.ndarray):
         """Enhanced identification with auto-enrollment, processing a complete utterance."""
         try:
-            # Preprocess audio for consistency
+            # Simple preprocessing - just convert to float32
             audio_array = audio_array.astype(np.float32)
             
             # Remove silence at beginning and end
@@ -81,7 +79,9 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                     if fingerprint.shape != stored_fp.shape:
                         logger.warning(f"Skipping incompatible fingerprint for {speaker_name}.")
                         continue
+                    
                     similarity = self._calculate_similarity(fingerprint, stored_fp)
+                    
                     if similarity > best_similarity:
                         best_similarity = similarity
                         best_match = speaker_name
@@ -107,16 +107,18 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                     
                     await self._emit_speaker_change(speaker_display_name, best_similarity)
 
-                # Adapt the profile with new utterance
-                try:
-                    stored_centroid = self.speakers[best_match][0]
-                    alpha = 0.05
-                    updated_centroid = (1 - alpha) * stored_centroid + alpha * fingerprint
-                    updated_centroid /= np.linalg.norm(updated_centroid)
-                    self.speakers[best_match][0] = updated_centroid
-                    logger.debug(f"Adapted profile for {best_match} with new utterance.")
-                except (IndexError, KeyError) as e:
-                    logger.warning(f"Could not adapt profile for {best_match}: {e}")
+                # Dynamic profile adaptation based on confidence
+                if best_similarity >= self.config.min_adaptation_confidence:
+                    try:
+                        stored_centroid = self.speakers[best_match][0]
+                        # Simple fixed adaptation rate
+                        alpha = self.config.profile_adaptation_rate
+                        updated_centroid = (1 - alpha) * stored_centroid + alpha * fingerprint
+                        updated_centroid /= np.linalg.norm(updated_centroid)
+                        self.speakers[best_match][0] = updated_centroid
+                        logger.debug(f"Adapted profile for {best_match} with rate {alpha:.3f} (confidence: {best_similarity:.2f})")
+                    except (IndexError, KeyError) as e:
+                        logger.warning(f"Could not adapt profile for {best_match}: {e}")
             else:
                 await self._process_unknown_speaker(fingerprint)
                 
@@ -166,7 +168,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             self.unknown_session_start_time = current_time
 
     async def _auto_enroll_speaker(self, fingerprints: List[np.ndarray]):
-        """Automatically enroll a speaker after gathering enough consistent samples."""
+        """Automatically enroll a speaker with enhanced quality checks."""
         similarities = []
         for i in range(len(fingerprints)):
             for j in range(i + 1, len(fingerprints)):
@@ -175,6 +177,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
         
         avg_consistency = np.mean(similarities) if similarities else 0
         
+        # Enhanced consistency check with the updated threshold
         if avg_consistency >= self.consistency_threshold:
             self.speaker_counter += 1
             speaker_name = f"Speaker_{self.speaker_counter}"

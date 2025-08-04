@@ -76,19 +76,20 @@ class VoiceRecognitionConfig:
     profile_dir: str = "data/speaker_profiles"
     
     # Recognition thresholds
-    confidence_threshold: float = 0.45
+    confidence_threshold: float = 0.50  # Balanced threshold
     min_utterance_duration_seconds: float = 1.5
     
     # Auto-enrollment settings
     min_utterances_for_enrollment: int = 3
-    consistency_threshold: float = 0.50
-    min_consistency_threshold: float = 0.35
+    consistency_threshold: float = 0.55  # Reasonable consistency requirement
+    min_consistency_threshold: float = 0.40  # Allow some variation
     enrollment_window_minutes: int = 30
     new_speaker_grace_period_seconds: int = 60
-    new_speaker_similarity_threshold: float = 0.40
+    new_speaker_similarity_threshold: float = 0.45  # Grace period threshold
     
     # Profile adaptation
     profile_adaptation_rate: float = 0.05
+    min_adaptation_confidence: float = 0.70  # Only adapt when confident
     
     # Audio processing
     energy_threshold_ratio: float = 0.01  # 1% of max energy for silence removal
