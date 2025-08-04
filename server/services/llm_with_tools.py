@@ -166,15 +166,57 @@ class LLMWithToolsService(OpenAILLMService):
     async def _stream_chat_completions(self, context):
         """Override to add debugging and push immediate feedback on tool calls."""
         logger.debug("🌊 Starting streaming chat completion")
+        logger.info(f"📝 Context has {len(context.messages)} messages")
+        
+        # Check tools - context.tools might be a list or ToolsSchema
+        if context.tools != NOT_GIVEN:
+            if hasattr(context.tools, 'standard_tools'):
+                logger.info(f"🛠️ Tools in context: {len(context.tools.standard_tools)} tools")
+            elif isinstance(context.tools, list):
+                logger.info(f"🛠️ Tools in context: {len(context.tools)} tools")
+            else:
+                logger.info(f"🛠️ Tools in context: {type(context.tools)}")
+        else:
+            logger.info("🛠️ Tools in context: None")
+        
+        # Debug: Log message roles to check for alternation issues
+        roles = [msg.get("role", "unknown") for msg in context.messages]
+        logger.debug(f"Message roles sequence: {roles}")
+        
+        # Check for consecutive same-role messages
+        for i in range(1, len(roles)):
+            if roles[i] == roles[i-1] and roles[i] in ["user", "assistant"]:
+                logger.warning(f"⚠️ Consecutive {roles[i]} messages at positions {i-1} and {i}")
+        
+        # Log the last user message
+        for msg in reversed(context.messages):
+            if msg.get("role") == "user":
+                logger.info(f"👤 Last user message: {msg.get('content', '')[:100]}...")
+                break
 
         stream = await super()._stream_chat_completions(context)
 
         async def feedback_stream():
             tool_call_detected = False
+            content_buffer = ""
+            
             async for chunk in stream:
-                if not tool_call_detected and hasattr(chunk, 'choices') and chunk.choices:
+                if hasattr(chunk, 'choices') and chunk.choices:
                     delta = chunk.choices[0].delta
-                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                    
+                    # Accumulate content to check for wrong tool syntax
+                    if hasattr(delta, 'content') and delta.content:
+                        content_buffer += delta.content
+                        
+                        # Check for wrong tool syntax like [tool_name ...]
+                        if '[' in content_buffer and ']' in content_buffer:
+                            import re
+                            wrong_syntax = re.findall(r'\[(search_conversations|get_weather|search_web|browse_url|remember_information|recall_information|calculate|read_file|write_file|list_files|search_files|get_current_time|get_conversation_summary)[^\]]*\]', content_buffer)
+                            if wrong_syntax:
+                                logger.error(f"❌ Model tried to use wrong tool syntax: {wrong_syntax}")
+                                logger.error("Model should use proper function calling, not bracket syntax!")
+                    
+                    if not tool_call_detected and hasattr(delta, 'tool_calls') and delta.tool_calls:
                         tool_call_detected = True
                         # We only need to do this once per set of tool calls
                         try:

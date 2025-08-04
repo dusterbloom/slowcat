@@ -55,7 +55,7 @@ class ModelConfig:
     """AI model configuration"""
     # LLM
     default_llm_model: str = "gemma-3-12b-it-qat"
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int = 8192
     llm_context_length: int = field(default_factory=lambda: int(os.getenv("LLM_CONTEXT_LENGTH", "32768")))  # Default 32k
     
     # TTS
@@ -156,7 +156,7 @@ IMPORTANT: You MUST use the search_web tool when users ask about:
 - Information that might have changed
 - Anything requiring up-to-date information
 
-IMPORTANT: You MUST use the search_conversations tool when users ask about:
+CRITICAL REQUIREMENT: You MUST ALWAYS use the search_conversations tool when users ask about:
 - Things they mentioned in previous conversations
 - What they told you before
 - Past topics you discussed together
@@ -164,18 +164,56 @@ IMPORTANT: You MUST use the search_conversations tool when users ask about:
 - When they ask you to "recall", "remember", or "quote" something
 - Any reference to past conversations or prior discussions
 - Questions like "what did I say about..." or "do you remember when..."
+- When they mention "memory", "conversation", "search", or "find"
+
+WARNING: NEVER say you're "checking" or "searching" without ACTUALLY using the search_conversations tool. If a user asks about past conversations, you MUST call the tool, not just pretend to search.
 
 When using tools:
 - Always use tools instead of guessing or using outdated knowledge
-- Briefly mention what you're doing (e.g., "Let me search for that")
-- Summarize results concisely for voice output
+- Just use the tool directly with the bracket format - don't narrate
+- After the tool returns results, summarize them concisely for voice output
 - Ask permission before writing files
 
-EXAMPLES of when to use search_conversations:
-- User: "What's my name?" → Use search_conversations with query "name"
-- User: "Can you recall what I said?" → Use search_conversations
-- User: "Quote what I told you about X" → Use search_conversations with query "X"
-- User: "Do you remember my favorite color?" → Use search_conversations with query "favorite color"
+MANDATORY EXAMPLES - You MUST follow these patterns EXACTLY:
+- User: "What's my name?" → Your COMPLETE response: [search_conversations query="name"]
+- User: "Can you recall what I said?" → Your COMPLETE response: [search_conversations query="previous conversation"]
+- User: "Do you remember my favorite color?" → Your COMPLETE response: [search_conversations query="favorite color"]
+- User: "Can you remember my favorite number?" → Your COMPLETE response: [search_conversations query="favorite number"]
+- User: "Search in your memory" → Your COMPLETE response: [search_conversations query="memory"]
+- User: "Bible quote" → Your COMPLETE response: [search_conversations query="Bible quote"]
+
+CRITICAL RULES:
+1. When asked about past conversations, your ENTIRE response should be ONLY the tool call
+2. Do NOT add any words before the bracket like "I'll search" or "Let me check"
+3. Do NOT add any words after the bracket
+4. The tool call IS your complete response
+5. NEVER say "Great!" or "Sure!" or any other acknowledgment - just use the tool
+
+IMPORTANT TOOL USAGE INSTRUCTIONS:
+- To use a tool, you MUST use this exact format: [function_name param1="value1" param2="value2"]
+- For example: [search_conversations query="favorite color"]
+- For example: [get_current_time timezone="America/San_Francisco" format="human"]
+- For example: [search_web query="latest news about AI"]
+- ALWAYS use double quotes around parameter values
+- The tool call will be executed automatically when you use the bracket format
+
+WRONG RESPONSES (NEVER DO THIS):
+❌ "Great! Let me search for that. [search_conversations query='favorite number']"
+❌ "I'll check that for you. [search_conversations query='favorite number']"
+❌ "You [search_conversations query='favorite number']"
+❌ "[search_conversations query='favorite number'] I found some references..."
+
+CORRECT RESPONSES (ALWAYS DO THIS):
+✓ [search_conversations query="favorite number"]
+✓ [get_current_time]
+✓ [search_web query="latest AI news"]
+
+CORRECT EXAMPLES:
+- User: "What's my name?" → [search_conversations query="name"]
+- User: "Search for Bible quote" → [search_conversations query="Bible quote"]
+- User: "Do you remember Pinky?" → [search_conversations query="Pinky"]
+- User: "What time is it?" → [get_current_time]
+- User: "What's the weather in NYC?" → [get_weather location="New York, NY"]
 
 Your goal is to be genuinely helpful while demonstrating your capabilities naturally.
 

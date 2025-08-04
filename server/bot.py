@@ -24,6 +24,7 @@ load_dotenv(override=True)
 
 # Enable offline mode for HuggingFace transformers
 os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 # Import centralized config AFTER loading .env
@@ -48,7 +49,7 @@ from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCC
 # Import processors (lightweight)
 from processors import (AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor, 
                         VideoSamplerProcessor, SpeakerNameManager, LocalMemoryProcessor, 
-                        MemoryContextInjector, GreetingFilterProcessor)
+                        MemoryContextInjector, GreetingFilterProcessor, MessageDeduplicator)
 from tools import get_tools, set_memory_processor
 
 # Lazy-loaded heavy ML modules (will be populated by _lazy_load_ml_modules)
@@ -358,6 +359,9 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
     # We need to get the greeting text from the original, unmodified system prompt.
     greeting_text = "Hello, I'm Slowcat!" # This should be kept in sync with the prompt.
     greeting_filter = GreetingFilterProcessor(greeting_text=greeting_text)
+    
+    # Message deduplicator to prevent consecutive messages from same role
+    message_deduplicator = MessageDeduplicator()
 
     pipeline_components = [
         transport.input(),
@@ -371,6 +375,7 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         speaker_name_manager,
         context_aggregator.user(),
         memory_injector,
+        message_deduplicator,  # Add deduplicator before LLM
         llm,
         tts,
         transport.output(),

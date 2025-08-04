@@ -16,4 +16,4 @@ export no_proxy=*
 # Run the bot with all arguments passed through
 echo "Starting bot with environment fixes..."
 echo "Arguments: $@"
-python bot.py "$@"
+python bot_v2.py "$@"

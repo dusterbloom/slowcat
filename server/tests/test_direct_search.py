@@ -5,7 +5,8 @@ import asyncio
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "pipecat", "src"))
+# Add parent directory to path to import processors
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from processors.local_memory import LocalMemoryProcessor
 from loguru import logger

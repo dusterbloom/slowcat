@@ -3,6 +3,7 @@ WhisperSTT service wrapper that uses MLX_GLOBAL_LOCK for thread safety
 """
 
 import asyncio
+import os
 from typing import AsyncGenerator
 import numpy as np
 from loguru import logger
@@ -55,6 +56,10 @@ class WhisperSTTServiceMLX(BaseWhisperSTTServiceMLX):
             def _transcribe_with_lock():
                 with MLX_GLOBAL_LOCK:
                     logger.debug("WhisperSTT: Acquired MLX lock for transcription")
+                    # Set cache directory explicitly
+                    cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+                    os.environ["HF_HOME"] = cache_dir
+                    
                     result = mlx_whisper.transcribe(
                         audio_float,
                         path_or_hf_repo=self.model_name,
