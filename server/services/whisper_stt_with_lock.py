@@ -36,6 +36,7 @@ class WhisperSTTServiceMLX(BaseWhisperSTTServiceMLX):
         Yields:
             TranscriptionFrame: Transcribed text frames
         """
+        await self.start_processing_metrics()
         await self.start_ttfb_metrics()
         
         # Convert audio bytes to numpy array
@@ -78,6 +79,8 @@ class WhisperSTTServiceMLX(BaseWhisperSTTServiceMLX):
             if text:
                 logger.debug(f"Transcription: {text}")
                 await self.stop_ttfb_metrics()
+                await self.stop_processing_metrics()
+                logger.debug(f"WhisperSTT metrics stopped, yielding transcription frame")
                 yield TranscriptionFrame(
                     text,
                     self._user_id,
@@ -86,8 +89,10 @@ class WhisperSTTServiceMLX(BaseWhisperSTTServiceMLX):
                 )
             else:
                 await self.stop_ttfb_metrics()
+                await self.stop_processing_metrics()
                 
         except Exception as e:
             logger.error(f"Error in WhisperSTT transcription: {e}")
             await self.stop_ttfb_metrics()
+            await self.stop_processing_metrics()
             raise

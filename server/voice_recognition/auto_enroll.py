@@ -213,7 +213,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
         auto_dir = os.path.join(self.profile_dir, 'auto_enrolled')
         os.makedirs(auto_dir, exist_ok=True)
         
-        filepath = os.path.join(auto_dir, f"{name}{self.config.get('enrolled_profile_extension', '.json')}")
+        filepath = os.path.join(auto_dir, f"{name}{self.config.enrolled_profile_extension}")
         data = {
             'name': name,
             'fingerprints': [fp.tolist() for fp in fingerprints],
