@@ -650,6 +650,21 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await tool_handlers.search_conversations(**arguments)
     elif function_name == "get_conversation_summary":
         return await tool_handlers.get_conversation_summary(**arguments)
+    elif function_name == "start_timed_task":
+        from .time_tools import start_timed_task
+        return await start_timed_task(**arguments)
+    elif function_name == "check_task_status":
+        from .time_tools import check_task_status
+        return await check_task_status(**arguments)
+    elif function_name == "stop_timed_task":
+        from .time_tools import stop_timed_task
+        return await stop_timed_task(**arguments)
+    elif function_name == "add_to_timed_task":
+        from .time_tools import add_to_timed_task
+        return await add_to_timed_task(**arguments)
+    elif function_name == "get_active_tasks":
+        from .time_tools import get_active_tasks
+        return await get_active_tasks(**arguments)
     else:
         logger.error(f"Unknown tool function: {function_name}")
         return {"error": f"Unknown function: {function_name}"}

@@ -115,6 +115,29 @@ class MemoryConfig:
 
 
 @dataclass
+class ConversationTimerConfig:
+    """Configuration for conversation timer and transcript saving"""
+    enabled: bool = True
+    save_interval: int = 300  # 5 minutes in seconds
+    output_dir: str = "./data/transcripts"
+    include_timestamps: bool = True
+    save_on_end: bool = True  # Save when conversation ends
+    max_transcript_size: int = 50000  # Max characters per transcript file
+
+
+@dataclass
+class DictationModeConfig:
+    """Configuration for dictation/braindump mode"""
+    enabled: bool = True
+    output_dir: str = "./data/dictation"
+    file_prefix: str = "dictation"
+    append_mode: bool = True  # Append to existing file vs create new
+    realtime_save: bool = True  # Save as you speak vs at the end
+    save_interim: bool = False  # Save interim transcriptions
+    mode_toggle_keyword: str = "dictation mode"  # Say this to toggle on/off
+
+
+@dataclass
 class LanguageVoiceMapping:
     """Language to voice mapping"""
     voice: str
@@ -466,6 +489,8 @@ class Config:
     voice_recognition: VoiceRecognitionConfig = field(default_factory=VoiceRecognitionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
+    conversation_timer: ConversationTimerConfig = field(default_factory=ConversationTimerConfig)
+    dictation_mode: DictationModeConfig = field(default_factory=DictationModeConfig)
     
     # Language settings
     default_language: str = "en"

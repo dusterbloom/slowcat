@@ -243,6 +243,74 @@ WRITE_FILE = FunctionSchema(
     required=["file_path", "content"]
 )
 
+# Time-aware task tools
+START_TIMED_TASK = FunctionSchema(
+    name="start_timed_task",
+    description="Start a timed task that runs for a specific duration. Use this when the user wants something done for a certain amount of time.",
+    properties={
+        "description": {
+            "type": "string",
+            "description": "What the task is doing, e.g., 'Search for hotels in Paris', 'Research AI news'"
+        },
+        "duration_minutes": {
+            "type": "number",
+            "description": "How long to run the task in minutes (can be decimal, e.g., 0.5 for 30 seconds)"
+        },
+        "output_file": {
+            "type": "string",
+            "description": "Optional file path to save results, e.g., 'searches/hotels.md', 'research/ai_news.json'"
+        }
+    },
+    required=["description", "duration_minutes"]
+)
+
+CHECK_TASK_STATUS = FunctionSchema(
+    name="check_task_status",
+    description="Check the status of a running timed task",
+    properties={
+        "task_id": {
+            "type": "string",
+            "description": "The task ID to check status for"
+        }
+    },
+    required=["task_id"]
+)
+
+STOP_TIMED_TASK = FunctionSchema(
+    name="stop_timed_task",
+    description="Stop a timed task before it completes",
+    properties={
+        "task_id": {
+            "type": "string",
+            "description": "The task ID to stop"
+        }
+    },
+    required=["task_id"]
+)
+
+ADD_TO_TIMED_TASK = FunctionSchema(
+    name="add_to_timed_task",
+    description="Add a result or finding to an active timed task",
+    properties={
+        "task_id": {
+            "type": "string",
+            "description": "The task ID to add results to"
+        },
+        "content": {
+            "type": "object",
+            "description": "The content to add (can include title, snippet, source, or any relevant data)"
+        }
+    },
+    required=["task_id", "content"]
+)
+
+GET_ACTIVE_TASKS = FunctionSchema(
+    name="get_active_tasks",
+    description="Get a list of all currently active timed tasks",
+    properties={},
+    required=[]
+)
+
 # List of all function schemas for easy access
 ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     GET_CURRENT_TIME,
@@ -257,7 +325,12 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     READ_FILE,
     SEARCH_FILES,
     LIST_FILES,
-    WRITE_FILE
+    WRITE_FILE,
+    START_TIMED_TASK,
+    CHECK_TASK_STATUS,
+    STOP_TIMED_TASK,
+    ADD_TO_TIMED_TASK,
+    GET_ACTIVE_TASKS
 ]
 
 def get_tools() -> ToolsSchema:

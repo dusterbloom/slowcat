@@ -162,6 +162,33 @@ class PipelineBuilder:
         processors['greeting_filter'] = GreetingFilterProcessor(greeting_text="Hello, I'm Slowcat!")
         processors['message_deduplicator'] = MessageDeduplicator()
         
+        # Time-aware executor processor
+        from processors.time_aware_executor import TimeAwareExecutor
+        processors['time_executor'] = TimeAwareExecutor(
+            base_output_dir='./data',
+            enable_auto_save=True
+        )
+        logger.info("⏰ Time-aware executor enabled")
+        
+        # Set executor for tools
+        from tools.time_tools import set_time_executor
+        set_time_executor(processors['time_executor'])
+        
+        # Dictation mode processor
+        if config.dictation_mode.enabled:
+            from processors.dictation_mode import DictationModeProcessor
+            processors['dictation_mode'] = DictationModeProcessor(
+                output_dir=config.dictation_mode.output_dir,
+                file_prefix=config.dictation_mode.file_prefix,
+                append_mode=config.dictation_mode.append_mode,
+                realtime_save=config.dictation_mode.realtime_save,
+                save_interim=config.dictation_mode.save_interim,
+                mode_toggle_keyword=config.dictation_mode.mode_toggle_keyword
+            )
+            logger.info("📝 Dictation mode enabled")
+        else:
+            processors['dictation_mode'] = None
+        
         logger.info("✅ Processors setup complete")
         return processors
     
@@ -288,6 +315,8 @@ class PipelineBuilder:
             processors['audio_tee'],
             processors['vad_bridge'],
             services['stt'],
+            processors['dictation_mode'],  # Must be after STT but before LLM
+            processors['time_executor'],  # Time-aware task execution
             processors['memory_processor'],
             processors['speaker_context'],
             rtvi,
