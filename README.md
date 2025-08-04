@@ -1,5 +1,5 @@
 #   🐈‍⬛
-<img src="https://raw.githubusercontent.com/dusterbloom/slowcat/refs/heads/main/assets/slowcat2.svg" alt="Slowcat logo " style="width:90%; height: 400;">
+<img src="https://raw.githubusercontent.com/dusterbloom/slowcat/refs/heads/main/assets/slowcat2.svg" alt="Slowcat logo " style="width:80%;" href="#">
 
 
 *A purr-fectly tuned local voice agent for macOS*
