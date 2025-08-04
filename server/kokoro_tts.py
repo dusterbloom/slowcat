@@ -1,7 +1,3 @@
-#
-# Kokoro TTS service for Pipecat using MLX Audio
-#
-
 import asyncio
 import concurrent.futures
 import threading
@@ -24,6 +20,8 @@ from pipecat.services.tts_service import TTSService
 from pipecat.utils.tracing.service_decorators import traced_tts
 from pipecat.transcriptions.language import Language
 
+# Import the global MLX lock
+from utils.mlx_lock import MLX_GLOBAL_LOCK # NEW IMPORT
 
 class KokoroTTSService(TTSService):
     """Kokoro TTS service implementation using MLX Audio.
@@ -100,6 +98,7 @@ class KokoroTTSService(TTSService):
             device: The device to run on (None for default MLX device).
             sample_rate: Output sample rate (default: 24000).
             max_workers: Number of threads for audio generation (default: 1).
+                         For Metal safety, this is effectively forced to 1.
             language: The language for synthesis (optional, auto-detected from voice).
             **kwargs: Additional arguments passed to the parent TTSService.
         """
@@ -108,8 +107,12 @@ class KokoroTTSService(TTSService):
         self._model_name = model
         self._voice = voice
         self._device = device
+        # Ensure max_workers is always 1 for Metal safety with this approach
+        if max_workers != 1:
+            logger.warning(f"KokoroTTSService: max_workers set to {max_workers}, but forcing to 1 for Metal safety.")
+            max_workers = 1
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-        self._generation_lock = threading.Lock()
+        # self._generation_lock = threading.Lock() # No longer strictly needed with global lock and max_workers=1
         
         # Auto-detect language from voice if not provided
         if language is None:
@@ -141,11 +144,10 @@ class KokoroTTSService(TTSService):
         """Initialize the Kokoro model. This runs in a separate thread."""
         try:
             logger.debug(f"Loading Kokoro model: {self._model_name}")
-            # Force synchronization to avoid MLX Metal issues
-            with self._generation_lock:
+            # Acquire the global MLX lock for model loading
+            with MLX_GLOBAL_LOCK: # NEW: Use global lock
                 self._model = load_model(self._model_name)
-                # Ensure Metal commands are flushed
-                mx.eval(mx.array([0]))
+                mx.eval(mx.array([0])) # Ensure Metal commands are flushed
             logger.debug("Kokoro model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Kokoro model: {e}")
@@ -163,8 +165,8 @@ class KokoroTTSService(TTSService):
 
             logger.debug(f"Generating audio for: {text}")
 
-            # Use lock to prevent concurrent Metal GPU access
-            with self._generation_lock:
+            # Acquire the global MLX lock for audio generation
+            with MLX_GLOBAL_LOCK: # NEW: Use global lock
                 # Ensure previous Metal operations are complete
                 mx.synchronize()
                 
@@ -177,21 +179,21 @@ class KokoroTTSService(TTSService):
                 ):
                     audio_segments.append(result.audio)
 
-            if len(audio_segments) == 0:
-                raise ValueError("No audio generated")
-            elif len(audio_segments) == 1:
-                audio_array = audio_segments[0]
-            else:
-                audio_array = mx.concatenate(audio_segments, axis=0)
+                if len(audio_segments) == 0:
+                    raise ValueError("No audio generated")
+                elif len(audio_segments) == 1:
+                    audio_array = audio_segments[0]
+                else:
+                    audio_array = mx.concatenate(audio_segments, axis=0)
 
-            # Ensure all Metal operations are complete before conversion
-            mx.eval(audio_array)
+                # Ensure all Metal operations are complete before conversion
+                mx.eval(audio_array)
+                # Additional synchronization to prevent Metal encoder conflicts
+                # Force Metal command buffer completion
+                mx.synchronize()
             
-            # Additional synchronization to prevent Metal encoder conflicts
-            # Force Metal command buffer completion
-            mx.synchronize()
-            
-            # Convert MLX array to NumPy array
+            # Convert MLX array to NumPy array outside the lock if possible,
+            # but for safety, keep it within the lock if it involves MLX tensors.
             audio_np = np.array(audio_array, copy=False)
 
             # Convert to raw PCM bytes (16-bit signed integer)

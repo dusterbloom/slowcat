@@ -2,8 +2,14 @@ import argparse
 import asyncio
 import os
 import sys
+import multiprocessing
 from contextlib import asynccontextmanager
 from typing import Dict, List, Tuple, Any
+
+# Set multiprocessing start method to 'spawn' for macOS Metal GPU safety
+# This must be done before any other multiprocessing operations
+if __name__ == "__main__":
+    multiprocessing.set_start_method('spawn', force=True)
 
 # Add local pipecat to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "pipecat", "src"))
@@ -35,7 +41,8 @@ from openai import NOT_GIVEN
 from pipecat.services.openai.llm import OpenAILLMService
 from services.llm_with_tools import LLMWithToolsService
 from kokoro_tts import KokoroTTSService
-from pipecat.services.whisper.stt import WhisperSTTServiceMLX, MLXModel
+from services.whisper_stt_with_lock import WhisperSTTServiceMLX
+from pipecat.services.whisper.stt import MLXModel
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import TransportParams
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
@@ -304,6 +311,28 @@ if __name__ == "__main__":
 
     app.state.language = args.language
     app.state.llm_model = args.llm_model
+    
+    # Add signal handling for graceful shutdown
+    import signal
+    import threading
+    
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        # Cleanup any active connections
+        for pc_id, pc in pcs_map.items():
+            try:
+                logger.info(f"Closing connection {pc_id}")
+                # Note: We can't use asyncio.create_task here as we're not in an async context
+                # The connections will be cleaned up by uvicorn shutdown
+            except Exception as e:
+                logger.error(f"Error handling connection {pc_id}: {e}")
+        
+        # Give services time to cleanup
+        threading.Event().wait(0.5)
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     logger.info(f"Starting bot with language: {args.language}")
     uvicorn.run(app, host=args.host, port=args.port)

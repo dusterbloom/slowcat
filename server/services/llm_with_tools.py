@@ -5,6 +5,7 @@ Uses FunctionSchema and ToolsSchema for OpenAI-compatible tool calling with LM S
 
 from typing import Optional
 import json
+import asyncio
 from loguru import logger
 from openai import NOT_GIVEN
 from pipecat.services.openai.llm import OpenAILLMService
@@ -70,20 +71,34 @@ class LLMWithToolsService(OpenAILLMService):
             Async handler function
         """
         async def handler(params: FunctionCallParams):
-            """Handler that executes tool and returns result"""
+            """Handler that executes tool and returns result with enhanced error handling"""
             logger.info(f"🎯 Executing function: {function_name}")
             logger.debug(f"📥 Arguments: {params.arguments}")
             
             try:
-                # Execute the tool
-                result = await execute_tool_call(function_name, params.arguments)
+                # Validate arguments
+                if not isinstance(params.arguments, dict):
+                    logger.warning(f"Invalid arguments type for {function_name}: {type(params.arguments)}")
+                    params.arguments = {}
+                
+                # Execute the tool with timeout protection
+                try:
+                    result = await asyncio.wait_for(
+                        execute_tool_call(function_name, params.arguments),
+                        timeout=30.0  # 30 second timeout for tool execution
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"⏱️ Timeout executing {function_name}")
+                    error_msg = f"Tool execution timed out after 30 seconds"
+                    await params.result_callback(error_msg)
+                    return
                 
                 # Format result for voice if needed
                 formatted_result = format_tool_response_for_voice(function_name, result)
                 
                 # Ensure result is string for LM Studio
                 if isinstance(result, (dict, list)):
-                    result_str = json.dumps(result)
+                    result_str = json.dumps(result, ensure_ascii=False)
                 else:
                     result_str = str(result)
                 
@@ -104,8 +119,16 @@ class LLMWithToolsService(OpenAILLMService):
                 if hasattr(params, 'llm') and formatted_result != result_str:
                     logger.debug(f"🎤 Voice format available: {formatted_result[:100]}...")
                 
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ JSON error in function '{function_name}': {e}")
+                error_msg = f"Error: Invalid JSON response from {function_name}"
+                await params.result_callback(error_msg)
+            except KeyError as e:
+                logger.error(f"❌ Missing required parameter in '{function_name}': {e}")
+                error_msg = f"Error: Missing required parameter '{e}' for {function_name}"
+                await params.result_callback(error_msg)
             except Exception as e:
-                logger.error(f"❌ Error in function '{function_name}': {e}", exc_info=True)
+                logger.error(f"❌ Unexpected error in function '{function_name}': {e}", exc_info=True)
                 error_msg = f"Error executing {function_name}: {str(e)}"
                 await params.result_callback(error_msg)
         
