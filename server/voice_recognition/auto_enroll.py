@@ -93,7 +93,11 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
 
             logger.debug(f"Best match: {best_match} with similarity: {best_similarity:.3f} (threshold: {active_similarity_threshold:.3f})")
             
+            # Define a lower threshold for "fuzzy" recognition to prevent re-enrollment
+            fuzzy_recognition_threshold = 0.55
+            
             if best_match and best_similarity >= active_similarity_threshold:
+                # High confidence recognition
                 if best_match != self.current_speaker:
                     self.current_speaker = best_match
                     logger.info(f"🎯 Speaker recognized: {best_match} (confidence: {best_similarity:.2f})")
@@ -119,7 +123,32 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                         logger.debug(f"Adapted profile for {best_match} with rate {alpha:.3f} (confidence: {best_similarity:.2f})")
                     except (IndexError, KeyError) as e:
                         logger.warning(f"Could not adapt profile for {best_match}: {e}")
+            
+            elif best_match and best_similarity >= fuzzy_recognition_threshold:
+                # Lower confidence - still recognize but don't adapt profile
+                logger.info(f"🤔 Possible match for {best_match} (confidence: {best_similarity:.2f})")
+                # Log with loguru for visibility
+                from loguru import logger as loguru_logger
+                loguru_logger.info(f"🤔 Fuzzy recognition: {best_match} at {best_similarity:.2f} (below main threshold {active_similarity_threshold})")
+                
+                if best_match != self.current_speaker:
+                    self.current_speaker = best_match
+                    
+                    # Check if we have a saved name for this speaker
+                    speaker_display_name = best_match
+                    if hasattr(self, 'speaker_names') and best_match in self.speaker_names:
+                        real_name = self.speaker_names[best_match]
+                        speaker_display_name = real_name
+                        logger.info(f"✨ This might be {real_name} (lower confidence)")
+                        loguru_logger.info(f"✨ Fuzzy match: This might be {real_name}")
+                    
+                    await self._emit_speaker_change(speaker_display_name, best_similarity)
+                # Don't adapt profile when confidence is low to avoid drift
+            
             else:
+                # Very low confidence or no match - treat as unknown
+                if best_match:
+                    logger.debug(f"No confident match (best: {best_match} at {best_similarity:.2f})")
                 await self._process_unknown_speaker(fingerprint)
                 
         except Exception as e:
@@ -128,6 +157,27 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     async def _process_unknown_speaker(self, fingerprint: np.ndarray):
         """Process unknown speaker for potential auto-enrollment using a session-based approach."""
         current_time = datetime.now()
+        
+        # Before treating as unknown, double-check against all existing speakers with a very low threshold
+        # This prevents re-enrollment of existing speakers who temporarily have low similarity
+        if self.speakers:
+            best_match = None
+            best_similarity = 0
+            for speaker_name, stored_fingerprints in self.speakers.items():
+                for stored_fp in stored_fingerprints:
+                    similarity = self._calculate_similarity(fingerprint, stored_fp)
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match = speaker_name
+            
+            # If we find ANY match above 0.45, don't start enrollment
+            if best_match and best_similarity >= 0.45:
+                logger.warning(f"⚠️ Preventing potential re-enrollment. Weak match to {best_match} (similarity: {best_similarity:.2f})")
+                # Log with loguru for visibility
+                from loguru import logger as loguru_logger
+                loguru_logger.warning(f"⚠️ Preventing re-enrollment of {best_match} (similarity: {best_similarity:.2f})")
+                # Don't change current speaker or start enrollment
+                return
 
         if self.unknown_session_start_time and (current_time - self.unknown_session_start_time) > timedelta(minutes=self.enrollment_window):
             self.current_unknown_fingerprints = []
@@ -194,12 +244,16 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             logger.info(f"✨ Magic! Auto-enrolled new speaker: {speaker_name}")
             logger.info(f"   Learned from {len(fingerprints)} utterances with {avg_consistency:.2f} consistency")
             
+            # Check if we already have a name for this speaker
+            has_saved_name = hasattr(self, 'speaker_names') and speaker_name in self.speaker_names
+            real_name = self.speaker_names.get(speaker_name, '') if has_saved_name else ''
+            
             if self._on_speaker_enrolled:
                 await self._on_speaker_enrolled({
                     'speaker_id': speaker_name,
-                    'speaker_name': speaker_name,
+                    'speaker_name': real_name if has_saved_name else speaker_name,
                     'auto_enrolled': True,
-                    'needs_name': True,  # Flag to indicate we need to ask for their name
+                    'needs_name': not has_saved_name,  # Only need name if we don't have one saved
                     'num_samples': len(fingerprints),
                     'consistency': avg_consistency,
                     'timestamp': datetime.now().isoformat()
@@ -234,7 +288,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             return
             
         for filename in os.listdir(auto_dir):
-            if filename.endswith(self.config.profile_file_extension):
+            if filename.endswith(self.config.enrolled_profile_extension):
                 filepath = os.path.join(auto_dir, filename)
                 try:
                     with open(filepath, 'r') as f:
@@ -252,6 +306,9 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                             pass
                     
                     logger.info(f"Loaded auto-enrolled profile: {name}")
+                    # Also log with loguru for visibility
+                    from loguru import logger as loguru_logger
+                    loguru_logger.info(f"✅ Loaded auto-enrolled profile: {name}")
                 except Exception as e:
                     logger.error(f"Error loading auto profile {filename}: {e}")
     
@@ -264,6 +321,9 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                     data = json.load(f)
                     self.speaker_names = data.get('mappings', {})
                     logger.info(f"Loaded {len(self.speaker_names)} speaker name mappings")
+                    # Also log with loguru for visibility
+                    from loguru import logger as loguru_logger
+                    loguru_logger.info(f"✅ Loaded speaker names: {self.speaker_names}")
             else:
                 self.speaker_names = {}
         except Exception as e:

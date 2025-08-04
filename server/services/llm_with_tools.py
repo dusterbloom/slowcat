@@ -21,7 +21,12 @@ from pipecat.frames.frames import (
     Frame,
     TextFrame,
     TranscriptionFrame,
+    LLMFullResponseStartFrame,
+    LLMFullResponseEndFrame,
+    FunctionCallResultFrame,
+    FunctionCallInProgressFrame,
 )
+from .custom_tool_parser import CustomToolParser
 class LLMWithToolsService(OpenAILLMService):
     """
     Unified LLM service with proper Pipecat function calling support.
@@ -194,6 +199,53 @@ class LLMWithToolsService(OpenAILLMService):
 
         return feedback_stream()
     
+    async def process_frame(self, frame: Frame, direction=None):
+        """Override to intercept and parse custom tool call formats"""
+        
+        # Log all text frames for debugging
+        if isinstance(frame, TextFrame):
+            logger.debug(f"Processing TextFrame: {frame.text[:100]}...")
+        
+        # Check if this is a text frame that might contain custom tool calls
+        if isinstance(frame, TextFrame) and frame.text and '[' in frame.text:
+            # Try to parse custom tool format
+            tool_calls, remaining_text = CustomToolParser.parse_content_for_tools(frame.text)
+            
+            if tool_calls:
+                logger.info(f"🔧 Intercepted custom tool calls in text: {frame.text[:100]}...")
+                
+                # Send immediate feedback
+                await self.push_frame(TextFrame("Let me check that for you."))
+                
+                # Convert to proper format and execute
+                for tool_call in tool_calls:
+                    try:
+                        # Create function call params
+                        function_name = tool_call["function"]["name"]
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                        
+                        # Execute the tool
+                        logger.info(f"🔨 Executing parsed tool: {function_name} with {arguments}")
+                        result = await execute_tool_call(function_name, arguments)
+                        
+                        # Format and send result
+                        formatted_result = format_tool_response_for_voice(function_name, result)
+                        
+                        # If there's remaining text, combine it with the result
+                        if remaining_text.strip():
+                            formatted_result = f"{remaining_text} {formatted_result}"
+                        
+                        await self.push_frame(TextFrame(formatted_result))
+                        
+                    except Exception as e:
+                        logger.error(f"Error executing parsed tool call: {e}")
+                        await self.push_frame(TextFrame(f"I had trouble with that request: {str(e)}"))
+                
+                # Don't process the original frame further
+                return
+        
+        # Otherwise, process normally
+        await super().process_frame(frame, direction)
 
     def get_tools_schema(self) -> ToolsSchema:
         """

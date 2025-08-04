@@ -274,8 +274,18 @@ async def _setup_processors(vr_config: VoiceRecognitionConfig) -> Tuple:
                 logger.info(f"📝 Memory switched to user: {user_id}")
         
         async def on_speaker_enrolled(data: Dict[str, Any]):
-            if data.get('needs_name'):
-                speaker_name_manager.start_name_collection(data['speaker_id'])
+            speaker_id = data.get('speaker_id')
+            logger.info(f"🎓 Speaker enrolled event: {speaker_id}")
+            
+            # Only ask for name if they don't already have one
+            if speaker_id in getattr(voice_recognition, 'speaker_names', {}):
+                existing_name = voice_recognition.speaker_names[speaker_id]
+                logger.info(f"✅ Speaker {speaker_id} already has name: {existing_name}")
+            else:
+                if data.get('needs_name'):
+                    logger.info(f"🤔 Asking for name for new speaker: {speaker_id}")
+                    speaker_name_manager.start_name_collection(speaker_id)
+            
             speaker_context.handle_speaker_enrolled(data)
 
         voice_recognition.set_callbacks(on_speaker_changed, on_speaker_enrolled)
@@ -328,7 +338,15 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
     )
 
     # 5. Build Context
-    tools = get_tools() if config.mcp.enabled else NOT_GIVEN
+    # Always enable tools if we're using LLMWithToolsService
+    use_tools = config.mcp.enabled or isinstance(llm, LLMWithToolsService)
+    tools = get_tools() if use_tools else NOT_GIVEN
+    
+    if tools != NOT_GIVEN:
+        logger.info(f"🛠️ Tools enabled: {len(tools.standard_tools)} tools available")
+        for tool in tools.standard_tools:
+            logger.debug(f"  - {tool.name}: {tool.description}")
+    
     context = OpenAILLMContext([{"role": "system", "content": lang_config["system_instruction"]}], tools=tools)
     context_aggregator = llm.create_context_aggregator(context)
 
