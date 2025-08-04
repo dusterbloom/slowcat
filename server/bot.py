@@ -3,8 +3,10 @@ import asyncio
 import os
 import sys
 import multiprocessing
+import importlib
+import threading
 from contextlib import asynccontextmanager
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 # Set multiprocessing start method to 'spawn' for macOS Metal GPU safety
 # This must be done before any other multiprocessing operations
@@ -29,32 +31,115 @@ from config import config, VoiceRecognitionConfig
 from fastapi import BackgroundTasks, FastAPI
 from loguru import logger
 
+# Light-weight imports that are always needed
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
-from pipecat.audio.turn.smart_turn.local_smart_turn_v2 import LocalSmartTurnAnalyzerV2
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from openai import NOT_GIVEN
-from pipecat.services.openai.llm import OpenAILLMService
-from services.llm_with_tools import LLMWithToolsService
-from kokoro_tts import KokoroTTSService
-from services.whisper_stt_with_lock import WhisperSTTServiceMLX
-from pipecat.services.whisper.stt import MLXModel
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import TransportParams
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
 from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
 from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCConnection
 
-# Import voice recognition components
-from voice_recognition import AutoEnrollVoiceRecognition
+# Import processors (lightweight)
 from processors import (AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor, 
                         VideoSamplerProcessor, SpeakerNameManager, LocalMemoryProcessor, 
                         MemoryContextInjector, GreetingFilterProcessor)
 from tools import get_tools
+
+# Lazy-loaded heavy ML modules (will be populated by _lazy_load_ml_modules)
+WhisperSTTServiceMLX: Optional[type] = None
+MLXModel: Optional[type] = None
+KokoroTTSService: Optional[type] = None
+LLMWithToolsService: Optional[type] = None
+OpenAILLMService: Optional[type] = None
+AutoEnrollVoiceRecognition: Optional[type] = None
+SileroVADAnalyzer: Optional[type] = None
+LocalSmartTurnAnalyzerV2: Optional[type] = None
+
+# Flag to track if ML modules are loaded
+_ml_modules_loaded = threading.Event()
+
+def _lazy_load_ml_modules():
+    """Load heavy ML modules in the background"""
+    global WhisperSTTServiceMLX, MLXModel, KokoroTTSService, LLMWithToolsService
+    global OpenAILLMService, AutoEnrollVoiceRecognition, SileroVADAnalyzer, LocalSmartTurnAnalyzerV2
+    
+    try:
+        logger.info("🔄 Starting lazy load of ML modules...")
+        
+        # Load STT modules
+        whisper_module = importlib.import_module("services.whisper_stt_with_lock")
+        WhisperSTTServiceMLX = whisper_module.WhisperSTTServiceMLX
+        
+        stt_module = importlib.import_module("pipecat.services.whisper.stt")
+        MLXModel = stt_module.MLXModel
+        
+        # Load TTS module
+        tts_module = importlib.import_module("kokoro_tts")
+        KokoroTTSService = tts_module.KokoroTTSService
+        
+        # Load LLM modules
+        llm_tools_module = importlib.import_module("services.llm_with_tools")
+        LLMWithToolsService = llm_tools_module.LLMWithToolsService
+        
+        openai_module = importlib.import_module("pipecat.services.openai.llm")
+        OpenAILLMService = openai_module.OpenAILLMService
+        
+        # Load voice recognition
+        voice_module = importlib.import_module("voice_recognition")
+        AutoEnrollVoiceRecognition = voice_module.AutoEnrollVoiceRecognition
+        
+        # Load audio analyzers
+        vad_module = importlib.import_module("pipecat.audio.vad.silero")
+        SileroVADAnalyzer = vad_module.SileroVADAnalyzer
+        
+        turn_module = importlib.import_module("pipecat.audio.turn.smart_turn.local_smart_turn_v2")
+        LocalSmartTurnAnalyzerV2 = turn_module.LocalSmartTurnAnalyzerV2
+        
+        logger.info("✅ ML modules loaded successfully")
+        _ml_modules_loaded.set()
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to load ML modules: {e}")
+        raise
+
+# Global singleton instances for analyzers (initialized after ML modules load)
+GLOBAL_VAD_ANALYZER: Optional[Any] = None
+GLOBAL_TURN_ANALYZER: Optional[Any] = None
+
+def _initialize_global_analyzers():
+    """Initialize global analyzer instances after ML modules are loaded"""
+    global GLOBAL_VAD_ANALYZER, GLOBAL_TURN_ANALYZER
+    
+    # Wait for ML modules to be loaded
+    _ml_modules_loaded.wait()
+    
+    logger.info("🔄 Initializing global VAD and Smart Turn analyzers...")
+    
+    GLOBAL_VAD_ANALYZER = SileroVADAnalyzer(params=VADParams(
+        stop_secs=config.audio.vad_stop_secs,
+        start_secs=config.audio.vad_start_secs,
+    ))
+    
+    GLOBAL_TURN_ANALYZER = LocalSmartTurnAnalyzerV2(
+        smart_turn_model_path=config.models.smart_turn_model_path
+    )
+    
+    logger.info("✅ Global analyzers initialized")
+    
+    # Pre-warm Kokoro TTS model
+    try:
+        logger.info("🔄 Pre-warming Kokoro TTS model...")
+        kokoro = KokoroTTSService(voice="af_heart")
+        # The model will load on first access
+        logger.info("✅ Kokoro TTS model ready")
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm Kokoro TTS: {e}")
 
 # --- FastAPI and WebRTC Setup ---
 app = FastAPI()
@@ -101,6 +186,10 @@ def _get_language_config(language: str) -> dict:
 
 def _initialize_services(lang_config: dict, language: str, llm_model: str) -> Tuple:
     """Initializes and returns core services (STT, TTS, LLM)."""
+    # Ensure ML modules are loaded
+    if not _ml_modules_loaded.is_set():
+        logger.info("Waiting for ML modules to load...")
+        _ml_modules_loaded.wait()
     stt_model = MLXModel.DISTIL_LARGE_V3 if language == "en" else MLXModel.MEDIUM
     logger.info(f"Using STT model: {stt_model.name} for {language}")
     stt = WhisperSTTServiceMLX(model=stt_model, language=lang_config["whisper_language"])
@@ -212,15 +301,24 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
      audio_tee, vad_bridge, speaker_context, speaker_name_manager) = processors
 
     # 4. Setup Transport
+    # Wait for global analyzers if not ready
+    retry_count = 0
+    while (GLOBAL_VAD_ANALYZER is None or GLOBAL_TURN_ANALYZER is None) and retry_count < 50:
+        if retry_count == 0:
+            logger.info("Waiting for global analyzers to initialize...")
+        await asyncio.sleep(0.1)
+        retry_count += 1
+    
+    if GLOBAL_VAD_ANALYZER is None or GLOBAL_TURN_ANALYZER is None:
+        logger.error("Global analyzers failed to initialize after 5 seconds!")
+        return
+        
     transport = SmallWebRTCTransport(
         webrtc_connection=webrtc_connection,
         params=TransportParams(
             audio_in_enabled=True, audio_out_enabled=True, video_in_enabled=config.video.enabled,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(
-                stop_secs=config.audio.vad_stop_secs,
-                start_secs=config.audio.vad_start_secs,
-            )),
-            turn_analyzer=LocalSmartTurnAnalyzerV2(smart_turn_model_path=config.models.smart_turn_model_path),
+            vad_analyzer=GLOBAL_VAD_ANALYZER,
+            turn_analyzer=GLOBAL_TURN_ANALYZER,
         )
     )
 
@@ -312,9 +410,16 @@ if __name__ == "__main__":
     app.state.language = args.language
     app.state.llm_model = args.llm_model
     
+    # Start loading ML modules in background thread immediately
+    ml_loader_thread = threading.Thread(target=_lazy_load_ml_modules, daemon=True)
+    ml_loader_thread.start()
+    
+    # Initialize global analyzers in background after ML modules load
+    analyzer_thread = threading.Thread(target=_initialize_global_analyzers, daemon=True)
+    analyzer_thread.start()
+    
     # Add signal handling for graceful shutdown
     import signal
-    import threading
     
     def signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, shutting down gracefully...")
@@ -335,4 +440,5 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     
     logger.info(f"Starting bot with language: {args.language}")
+    logger.info("🚀 Server starting while ML modules load in background...")
     uvicorn.run(app, host=args.host, port=args.port)

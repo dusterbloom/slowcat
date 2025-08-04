@@ -1,11 +1,11 @@
-import sqlite3
+import aiosqlite
+import asyncio
 import json
 import os
 import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
-import threading
 
 # Add parent directory to path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,7 +22,7 @@ from loguru import logger
 class LocalMemoryProcessor(FrameProcessor):
     """
     A local memory processor that stores conversation history in a reliable
-    SQLite database, ensuring data integrity and preventing corruption.
+    SQLite database using async operations to prevent blocking.
     """
 
     def __init__(
@@ -35,117 +35,159 @@ class LocalMemoryProcessor(FrameProcessor):
         super().__init__()
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = self.data_dir / "memory.sqlite"
+        self.db_path = str(self.data_dir / "memory.sqlite")
         self.user_id = user_id or config.memory.default_user_id
         self.max_history_items = max_history_items
         self.include_in_context = include_in_context
         
-        # Use thread-local storage for DB connection to ensure thread safety.
-        self._local = threading.local()
-        self._setup_database()
-        logger.info(f"📚 Memory database initialized for user: {self.user_id}")
+        # Async connection will be initialized when first needed
+        self._db_connection: Optional[aiosqlite.Connection] = None
+        self._db_lock = asyncio.Lock()
+        logger.info(f"📚 Memory processor initialized for user: {self.user_id}")
 
-    def _get_db_connection(self) -> sqlite3.Connection:
-        """Get a thread-safe database connection."""
-        if not hasattr(self._local, "con"):
-            self._local.con = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._local.con.row_factory = sqlite3.Row
-        return self._local.con
+    async def _get_db_connection(self) -> aiosqlite.Connection:
+        """Get or create the async database connection."""
+        async with self._db_lock:
+            if self._db_connection is None:
+                self._db_connection = await aiosqlite.connect(self.db_path)
+                self._db_connection.row_factory = aiosqlite.Row
+                await self._setup_database()
+            return self._db_connection
 
-    def _setup_database(self):
+    async def _setup_database(self):
         """Create the database table if it doesn't exist."""
-        con = self._get_db_connection()
         try:
-            with con:
-                cur = con.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS conversations (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id TEXT NOT NULL,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        timestamp TEXT NOT NULL,
-                        metadata TEXT
-                    )
-                """)
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_user_id_timestamp ON conversations (user_id, timestamp);")
+            await self._db_connection.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    metadata TEXT
+                )
+            """)
+            await self._db_connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_id_timestamp ON conversations (user_id, timestamp);"
+            )
+            await self._db_connection.commit()
+            logger.info(f"📚 Async memory database initialized at {self.db_path}")
         except Exception as e:
             logger.error(f"Error setting up database: {e}")
 
-    def _add_to_memory(self, role: str, content: str, metadata: Optional[Dict] = None):
-        """Add a conversation item to the database transactionally."""
-        con = self._get_db_connection()
+    async def _add_to_memory(self, role: str, content: str, metadata: Optional[Dict] = None):
+        """Add a conversation item to the database asynchronously."""
+        con = await self._get_db_connection()
         try:
-            with con:
-                cur = con.cursor()
-                cur.execute(
-                    "INSERT INTO conversations (user_id, role, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?)",
-                    (
-                        self.user_id,
-                        role,
-                        content,
-                        datetime.now().isoformat(),
-                        json.dumps(metadata or {}),
-                    ),
-                )
-            self._prune_history()
+            await con.execute(
+                "INSERT INTO conversations (user_id, role, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?)",
+                (
+                    self.user_id,
+                    role,
+                    content,
+                    datetime.now().isoformat(),
+                    json.dumps(metadata or {}),
+                ),
+            )
+            await con.commit()
+            # Prune history in background to not block
+            asyncio.create_task(self._prune_history())
         except Exception as e:
             logger.error(f"Error adding to memory: {e}")
+            await con.rollback()
 
-    def _prune_history(self):
+    async def _prune_history(self):
         """Keep the conversation history for the current user within max_history_items."""
-        con = self._get_db_connection()
+        con = await self._get_db_connection()
         try:
-            with con:
-                cur = con.cursor()
-                cur.execute("SELECT COUNT(*) FROM conversations WHERE user_id = ?", (self.user_id,))
-                count = cur.fetchone()[0]
+            # Get the current count
+            async with con.execute(
+                "SELECT COUNT(*) FROM conversations WHERE user_id = ?", 
+                (self.user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                count = row[0] if row else 0
 
-                if count > self.max_history_items:
-                    limit = count - self.max_history_items
-                    cur.execute(
-                        "DELETE FROM conversations WHERE id IN (SELECT id FROM conversations WHERE user_id = ? ORDER BY timestamp ASC LIMIT ?)",
-                        (self.user_id, limit)
-                    )
-                    logger.debug(f"Pruned {limit} old memory items for user {self.user_id}")
+            # Delete oldest entries if we exceed the limit
+            if count > self.max_history_items:
+                limit = count - self.max_history_items
+                await con.execute(
+                    """DELETE FROM conversations 
+                    WHERE id IN (
+                        SELECT id FROM conversations 
+                        WHERE user_id = ? 
+                        ORDER BY timestamp ASC 
+                        LIMIT ?
+                    )""",
+                    (self.user_id, limit)
+                )
+                await con.commit()
+                logger.debug(f"Pruned {limit} old memory entries for user {self.user_id}")
         except Exception as e:
             logger.error(f"Error pruning memory history: {e}")
 
-    def get_context_messages(self) -> List[Dict[str, str]]:
-        """Get recent conversation history from the database for LLM context."""
-        con = self._get_db_connection()
+    async def get_context_messages(self) -> List[Dict[str, str]]:
+        """Get the most recent messages for context asynchronously."""
+        con = await self._get_db_connection()
         try:
-            cur = con.cursor()
-            cur.execute(
-                "SELECT role, content FROM conversations WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            async with con.execute(
+                """SELECT role, content 
+                FROM conversations 
+                WHERE user_id = ? 
+                ORDER BY timestamp DESC 
+                LIMIT ?""",
                 (self.user_id, self.include_in_context),
-            )
-            rows = cur.fetchall()
-            # Reverse to get chronological order for the LLM context.
+            ) as cursor:
+                rows = await cursor.fetchall()
+            
+            # Reverse to get chronological order
             return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
         except Exception as e:
             logger.error(f"Error getting context messages: {e}")
             return []
 
+    async def update_user_id(self, user_id: str):
+        """Update the user ID for this processor."""
+        self.user_id = user_id
+        logger.info(f"Updated memory processor user ID to: {user_id}")
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        """Process incoming frames and add to memory asynchronously."""
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TranscriptionFrame) and frame.text and direction == FrameDirection.DOWNSTREAM:
-            metadata = {
-                'user_id': frame.user_id,
-                'timestamp': frame.timestamp,
-                'language': str(frame.language) if frame.language else None
-            }
-            self._add_to_memory('user', frame.text, metadata)
-            logger.info(f"📝 Stored user message from {frame.user_id}: {frame.text[:50]}...")
-        elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame) and frame.text and direction == FrameDirection.DOWNSTREAM:
-            self._add_to_memory('assistant', frame.text)
-            logger.info(f"💬 Stored assistant message: {frame.text[:50]}...")
+        # Handle transcriptions (user input)
+        if isinstance(frame, TranscriptionFrame) and frame.text:
+            # Fire and forget - don't block on DB write
+            asyncio.create_task(
+                self._add_to_memory('user', frame.text, {'user_id': frame.user_id})
+            )
+            logger.debug(f"💭 Added user message to memory: {frame.text[:50]}...")
+
+        # Handle text frames (assistant output) but exclude transcriptions
+        elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame) and frame.text:
+            # Fire and forget - don't block on DB write
+            asyncio.create_task(
+                self._add_to_memory('assistant', frame.text)
+            )
+            logger.debug(f"🤖 Added assistant message to memory: {frame.text[:50]}...")
 
         await self.push_frame(frame, direction)
 
-    def set_user_id(self, user_id: str):
-        """Change the current user for memory operations."""
-        if user_id != self.user_id:
-            logger.info(f"Memory context switching from '{self.user_id}' to '{user_id}'")
-            self.user_id = user_id
+    async def cleanup(self):
+        """Clean up database connection."""
+        if self._db_connection:
+            await self._db_connection.close()
+            self._db_connection = None
+        await super().cleanup()
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        await super().__aenter__()
+        # Ensure connection is established
+        await self._get_db_connection()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.cleanup()
+        await super().__aexit__(exc_type, exc_val, exc_tb)

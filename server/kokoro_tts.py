@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import threading
 from typing import AsyncGenerator, Optional
+import queue
 
 import numpy as np
 from loguru import logger
@@ -128,9 +129,9 @@ class KokoroTTSService(TTSService):
         
         self._kokoro_language = self._get_kokoro_language_code(self._language_code)
 
-        # Initialize model in a separate thread to avoid blocking
+        # Model will be initialized on first use
         self._model = None
-        self._init_future = self._executor.submit(self._initialize_model)
+        self._init_future = None
 
         self._settings = {
             "model": model,
@@ -156,56 +157,70 @@ class KokoroTTSService(TTSService):
     def can_generate_metrics(self) -> bool:
         return True
 
-    def _generate_audio_sync(self, text: str) -> bytes:
-        """Synchronously generate audio from text. This runs in a separate thread."""
+    def _generate_audio_streaming(self, text: str, chunk_queue: queue.Queue):
+        """Generate audio in streaming fashion, putting chunks in the queue."""
         try:
-            if self._init_future:
-                self._init_future.result()  # Wait for initialization
-                self._init_future = None
+            # Initialize model on first use if needed
+            if self._model is None:
+                self._initialize_model()
 
-            logger.debug(f"Generating audio for: {text}")
+            logger.debug(f"Starting streaming audio generation for: {text}")
 
             # Acquire the global MLX lock for audio generation
-            with MLX_GLOBAL_LOCK: # NEW: Use global lock
-                # Ensure previous Metal operations are complete
+            with MLX_GLOBAL_LOCK:
                 mx.synchronize()
                 
-                audio_segments = []
+                chunk_count = 0
                 for result in self._model.generate(
                     text=text,
                     voice=self._voice,
                     speed=1.0,
                     lang_code=self._kokoro_language,
                 ):
-                    audio_segments.append(result.audio)
-
-                if len(audio_segments) == 0:
+                    # Process each chunk as it's generated
+                    audio_array = result.audio
+                    mx.eval(audio_array)
+                    mx.synchronize()
+                    
+                    # Convert to numpy and then to bytes
+                    audio_np = np.array(audio_array, copy=False)
+                    audio_int16 = (audio_np * 32767).astype(np.int16)
+                    audio_bytes = audio_int16.tobytes()
+                    
+                    # Put chunk in queue for async consumption
+                    chunk_queue.put(audio_bytes)
+                    chunk_count += 1
+                    logger.debug(f"Generated audio chunk {chunk_count}")
+                
+                if chunk_count == 0:
                     raise ValueError("No audio generated")
-                elif len(audio_segments) == 1:
-                    audio_array = audio_segments[0]
-                else:
-                    audio_array = mx.concatenate(audio_segments, axis=0)
-
-                # Ensure all Metal operations are complete before conversion
-                mx.eval(audio_array)
-                # Additional synchronization to prevent Metal encoder conflicts
-                # Force Metal command buffer completion
-                mx.synchronize()
             
-            # Convert MLX array to NumPy array outside the lock if possible,
-            # but for safety, keep it within the lock if it involves MLX tensors.
-            audio_np = np.array(audio_array, copy=False)
-
-            # Convert to raw PCM bytes (16-bit signed integer)
-            # MLX audio returns float32 normalized audio
-            audio_int16 = (audio_np * 32767).astype(np.int16)
-            audio_bytes = audio_int16.tobytes()
-
-            return audio_bytes
+            # Signal end of stream
+            chunk_queue.put(None)
+            logger.debug(f"Streaming generation complete, generated {chunk_count} chunks")
 
         except Exception as e:
-            logger.error(f"Error generating audio: {e}")
+            logger.error(f"Error in streaming audio generation: {e}")
+            # Signal error condition
+            chunk_queue.put(e)
             raise
+
+    def _generate_audio_sync(self, text: str) -> bytes:
+        """Fallback non-streaming generation for compatibility."""
+        # Use streaming internally but collect all chunks
+        chunk_queue = queue.Queue()
+        self._generate_audio_streaming(text, chunk_queue)
+        
+        audio_chunks = []
+        while True:
+            chunk = chunk_queue.get()
+            if chunk is None:
+                break
+            if isinstance(chunk, Exception):
+                raise chunk
+            audio_chunks.append(chunk)
+        
+        return b''.join(audio_chunks)
 
     @traced_tts
     async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
@@ -225,31 +240,62 @@ class KokoroTTSService(TTSService):
 
             yield TTSStartedFrame()
 
-            # Run audio generation in executor (separate thread) to avoid blocking
+            # Create a queue for streaming chunks
+            chunk_queue = queue.Queue()
+            
+            # Start generation in background thread
             loop = asyncio.get_event_loop()
-            audio_bytes = await loop.run_in_executor(
-                self._executor, self._generate_audio_sync, text
+            generation_task = loop.run_in_executor(
+                self._executor, self._generate_audio_streaming, text, chunk_queue
             )
 
-            # Chunk the audio data for streaming
+            # Stream chunks as they become available
+            first_chunk = True
             CHUNK_SIZE = self.chunk_size
+            
+            while True:
+                try:
+                    # Non-blocking check for chunk with small timeout
+                    chunk = await loop.run_in_executor(None, chunk_queue.get, True, 0.01)
+                    
+                    if chunk is None:
+                        # End of stream
+                        break
+                    
+                    if isinstance(chunk, Exception):
+                        raise chunk
+                    
+                    # Stop TTFB metrics on first chunk
+                    if first_chunk:
+                        await self.stop_ttfb_metrics()
+                        first_chunk = False
+                    
+                    # Stream the chunk
+                    for i in range(0, len(chunk), CHUNK_SIZE):
+                        sub_chunk = chunk[i : i + CHUNK_SIZE]
+                        if len(sub_chunk) > 0:
+                            yield TTSAudioRawFrame(sub_chunk, self.sample_rate, 1)
+                            # Small delay to prevent overwhelming the pipeline
+                            await asyncio.sleep(0.001)
+                            
+                except queue.Empty:
+                    # Check if generation is still running
+                    if generation_task.done():
+                        # Get any exception that might have occurred
+                        await generation_task
+                        break
+                    # Otherwise continue waiting for chunks
+                    await asyncio.sleep(0.01)
 
-            await self.stop_ttfb_metrics()
-
-            # Stream the audio in chunks
-            for i in range(0, len(audio_bytes), CHUNK_SIZE):
-                chunk = audio_bytes[i : i + CHUNK_SIZE]
-                if len(chunk) > 0:
-                    yield TTSAudioRawFrame(chunk, self.sample_rate, 1)
-                    # Small delay to prevent overwhelming the pipeline
-                    await asyncio.sleep(0.001)
+            # Ensure generation task completes
+            await generation_task
 
         except Exception as e:
             logger.error(f"Error in run_tts: {e}")
             yield ErrorFrame(error=str(e))
         finally:
             logger.debug(f"{self}: Finished TTS [{text}]")
-            await self.stop_ttfb_metrics()
+            await self.stop_processing_metrics()
             yield TTSStoppedFrame()
 
     async def __aenter__(self):
