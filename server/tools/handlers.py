@@ -665,6 +665,33 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
     elif function_name == "get_active_tasks":
         from .time_tools import get_active_tasks
         return await get_active_tasks(**arguments)
+    elif function_name == "play_music":
+        from .music_tools import play_music
+        return await play_music(**arguments)
+    elif function_name == "pause_music":
+        from .music_tools import pause_music
+        return await pause_music(**arguments)
+    elif function_name == "skip_song":
+        from .music_tools import skip_song
+        return await skip_song(**arguments)
+    elif function_name == "queue_music":
+        from .music_tools import queue_music
+        return await queue_music(**arguments)
+    elif function_name == "search_music":
+        from .music_tools import search_music
+        return await search_music(**arguments)
+    elif function_name == "get_now_playing":
+        from .music_tools import get_now_playing
+        return await get_now_playing(**arguments)
+    elif function_name == "set_volume":
+        from .music_tools import set_volume
+        return await set_volume(**arguments)
+    elif function_name == "create_playlist":
+        from .music_tools import create_playlist
+        return await create_playlist(**arguments)
+    elif function_name == "get_music_stats":
+        from .music_tools import get_music_stats
+        return await get_music_stats(**arguments)
     else:
         logger.error(f"Unknown tool function: {function_name}")
         return {"error": f"Unknown function: {function_name}"}

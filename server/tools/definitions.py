@@ -311,6 +311,105 @@ GET_ACTIVE_TASKS = FunctionSchema(
     required=[]
 )
 
+# Music control tools
+PLAY_MUSIC = FunctionSchema(
+    name="play_music",
+    description="Play music - search and play a song or resume playback",
+    properties={
+        "query": {
+            "type": "string",
+            "description": "Optional search query (e.g., 'jazz', 'Beatles', 'upbeat music'). Leave empty to resume."
+        }
+    },
+    required=[]
+)
+
+PAUSE_MUSIC = FunctionSchema(
+    name="pause_music",
+    description="Pause the currently playing music",
+    properties={},
+    required=[]
+)
+
+SKIP_SONG = FunctionSchema(
+    name="skip_song",
+    description="Skip to the next song in the queue",
+    properties={},
+    required=[]
+)
+
+QUEUE_MUSIC = FunctionSchema(
+    name="queue_music",
+    description="Add songs to the play queue",
+    properties={
+        "query": {
+            "type": "string",
+            "description": "Search query for songs to add to queue"
+        }
+    },
+    required=["query"]
+)
+
+SEARCH_MUSIC = FunctionSchema(
+    name="search_music",
+    description="Search the music library",
+    properties={
+        "query": {
+            "type": "string",
+            "description": "Search query for songs, artists, or albums"
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Maximum number of results (default: 10)",
+            "default": 10
+        }
+    },
+    required=["query"]
+)
+
+GET_NOW_PLAYING = FunctionSchema(
+    name="get_now_playing",
+    description="Get information about the currently playing song",
+    properties={},
+    required=[]
+)
+
+SET_VOLUME = FunctionSchema(
+    name="set_volume",
+    description="Set the music playback volume",
+    properties={
+        "level": {
+            "type": "integer",
+            "description": "Volume level (0-100)"
+        }
+    },
+    required=["level"]
+)
+
+CREATE_PLAYLIST = FunctionSchema(
+    name="create_playlist",
+    description="Create a playlist based on mood or genre",
+    properties={
+        "mood": {
+            "type": "string",
+            "description": "Mood or genre (e.g., 'relaxing', 'energetic', 'jazz', 'party')"
+        },
+        "count": {
+            "type": "integer",
+            "description": "Number of songs to add (default: 10)",
+            "default": 10
+        }
+    },
+    required=["mood"]
+)
+
+GET_MUSIC_STATS = FunctionSchema(
+    name="get_music_stats",
+    description="Get statistics about the music library",
+    properties={},
+    required=[]
+)
+
 # List of all function schemas for easy access
 ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     GET_CURRENT_TIME,
@@ -330,7 +429,16 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     CHECK_TASK_STATUS,
     STOP_TIMED_TASK,
     ADD_TO_TIMED_TASK,
-    GET_ACTIVE_TASKS
+    GET_ACTIVE_TASKS,
+    PLAY_MUSIC,
+    PAUSE_MUSIC,
+    SKIP_SONG,
+    QUEUE_MUSIC,
+    SEARCH_MUSIC,
+    GET_NOW_PLAYING,
+    SET_VOLUME,
+    CREATE_PLAYLIST,
+    GET_MUSIC_STATS
 ]
 
 def get_tools() -> ToolsSchema:

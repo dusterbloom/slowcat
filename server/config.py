@@ -138,6 +138,20 @@ class DictationModeConfig:
 
 
 @dataclass
+class DJModeConfig:
+    """Configuration for AI DJ/Radio mode"""
+    enabled: bool = True
+    music_folders: List[str] = field(default_factory=lambda: ["~/Music"])
+    scan_usb_drives: bool = True
+    index_file: str = "./data/music_index.json"
+    default_volume: float = 0.7
+    duck_volume: float = 0.3  # Volume when speaking
+    crossfade_seconds: float = 2.0
+    auto_dj: bool = True  # Automatically queue songs
+    dj_personality: str = "friendly"  # friendly, energetic, chill, professional
+
+
+@dataclass
 class LanguageVoiceMapping:
     """Language to voice mapping"""
     voice: str
@@ -171,6 +185,15 @@ You have multiple advanced capabilities:
    - **search_conversations**: Use this to search through our past conversation history
    - **get_conversation_summary**: Use this to get statistics about our conversations
    - **read_file/write_file/list_files**: Use for file operations
+   - **Music DJ Tools** (when available):
+     - **play_music/pause_music/skip_song**: Control music playback like a DJ
+     - **search_music/queue_music**: Find and queue songs by artist, title, or mood
+     - **create_playlist**: Create mood-based playlists (relaxing, energetic, etc.)
+     - **get_now_playing**: Check what's currently playing
+
+4. **DJ Mode**: When music is playing, channel your inner radio DJ! Be entertaining, share interesting facts about the music, and create smooth transitions. Adapt your personality based on the time of day and the listener's mood.
+
+5. **Music Mode**: Say "music mode" to activate quiet mode - I'll stop talking and only respond to music commands. Say "stop music mode" to return to normal conversation.
 
 IMPORTANT: You MUST use the search_web tool when users ask about:
 - Current events or news
@@ -491,6 +514,7 @@ class Config:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     conversation_timer: ConversationTimerConfig = field(default_factory=ConversationTimerConfig)
     dictation_mode: DictationModeConfig = field(default_factory=DictationModeConfig)
+    dj_mode: DJModeConfig = field(default_factory=DJModeConfig)
     
     # Language settings
     default_language: str = "en"

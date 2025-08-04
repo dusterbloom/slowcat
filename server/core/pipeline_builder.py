@@ -4,6 +4,7 @@ Pipeline builder for creating and configuring processing pipelines with dependen
 
 import asyncio
 from typing import Dict, Any, List, Optional, Tuple
+from pathlib import Path
 from loguru import logger
 
 from config import config, VoiceRecognitionConfig
@@ -189,6 +190,48 @@ class PipelineBuilder:
         else:
             processors['dictation_mode'] = None
         
+        # DJ/Music mode processor
+        if config.dj_mode.enabled:
+            from processors.audio_player_real import AudioPlayerRealProcessor
+            from music.library_scanner import MusicLibraryScanner
+            from processors.music_mode import MusicModeProcessor
+            
+            # Initialize music scanner
+            scanner = MusicLibraryScanner(config.dj_mode.index_file)
+            
+            # Scan music folders on startup
+            for folder in config.dj_mode.music_folders:
+                folder_path = Path(folder).expanduser()
+                if folder_path.exists():
+                    logger.info(f"🎵 Scanning music folder: {folder_path}")
+                    scanner.scan_directory(str(folder_path))
+            
+            # Initialize REAL audio player
+            processors['audio_player'] = AudioPlayerRealProcessor(
+                sample_rate=config.audio.stt_sample_rate,
+                channels=1,  # Mono audio for voice pipeline
+                initial_volume=config.dj_mode.default_volume,
+                duck_volume=config.dj_mode.duck_volume,
+                crossfade_seconds=config.dj_mode.crossfade_seconds
+            )
+            
+            # Initialize music mode processor
+            processors['music_mode'] = MusicModeProcessor(
+                mode_toggle_phrase="music mode",
+                exit_phrase="stop music mode"
+            )
+            
+            # Set up music tools
+            from tools.music_tools import set_music_system
+            set_music_system(processors['audio_player'], scanner)
+            
+            # Log music library stats
+            stats = scanner.get_stats()
+            logger.info(f"🎵 Music library: {stats['total_songs']} songs, {stats['unique_artists']} artists")
+        else:
+            processors['audio_player'] = None
+            processors['music_mode'] = None
+        
         logger.info("✅ Processors setup complete")
         return processors
     
@@ -316,6 +359,8 @@ class PipelineBuilder:
             processors['vad_bridge'],
             services['stt'],
             processors['dictation_mode'],  # Must be after STT but before LLM
+            processors['music_mode'],  # Music mode filtering (after STT, before LLM)
+            processors['audio_player'],  # Music player with ducking
             processors['time_executor'],  # Time-aware task execution
             processors['memory_processor'],
             processors['speaker_context'],
