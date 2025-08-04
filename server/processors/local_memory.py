@@ -3,8 +3,8 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime
-from typing import Dict, List, Optional
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 
 # Add parent directory to path for config import
@@ -67,8 +67,15 @@ class LocalMemoryProcessor(FrameProcessor):
                     metadata TEXT
                 )
             """)
+            # Create indexes for better performance
             await self._db_connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_id_timestamp ON conversations (user_id, timestamp);"
+            )
+            await self._db_connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_id_content ON conversations (user_id, content);"
+            )
+            await self._db_connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_timestamp ON conversations (timestamp);"
             )
             await self._db_connection.commit()
             logger.info(f"📚 Async memory database initialized at {self.db_path}")
@@ -145,6 +152,116 @@ class LocalMemoryProcessor(FrameProcessor):
         except Exception as e:
             logger.error(f"Error getting context messages: {e}")
             return []
+
+    async def search_conversations(self, query: str, limit: int = 10, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search through conversation history for specific text."""
+        con = await self._get_db_connection()
+        try:
+            # Use the provided user_id or default to current user
+            search_user_id = user_id or self.user_id
+            
+            # Simple LIKE search (case-insensitive)
+            search_pattern = f"%{query}%"
+            
+            async with con.execute(
+                """SELECT id, role, content, timestamp, user_id 
+                FROM conversations 
+                WHERE user_id = ? AND content LIKE ? 
+                ORDER BY timestamp DESC 
+                LIMIT ?""",
+                (search_user_id, search_pattern, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                results.append({
+                    "id": row["id"],
+                    "role": row["role"],
+                    "content": row["content"],
+                    "timestamp": row["timestamp"],
+                    "user_id": row["user_id"]
+                })
+            
+            logger.info(f"Found {len(results)} results for query: {query}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error searching conversations: {e}")
+            return []
+
+    async def get_conversation_summary(self, days_back: int = 7, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get a summary of conversations within a date range."""
+        con = await self._get_db_connection()
+        try:
+            # Use the provided user_id or default to current user
+            summary_user_id = user_id or self.user_id
+            
+            # Calculate date threshold
+            if days_back > 0:
+                date_threshold = (datetime.now() - timedelta(days=days_back)).isoformat()
+                date_condition = "AND timestamp >= ?"
+                params = (summary_user_id, date_threshold)
+            else:
+                date_condition = ""
+                params = (summary_user_id,)
+            
+            # Get total count
+            async with con.execute(
+                f"""SELECT COUNT(*) as total 
+                FROM conversations 
+                WHERE user_id = ? {date_condition}""",
+                params
+            ) as cursor:
+                row = await cursor.fetchone()
+                total_messages = row["total"] if row else 0
+            
+            # Get breakdown by role
+            async with con.execute(
+                f"""SELECT role, COUNT(*) as count 
+                FROM conversations 
+                WHERE user_id = ? {date_condition}
+                GROUP BY role""",
+                params
+            ) as cursor:
+                rows = await cursor.fetchall()
+            
+            role_breakdown = {row["role"]: row["count"] for row in rows}
+            
+            # Get recent topics (most recent 5 user messages)
+            async with con.execute(
+                f"""SELECT content 
+                FROM conversations 
+                WHERE user_id = ? AND role = 'user' {date_condition}
+                ORDER BY timestamp DESC 
+                LIMIT 5""",
+                params
+            ) as cursor:
+                rows = await cursor.fetchall()
+            
+            recent_topics = [row["content"][:100] + "..." if len(row["content"]) > 100 else row["content"] 
+                           for row in rows]
+            
+            summary = {
+                "total_messages": total_messages,
+                "user_messages": role_breakdown.get("user", 0),
+                "assistant_messages": role_breakdown.get("assistant", 0),
+                "days_back": days_back,
+                "recent_topics": recent_topics,
+                "user_id": summary_user_id
+            }
+            
+            logger.info(f"Generated conversation summary: {total_messages} messages in {days_back} days")
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting conversation summary: {e}")
+            return {
+                "error": str(e),
+                "total_messages": 0,
+                "user_messages": 0,
+                "assistant_messages": 0
+            }
 
     async def update_user_id(self, user_id: str):
         """Update the user ID for this processor."""

@@ -12,7 +12,8 @@ from .definitions import (
 
 from .handlers import (
     execute_tool_call,
-    tool_handlers
+    tool_handlers,
+    set_memory_processor
 )
 
 from .formatters import (
@@ -29,6 +30,7 @@ __all__ = [
     # Handlers
     'execute_tool_call',
     'tool_handlers',
+    'set_memory_processor',
     
     # Formatters
     'format_tool_response_for_voice'

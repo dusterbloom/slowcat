@@ -21,12 +21,13 @@ from file_tools import file_tools
 class ToolHandlers:
     """Handles tool function execution for Slowcat"""
     
-    def __init__(self, memory_dir: str = "data/tool_memory"):
+    def __init__(self, memory_dir: str = "data/tool_memory", memory_processor=None):
         """Initialize tool handlers with memory storage"""
         self.memory_dir = Path(memory_dir)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.memory_file = self.memory_dir / "tool_memory.json"
         self._load_memory()
+        self.memory_processor = memory_processor
     
     def _load_memory(self):
         """Load persisted memory from file"""
@@ -527,9 +528,87 @@ class ToolHandlers:
         except Exception as e:
             logger.error(f"Error browsing URL: {e}")
             return {"error": str(e)}
+    
+    async def search_conversations(self, query: str, limit: int = 10, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Search through past conversation history
+        
+        Args:
+            query: Text to search for
+            limit: Maximum results to return
+            user_id: Optional user filter
+            
+        Returns:
+            Search results or error
+        """
+        try:
+            logger.info(f"Searching conversations for: {query}")
+            
+            if not self.memory_processor:
+                return {
+                    "error": "Memory is not enabled",
+                    "results": []
+                }
+            
+            # Call the memory processor's search method
+            results = await self.memory_processor.search_conversations(query, limit, user_id)
+            
+            # Format results for voice output
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "role": result["role"],
+                    "content": result["content"][:200] + "..." if len(result["content"]) > 200 else result["content"],
+                    "timestamp": result["timestamp"]
+                })
+            
+            return {
+                "query": query,
+                "results_count": len(results),
+                "results": formatted_results
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching conversations: {e}")
+            return {"error": str(e), "results": []}
+    
+    async def get_conversation_summary(self, days_back: int = 7, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get a summary of conversations
+        
+        Args:
+            days_back: Number of days to look back (0 for all time)
+            user_id: Optional user filter
+            
+        Returns:
+            Conversation summary or error
+        """
+        try:
+            logger.info(f"Getting conversation summary for {days_back} days")
+            
+            if not self.memory_processor:
+                return {
+                    "error": "Memory is not enabled",
+                    "total_messages": 0
+                }
+            
+            # Call the memory processor's summary method
+            summary = await self.memory_processor.get_conversation_summary(days_back, user_id)
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting conversation summary: {e}")
+            return {"error": str(e), "total_messages": 0}
 
 # Global instance
 tool_handlers = ToolHandlers()
+
+def set_memory_processor(memory_processor):
+    """Set the memory processor for tool handlers"""
+    global tool_handlers
+    tool_handlers.memory_processor = memory_processor
+    logger.info("Memory processor set for tool handlers")
 
 async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> Any:
     """
@@ -567,6 +646,10 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await file_tools.list_files(**arguments)
     elif function_name == "write_file":
         return await file_tools.write_file(**arguments)
+    elif function_name == "search_conversations":
+        return await tool_handlers.search_conversations(**arguments)
+    elif function_name == "get_conversation_summary":
+        return await tool_handlers.get_conversation_summary(**arguments)
     else:
         logger.error(f"Unknown tool function: {function_name}")
         return {"error": f"Unknown function: {function_name}"}

@@ -49,7 +49,7 @@ from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCC
 from processors import (AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor, 
                         VideoSamplerProcessor, SpeakerNameManager, LocalMemoryProcessor, 
                         MemoryContextInjector, GreetingFilterProcessor)
-from tools import get_tools
+from tools import get_tools, set_memory_processor
 
 # Lazy-loaded heavy ML modules (will be populated by _lazy_load_ml_modules)
 WhisperSTTServiceMLX: Optional[type] = None
@@ -231,6 +231,9 @@ async def _setup_processors(vr_config: VoiceRecognitionConfig) -> Tuple:
             max_history_items=config.memory.max_history_items,
             include_in_context=config.memory.include_in_context
         )
+        # Set memory processor for tool handlers
+        set_memory_processor(memory_processor)
+        
         memory_injector = MemoryContextInjector(
             memory_processor=memory_processor,
             system_prompt=config.memory.context_system_prompt,

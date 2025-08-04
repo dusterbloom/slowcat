@@ -110,6 +110,47 @@ RECALL_INFORMATION = FunctionSchema(
     required=["key"]
 )
 
+# Conversation History Tools
+SEARCH_CONVERSATIONS = FunctionSchema(
+    name="search_conversations",
+    description="Search through past conversation history for specific topics or information",
+    properties={
+        "query": {
+            "type": "string",
+            "description": "Text to search for in past conversations"
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Maximum number of results to return (default: 10)",
+            "default": 10
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Filter by specific user (optional)",
+            "default": None
+        }
+    },
+    required=["query"]
+)
+
+GET_CONVERSATION_SUMMARY = FunctionSchema(
+    name="get_conversation_summary",
+    description="Get a summary of conversations within a date range or overall statistics",
+    properties={
+        "days_back": {
+            "type": "integer",
+            "description": "Number of days back to look (default: 7, use 0 for all time)",
+            "default": 7
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Filter by specific user (optional)",
+            "default": None
+        }
+    },
+    required=[]
+)
+
 # Calculation Tools
 CALCULATE = FunctionSchema(
     name="calculate",
@@ -210,6 +251,8 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     BROWSE_URL,
     REMEMBER_INFORMATION,
     RECALL_INFORMATION,
+    SEARCH_CONVERSATIONS,
+    GET_CONVERSATION_SUMMARY,
     CALCULATE,
     READ_FILE,
     SEARCH_FILES,
