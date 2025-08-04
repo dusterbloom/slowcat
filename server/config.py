@@ -75,17 +75,17 @@ class VoiceRecognitionConfig:
     enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_VOICE_RECOGNITION", "true").lower() == "true")
     profile_dir: str = "data/speaker_profiles"
     
-    # Recognition thresholds
-    confidence_threshold: float = 0.50  # Balanced threshold
-    min_utterance_duration_seconds: float = 1.5
+    # Recognition thresholds - Optimized for real-world conditions
+    confidence_threshold: float = 0.70  # Lowered slightly for real-world variability
+    min_utterance_duration_seconds: float = 1.0  # Reduced from 1.5
     
     # Auto-enrollment settings
     min_utterances_for_enrollment: int = 3
-    consistency_threshold: float = 0.55  # Reasonable consistency requirement
-    min_consistency_threshold: float = 0.40  # Allow some variation
+    consistency_threshold: float = 0.65  # Average consistency between utterances
+    min_consistency_threshold: float = 0.65  # Lowered for enrollment flexibility
     enrollment_window_minutes: int = 30
-    new_speaker_grace_period_seconds: int = 60
-    new_speaker_similarity_threshold: float = 0.45  # Grace period threshold
+    new_speaker_grace_period_seconds: int = 120  # 2-minute grace period after enrollment
+    new_speaker_similarity_threshold: float = 0.65  # Lower threshold during grace period
     
     # Profile adaptation
     profile_adaptation_rate: float = 0.05

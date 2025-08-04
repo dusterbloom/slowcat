@@ -107,10 +107,15 @@ class LightweightVoiceRecognition:
         finally:
             self.utterance_buffer.clear()
     
-    def process_audio_frame(self, audio_data: bytes):
+    async def process_audio_frame(self, frame: Any, sample_rate: int):
         """Buffer audio frames when the user is speaking."""
         if self.enabled and self.is_speaking:
-            self.utterance_buffer.extend(audio_data)
+            # Extract audio bytes from frame
+            if hasattr(frame, 'audio'):
+                self.utterance_buffer.extend(frame.audio)
+            else:
+                # Fallback if frame is just bytes
+                self.utterance_buffer.extend(frame)
 
     async def _process_speaker_identification(self, audio_array: np.ndarray):
         """
