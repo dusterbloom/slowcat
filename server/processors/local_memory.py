@@ -280,13 +280,17 @@ class LocalMemoryProcessor(FrameProcessor):
             )
             logger.debug(f"💭 Added user message to memory: {frame.text[:50]}...")
 
-        # Handle text frames (assistant output) but exclude transcriptions
+        # Handle text frames (assistant output) but exclude transcriptions and tool calls
         elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame) and frame.text:
-            # Fire and forget - don't block on DB write
-            asyncio.create_task(
-                self._add_to_memory('assistant', frame.text)
-            )
-            logger.debug(f"🤖 Added assistant message to memory: {frame.text[:50]}...")
+            # Skip if this looks like a tool call
+            if frame.text.strip().startswith('[') and ']' in frame.text:
+                logger.debug(f"🔧 Skipping tool call from memory: {frame.text[:50]}...")
+            else:
+                # Fire and forget - don't block on DB write
+                asyncio.create_task(
+                    self._add_to_memory('assistant', frame.text)
+                )
+                logger.debug(f"🤖 Added assistant message to memory: {frame.text[:50]}...")
 
         await self.push_frame(frame, direction)
 

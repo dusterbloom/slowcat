@@ -208,13 +208,8 @@ class LLMWithToolsService(OpenAILLMService):
                     if hasattr(delta, 'content') and delta.content:
                         content_buffer += delta.content
                         
-                        # Check for wrong tool syntax like [tool_name ...]
-                        if '[' in content_buffer and ']' in content_buffer:
-                            import re
-                            wrong_syntax = re.findall(r'\[(search_conversations|get_weather|search_web|browse_url|remember_information|recall_information|calculate|read_file|write_file|list_files|search_files|get_current_time|get_conversation_summary)[^\]]*\]', content_buffer)
-                            if wrong_syntax:
-                                logger.error(f"❌ Model tried to use wrong tool syntax: {wrong_syntax}")
-                                logger.error("Model should use proper function calling, not bracket syntax!")
+                        # Don't check for bracket syntax here - it's handled by CustomToolParser in process_frame
+                        pass
                     
                     if not tool_call_detected and hasattr(delta, 'tool_calls') and delta.tool_calls:
                         tool_call_detected = True
@@ -246,7 +241,7 @@ class LLMWithToolsService(OpenAILLMService):
         
         # Log all text frames for debugging
         if isinstance(frame, TextFrame):
-            logger.debug(f"Processing TextFrame: {frame.text[:100]}...")
+            logger.info(f"🔍 LLMWithTools processing TextFrame: {frame.text[:100]}...")
         
         # Check if this is a text frame that might contain custom tool calls
         if isinstance(frame, TextFrame) and frame.text and '[' in frame.text:
