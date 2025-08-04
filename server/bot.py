@@ -3,7 +3,7 @@ import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, List, Tuple, Any
 
 # Add local pipecat to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "pipecat", "src"))
@@ -19,7 +19,7 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 # Import centralized config AFTER loading .env
-from config import config, get_voice_recognition_config
+from config import config, VoiceRecognitionConfig
 from fastapi import BackgroundTasks, FastAPI
 from loguru import logger
 
@@ -44,119 +44,58 @@ from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCC
 
 # Import voice recognition components
 from voice_recognition import AutoEnrollVoiceRecognition
-from processors import AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor, VideoSamplerProcessor, SpeakerNameManager
-from processors.local_memory import LocalMemoryProcessor
-from processors.memory_context_injector import MemoryContextInjector
+from processors import (AudioTeeProcessor, VADEventBridge, SpeakerContextProcessor, 
+                        VideoSamplerProcessor, SpeakerNameManager, LocalMemoryProcessor, 
+                        MemoryContextInjector, GreetingFilterProcessor)
+from tools import get_tools
 
-# Debug: Check if Brave API key is loaded
-brave_key_from_env = os.getenv("BRAVE_SEARCH_API_KEY")
-logger.info(f"BRAVE_SEARCH_API_KEY from env: {bool(brave_key_from_env)} (length: {len(brave_key_from_env) if brave_key_from_env else 0})")
-logger.info(f"Config brave_search_api_key: {bool(config.mcp.brave_search_api_key)} (length: {len(config.mcp.brave_search_api_key) if config.mcp.brave_search_api_key else 0})")
-
+# --- FastAPI and WebRTC Setup ---
 app = FastAPI()
-
-@app.get("/memory/{user_id}")
-async def get_memory(user_id: str):
-    """Debug endpoint to check memory contents"""
-    import json
-    from pathlib import Path
-    
-    memory_file = Path(config.memory.data_dir) / f"{user_id}_memory.json"
-    if memory_file.exists():
-        with open(memory_file, 'r') as f:
-            return json.load(f)
-    return {"error": "No memory found for user"}
-
 pcs_map: Dict[str, SmallWebRTCConnection] = {}
+ice_servers = [IceServer(urls=config.network.stun_server)]
 
-ice_servers = [
-    IceServer(
-        urls=config.network.stun_server,
-    )
-]
-
-
-# Build language config from centralized config
-LANGUAGE_CONFIG = {}
-for lang, cfg in config.language_configs.items():
-    LANGUAGE_CONFIG[lang] = {
+# --- Language Configuration ---
+LANGUAGE_CONFIG = {
+    lang: {
         "voice": cfg.voice,
         "whisper_language": getattr(Language, cfg.whisper_language),
-        "greeting": cfg.greeting,
         "system_instruction": cfg.system_instruction
-    }
-
-# Use config defaults
+    } for lang, cfg in config.language_configs.items()
+}
 DEFAULT_LANGUAGE = config.default_language
-VOICE_RECOGNITION_CONFIG = get_voice_recognition_config()
 
+#
+# --- Refactored Helper Functions ---
+#
 
-async def run_bot(webrtc_connection, language="en", llm_model=None):
-    # Log voice recognition status
-    if VOICE_RECOGNITION_CONFIG["enabled"]:
-        logger.info("🎙️ Voice recognition is ENABLED")
-    else:
-        logger.info("🔇 Voice recognition is DISABLED (set ENABLE_VOICE_RECOGNITION=true to enable)")
-    
-    # Log video status
-    video_enabled = config.video.enabled
-    if video_enabled:
-        logger.info("📹 Video is ENABLED")
-    else:
-        logger.info("📷 Video is DISABLED (set ENABLE_VIDEO=true to enable)")
-    
-    # Get language-specific configuration
-    lang_config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG[config.default_language])
+def _get_language_config(language: str) -> dict:
+    """Gets language-specific configuration and injects language consistency notes."""
+    lang_config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG[DEFAULT_LANGUAGE])
     logger.info(f"🌍 Using language: {language}")
     
-    # Add language consistency instruction based on selected language
     language_consistency_note = {
-        "en": "\n\nIMPORTANT: Always respond in English only. Never mix languages or use other languages in your response unless specifically asked by the user.",
-        "es": "\n\nIMPORTANTE: Siempre responde solo en español. Nunca mezcles idiomas ni uses otros idiomas en tu respuesta a menos que el usuario lo solicite específicamente.",
-        "fr": "\n\nIMPORTANT: Répondez toujours en français uniquement. Ne mélangez jamais les langues ou n'utilisez pas d'autres langues dans votre réponse sauf si l'utilisateur le demande spécifiquement.",
-        "ja": "\n\n重要：常に日本語のみで応答してください。ユーザーから特に要求されない限り、言語を混ぜたり、他の言語を使用したりしないでください。",
-        "it": "\n\nIMPORTANTE: Rispondi sempre solo in italiano. Non mescolare mai le lingue o usare altre lingue nella tua risposta a meno che l'utente non lo chieda specificamente.",
-        "zh": "\n\n重要提示：始终只用中文回复。除非用户特别要求，否则不要混合语言或在回复中使用其他语言。",
-        "pt": "\n\nIMPORTANTE: Sempre responda apenas em português. Nunca misture idiomas ou use outros idiomas em sua resposta, a menos que o usuário solicite especificamente.",
-        "de": "\n\nWICHTIG: Antworten Sie immer nur auf Deutsch. Mischen Sie niemals Sprachen oder verwenden Sie andere Sprachen in Ihrer Antwort, es sei denn, der Benutzer fragt ausdrücklich danach."
+        "en": "\n\nIMPORTANT: Always respond in English only.",
+        "es": "\n\nIMPORTANTE: Siempre responde solo en español.",
+        "fr": "\n\nIMPORTANT: Répondez toujours en français uniquement.",
+        "ja": "\n\n重要：常に日本語のみで応答してください。",
+        "it": "\n\nIMPORTANTE: Rispondi sempre solo in italiano.",
+        "zh": "\n\n重要提示：始终只用中文回复。",
+        "pt": "\n\nIMPORTANTE: Sempre responda apenas em português.",
+        "de": "\n\nWICHTIG: Antworten Sie immer nur auf Deutsch."
     }
     
-    # Modify the system instruction to include language consistency
     modified_instruction = lang_config["system_instruction"]
     if language in language_consistency_note:
         modified_instruction += language_consistency_note[language]
-    lang_config = dict(lang_config)  # Make a copy to modify
-    lang_config["system_instruction"] = modified_instruction
     
-    transport = SmallWebRTCTransport(
-        webrtc_connection=webrtc_connection,
-        params=TransportParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-            video_in_enabled=config.video.enabled,
-            video_in_width=config.video.video_width,
-            video_in_height=config.video.video_height,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(
-                stop_secs=config.audio.vad_stop_secs,
-                start_secs=config.audio.vad_start_secs,
-            )),
-            turn_analyzer=LocalSmartTurnAnalyzerV2(
-                smart_turn_model_path=config.models.smart_turn_model_path,  # Download from HuggingFace
-                params=SmartTurnParams(),
-            ),
-        ),
-    )
+    final_config = dict(lang_config)
+    final_config["system_instruction"] = modified_instruction
+    return final_config
 
-    # Choose faster model based on language
-    if language == "en":
-        # Use faster distil model for English
-        stt_model = MLXModel.DISTIL_LARGE_V3
-        logger.info("Using DISTIL_LARGE_V3 for faster English STT")
-    else:
-        # Use turbo model for other languages (MEDIUM or LARGE_V3_TURBO_Q4 for multilingual support)
-        stt_model = MLXModel.MEDIUM
-        logger.info(f"Using MEDIUM for {language} language")
-    
+def _initialize_services(lang_config: dict, language: str, llm_model: str) -> Tuple:
+    """Initializes and returns core services (STT, TTS, LLM)."""
+    stt_model = MLXModel.DISTIL_LARGE_V3 if language == "en" else MLXModel.MEDIUM
+    logger.info(f"Using STT model: {stt_model.name} for {language}")
     stt = WhisperSTTServiceMLX(model=stt_model, language=lang_config["whisper_language"])
 
     tts = KokoroTTSService(
@@ -164,347 +103,207 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         voice=lang_config["voice"], 
         language=lang_config["whisper_language"],
         sample_rate=config.audio.tts_sample_rate,
-        max_workers=config.audio.tts_max_workers  # Ensure single thread for Metal safety
+        max_workers=config.audio.tts_max_workers
     )
 
-    # Use provided LLM model or default
-    if llm_model:
-        logger.info(f"🤖 Using LLM model: {llm_model}")
-        selected_model = llm_model
-    else:
-        selected_model = config.models.default_llm_model
-        logger.info(f"🤖 Using default LLM model: {selected_model}")
+    selected_model = llm_model or config.models.default_llm_model
+    logger.info(f"🤖 Using LLM model: {selected_model}")
     
-    # Use tool-enabled LLM if MCP is enabled
+    llm_params = {
+        "api_key": None, 
+        "model": selected_model, 
+        "base_url": config.network.llm_base_url, 
+        "max_tokens": config.models.llm_max_tokens
+    }
     if config.mcp.enabled:
-        llm = LLMWithToolsService(
-            api_key=None,
-            model=selected_model,
-            base_url=config.network.llm_base_url,
-            max_tokens=config.models.llm_max_tokens,
-        )
-        logger.info(f"🔧 Tool-enabled LLM service initialized")
-        logger.info(f"📏 Context length: {config.models.llm_context_length} (set LLM_CONTEXT_LENGTH in .env)")
+        logger.info("🔧 Tool-enabled LLM service initialized")
+        llm = LLMWithToolsService(**llm_params)
+    else:
+        logger.info("🤖 Standard LLM service initialized")
+        llm = OpenAILLMService(**llm_params)
         
-        # Get tools in proper ToolsSchema format
-        from tools import get_tools, get_tool_names
-        tools = get_tools()
-        tool_names = get_tool_names()
-        logger.info(f"🛠️ Loaded {len(tool_names)} tools for function calling")
-        logger.info(f"📋 Available tools: {', '.join(tool_names)}")
-    else:
-        llm = OpenAILLMService(
-            api_key=None,
-            model=selected_model,
-            base_url=config.network.llm_base_url,
-            max_tokens=config.models.llm_max_tokens,
-        )
-        logger.info(f"🤖 LLM service initialized")
-        tools = NOT_GIVEN
-    
-    context = OpenAILLMContext(
-        [
-            {
-                "role": "system",
-                "content": lang_config["system_instruction"],
-            }
-        ],
-        tools=tools
-    )
-    
-    # Debug: verify context has tools
-    logger.info(f"🔍 Context tools type: {type(context.tools)}")
-    
-    # Check if tools are properly set
-    if context.tools is NOT_GIVEN:
-        logger.info("📋 No tools configured (MCP disabled)")
-    elif hasattr(context.tools, 'standard_tools'):
-        logger.info(f"✅ Context has {len(context.tools.standard_tools)} tools in ToolsSchema format")
-        if context.tools.standard_tools:
-            logger.info(f"First tool: {context.tools.standard_tools[0].name}")
-    elif isinstance(context.tools, list):
-        # Tools may be converted to list format by Pipecat adapter
-        logger.info(f"✅ Context has {len(context.tools)} tools in list format")
-        if context.tools and isinstance(context.tools[0], dict):
-            logger.info(f"First tool: {context.tools[0].get('function', {}).get('name', 'unknown')}")
-    else:
-        logger.warning(f"⚠️ Context tools in unexpected format: {type(context.tools)}")
-    context_aggregator = llm.create_context_aggregator(context)
-    
-    #
-    # Memory components
-    #
-    memory_processor = None
-    memory_injector = None
-    
-    # Check if memory is enabled
-    memory_enabled = config.memory.enabled
-    if memory_enabled:
-        logger.info("🧠 Memory is ENABLED - conversations will be persisted locally")
-        # Create local memory processor
+    return stt, tts, llm
+
+async def _setup_processors(vr_config: VoiceRecognitionConfig) -> Tuple:
+    """Initializes and wires up all frame processors."""
+    # Memory
+    if config.memory.enabled:
+        logger.info("🧠 Memory is ENABLED")
         memory_processor = LocalMemoryProcessor(
             data_dir=config.memory.data_dir,
-            user_id=config.memory.default_user_id,  # Will be updated dynamically when speaker is identified
+            user_id=config.memory.default_user_id,
             max_history_items=config.memory.max_history_items,
             include_in_context=config.memory.include_in_context
         )
-        
-        # Create memory context injector
         memory_injector = MemoryContextInjector(
             memory_processor=memory_processor,
             system_prompt=config.memory.context_system_prompt,
             inject_as_system=True
         )
     else:
-        logger.info("🚫 Memory is DISABLED (set ENABLE_MEMORY=true to enable)")
+        logger.info("🚫 Memory is DISABLED")
+        memory_processor, memory_injector = None, None
 
-    #
-    # Voice recognition components
-    #
-    voice_recognition = None
-    audio_tee = None
-    vad_bridge = None
-    speaker_context = None
-    speaker_name_manager = None
-    
-    #
-    # Video components
-    #
-    video_sampler = None
-    if transport._params.video_in_enabled:
-        logger.info("📹 Video input enabled, creating video sampler")
-        video_sampler = VideoSamplerProcessor(
-            sample_interval=config.video.sample_interval_seconds,  # Sample every 30 seconds to avoid overload
-            enabled=True
-        )
-    
-    # Initialize callback refs for voice recognition
-    callback_refs = {}
-    
-    if VOICE_RECOGNITION_CONFIG["enabled"]:
-        logger.info("🎤 Initializing voice recognition...")
-        logger.info(f"   Profile directory: {VOICE_RECOGNITION_CONFIG['profile_dir']}")
-        logger.info(f"   Auto-enrollment after {VOICE_RECOGNITION_CONFIG['auto_enroll']['min_utterances']} utterances")
-        # Create voice recognition
-        voice_recognition = AutoEnrollVoiceRecognition(VOICE_RECOGNITION_CONFIG)
+    # Video
+    video_sampler = VideoSamplerProcessor() if config.video.enabled else None
+    if config.video.enabled: logger.info("📹 Video is ENABLED")
+    else: logger.info("📷 Video is DISABLED")
+
+    # Voice Recognition
+    voice_recognition, audio_tee, vad_bridge, speaker_context, speaker_name_manager = (None,) * 5
+    if vr_config.enabled:
+        logger.info("🎙️ Voice recognition is ENABLED")
+        voice_recognition = AutoEnrollVoiceRecognition(vr_config)
         await voice_recognition.initialize()
-        logger.info("✅ Voice recognition initialized and ready!")
         
-        # Create audio tee to split audio stream
-        audio_tee = AudioTeeProcessor(enabled=True)
+        audio_tee = AudioTeeProcessor()
         audio_tee.register_audio_consumer(voice_recognition.process_audio_frame)
         
-        # Create VAD event bridge
         vad_bridge = VADEventBridge()
-        vad_bridge.set_callbacks(
-            on_started=voice_recognition.on_user_started_speaking,
-            on_stopped=voice_recognition.on_user_stopped_speaking
-        )
+        vad_bridge.set_callbacks(voice_recognition.on_user_started_speaking, voice_recognition.on_user_stopped_speaking)
         
-        # Create speaker context processor
-        speaker_context = SpeakerContextProcessor(
-            format_style="natural",
-            unknown_speaker_name="User"
-        )
-        
-        # Create speaker name manager
+        speaker_context = SpeakerContextProcessor()
         speaker_name_manager = SpeakerNameManager(voice_recognition)
         
-        # Store references for callbacks
-        callback_refs = {
-            'speaker_context': speaker_context,
-            'memory_processor': memory_processor,
-            'speaker_name_manager': speaker_name_manager,
-            'task': None,  # Will be set after task creation
-            'context_aggregator': context_aggregator,
-            'llm': llm
-        }
-        
-        # Connect voice recognition to speaker context and memory
-        async def on_speaker_changed(data):
-            callback_refs['speaker_context'].update_speaker(data)
-            # Update memory processor with speaker ID if available
-            if callback_refs['memory_processor'] and data.get('speaker_id'):
-                speaker_id = data['speaker_id']
-                # Use speaker name if available, otherwise use speaker ID
-                user_id = data.get('speaker_name', speaker_id)
-                callback_refs['memory_processor'].set_user_id(user_id)
+        async def on_speaker_changed(data: Dict[str, Any]):
+            speaker_context.update_speaker(data)
+            if memory_processor and data.get('speaker_id'):
+                user_id = data.get('speaker_name', data['speaker_id'])
+                memory_processor.set_user_id(user_id)
                 logger.info(f"📝 Memory switched to user: {user_id}")
         
-        async def on_speaker_enrolled(data):
-            """Handle when a new speaker is auto-enrolled"""
-            logger.info(f"New speaker enrolled: {data}")
-            if data.get('needs_name', False):
-                speaker_id = data['speaker_id']
-                # Start name collection in the manager
-                callback_refs['speaker_name_manager'].start_name_collection(speaker_id)
-                
-                # Update speaker context to inject system message
-                if callback_refs['speaker_context']:
-                    callback_refs['speaker_context'].handle_speaker_enrolled(data)
-                    logger.info("Speaker context updated with enrollment data")
-        
-        voice_recognition.set_callbacks(
-            on_speaker_changed=on_speaker_changed,
-            on_speaker_enrolled=on_speaker_enrolled
+        async def on_speaker_enrolled(data: Dict[str, Any]):
+            if data.get('needs_name'):
+                speaker_name_manager.start_name_collection(data['speaker_id'])
+            speaker_context.handle_speaker_enrolled(data)
+
+        voice_recognition.set_callbacks(on_speaker_changed, on_speaker_enrolled)
+    else:
+        logger.info("🔇 Voice recognition is DISABLED")
+
+    return (memory_processor, memory_injector, video_sampler, voice_recognition, 
+            audio_tee, vad_bridge, speaker_context, speaker_name_manager)
+
+def _build_pipeline(components: List[Any]) -> Pipeline:
+    """Builds the pipeline from a list of non-None components."""
+    return Pipeline([comp for comp in components if comp is not None])
+
+#
+# --- Main Bot Logic ---
+#
+
+async def run_bot(webrtc_connection, language="en", llm_model=None):
+    # 1. Get Configs
+    lang_config = _get_language_config(language)
+    
+    # 2. Initialize Core Services
+    stt, tts, llm = _initialize_services(lang_config, language, llm_model)
+
+    # 3. Setup Processors
+    processors = await _setup_processors(config.voice_recognition)
+    (memory_processor, memory_injector, video_sampler, voice_recognition, 
+     audio_tee, vad_bridge, speaker_context, speaker_name_manager) = processors
+
+    # 4. Setup Transport
+    transport = SmallWebRTCTransport(
+        webrtc_connection=webrtc_connection,
+        params=TransportParams(
+            audio_in_enabled=True, audio_out_enabled=True, video_in_enabled=config.video.enabled,
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(
+                stop_secs=config.audio.vad_stop_secs,
+                start_secs=config.audio.vad_start_secs,
+            )),
+            turn_analyzer=LocalSmartTurnAnalyzerV2(smart_turn_model_path=config.models.smart_turn_model_path),
         )
+    )
 
-    #
-    # RTVI events for Pipecat client UI
-    #
-    rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
+    # 5. Build Context
+    tools = get_tools() if config.mcp.enabled else NOT_GIVEN
+    context = OpenAILLMContext([{"role": "system", "content": lang_config["system_instruction"]}], tools=tools)
+    context_aggregator = llm.create_context_aggregator(context)
 
-    # Build pipeline with optional voice recognition and video
-    pipeline_components = [transport.input()]
-    
-    # Add video sampler early in pipeline if video is enabled
-    if video_sampler:
-        pipeline_components.append(video_sampler)
-    
-    if audio_tee:
-        pipeline_components.append(audio_tee)
-    
-    if vad_bridge:
-        pipeline_components.append(vad_bridge)
-    
-    # STT outputs TranscriptionFrame
-    pipeline_components.append(stt)
-    
-    # Memory processor should capture STT output immediately
-    if memory_processor:
-        pipeline_components.append(memory_processor)
-    
-    # Speaker context modifies TranscriptionFrame.user_id
-    if speaker_context:
-        pipeline_components.append(speaker_context)
-    
-    # RTVI processor
-    pipeline_components.append(rtvi)
-    
-    # Speaker name manager
-    if speaker_name_manager:
-        pipeline_components.append(speaker_name_manager)
-    
-    # Context aggregator processes user messages
-    pipeline_components.append(context_aggregator.user())
-    
-    # Memory injector adds context before LLM
-    if memory_injector:
-        pipeline_components.append(memory_injector)
-    
-    # LLM, TTS, and output
-    pipeline_components.extend([
+    # 6. Build Pipeline
+    rtvi = RTVIProcessor()
+
+
+    # NEW: Instantiate the GreetingFilterProcessor with the greeting text
+    # We need to get the greeting text from the original, unmodified system prompt.
+    greeting_text = "Hello, I'm Slowcat!" # This should be kept in sync with the prompt.
+    greeting_filter = GreetingFilterProcessor(greeting_text=greeting_text)
+
+    pipeline_components = [
+        transport.input(),
+        video_sampler,
+        audio_tee,
+        vad_bridge,
+        stt,
+        memory_processor,
+        speaker_context,
+        rtvi,
+        speaker_name_manager,
+        context_aggregator.user(),
+        memory_injector,
         llm,
         tts,
         transport.output(),
+        greeting_filter,
         context_aggregator.assistant(),
-    ])
+    ]
+    pipeline = _build_pipeline(pipeline_components)
 
-    pipeline = Pipeline(pipeline_components)
-
+    # 7. Create and Run Task
     task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-        observers=[RTVIObserver(rtvi)],
+        pipeline, 
+        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True), 
+        observers=[RTVIObserver(rtvi)]
     )
-    
-    # Set the task reference for voice recognition callbacks
-    if VOICE_RECOGNITION_CONFIG["enabled"] and 'callback_refs' in locals():
-        callback_refs['task'] = task
 
     @rtvi.event_handler("on_client_ready")
-    async def on_client_ready(rtvi):
-        await rtvi.set_bot_ready()
-        # Kick off the conversation
+    async def on_client_ready(rtvi_proc):
+        await rtvi_proc.set_bot_ready()
         await task.queue_frames([context_aggregator.user().get_context_frame()])
 
-    @transport.event_handler("on_first_participant_joined")
-    async def on_first_participant_joined(transport, participant):
-        print(f"Participant joined: {participant}")
-        await transport.capture_participant_transcription(participant["id"])
-
-    @transport.event_handler("on_participant_left")
-    async def on_participant_left(transport, participant, reason):
-        print(f"Participant left: {participant}")
-        await task.cancel()
-
     runner = PipelineRunner(handle_sigint=False)
-
     await runner.run(task)
 
+#
+# --- FastAPI Server Endpoints and Main Execution ---
+#
 
 @app.post("/api/offer")
 async def offer(request: dict, background_tasks: BackgroundTasks):
     pc_id = request.get("pc_id")
-
     if pc_id and pc_id in pcs_map:
         pipecat_connection = pcs_map[pc_id]
         logger.info(f"Reusing existing connection for pc_id: {pc_id}")
-        await pipecat_connection.renegotiate(
-            sdp=request["sdp"],
-            type=request["type"],
-            restart_pc=request.get("restart_pc", False),
-        )
+        await pipecat_connection.renegotiate(sdp=request["sdp"], type=request["type"], restart_pc=request.get("restart_pc", False))
     else:
         pipecat_connection = SmallWebRTCConnection(ice_servers)
         await pipecat_connection.initialize(sdp=request["sdp"], type=request["type"])
-
+        
         @pipecat_connection.event_handler("closed")
-        async def handle_disconnected(webrtc_connection: SmallWebRTCConnection):
-            logger.info(f"Discarding peer connection for pc_id: {webrtc_connection.pc_id}")
-            pcs_map.pop(webrtc_connection.pc_id, None)
-
-        # Run example function with SmallWebRTC transport arguments.
-        # Get language and llm_model from app state if available
+        async def handle_disconnected(conn: SmallWebRTCConnection):
+            logger.info(f"Discarding peer connection for pc_id: {conn.pc_id}")
+            pcs_map.pop(conn.pc_id, None)
+        
         language = getattr(app.state, 'language', DEFAULT_LANGUAGE)
         llm_model = getattr(app.state, 'llm_model', None)
         background_tasks.add_task(run_bot, pipecat_connection, language, llm_model)
 
     answer = pipecat_connection.get_answer()
-    # Updating the peer connection inside the map
     pcs_map[answer["pc_id"]] = pipecat_connection
-
     return answer
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield  # Run app
-    coros = [pc.disconnect() for pc in pcs_map.values()]
-    await asyncio.gather(*coros)
-    pcs_map.clear()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipecat Bot Runner")
-    parser.add_argument(
-        "--host", default=config.network.server_host, help=f"Host for HTTP server (default: {config.network.server_host})"
-    )
-    parser.add_argument(
-        "--port", type=int, default=config.network.server_port, help=f"Port for HTTP server (default: {config.network.server_port})"
-    )
-    parser.add_argument(
-        "--language", default=DEFAULT_LANGUAGE, 
-        choices=list(LANGUAGE_CONFIG.keys()),
-        help=f"Language for the bot (default: {DEFAULT_LANGUAGE})"
-    )
-    parser.add_argument(
-        "--llm", dest="llm_model", default=None,
-        help=f"LLM model to use (e.g., mistral:7b, llama2:13b, gemma:2b). Default: {config.models.default_llm_model}"
-    )
+    parser.add_argument("--host", default=config.network.server_host)
+    parser.add_argument("--port", type=int, default=config.network.server_port)
+    parser.add_argument("--language", default=DEFAULT_LANGUAGE, choices=list(LANGUAGE_CONFIG.keys()))
+    parser.add_argument("--llm", dest="llm_model", default=None)
     args = parser.parse_args()
 
-    # Set language and llm_model in app state
     app.state.language = args.language
     app.state.llm_model = args.llm_model
     
     logger.info(f"Starting bot with language: {args.language}")
-    if args.llm_model:
-        logger.info(f"Using custom LLM model: {args.llm_model}")
-    else:
-        logger.info(f"Using default LLM model: {config.models.default_llm_model}")
-    
     uvicorn.run(app, host=args.host, port=args.port)

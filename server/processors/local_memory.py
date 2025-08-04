@@ -1,9 +1,11 @@
+import sqlite3
 import json
 import os
 import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
+import threading
 
 # Add parent directory to path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,142 +15,137 @@ from pipecat.frames.frames import (
     Frame,
     TextFrame,
     TranscriptionFrame,
-    UserStartedSpeakingFrame,
-    UserStoppedSpeakingFrame,
-    StartInterruptionFrame
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from loguru import logger
 
-
 class LocalMemoryProcessor(FrameProcessor):
     """
-    A local memory processor that stores conversation history without cloud APIs.
-    Stores conversations in JSON files organized by user ID.
+    A local memory processor that stores conversation history in a reliable
+    SQLite database, ensuring data integrity and preventing corruption.
     """
-    
+
     def __init__(
         self,
         data_dir: str = "data/memory",
         user_id: Optional[str] = None,
-        max_history_items: int = 100,
-        include_in_context: int = 10
+        max_history_items: int = 200,
+        include_in_context: int = 10,
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.user_id = user_id or "default_user"
+        self.db_path = self.data_dir / "memory.sqlite"
+        self.user_id = user_id or config.memory.default_user_id
         self.max_history_items = max_history_items
         self.include_in_context = include_in_context
-        self.current_session: List[Dict] = []
-        self.memory_file = self.data_dir / f"{self.user_id}_memory{config.memory.file_extension if hasattr(config.memory, 'file_extension') else '.json'}"
-        self._load_memory()
         
-    def _load_memory(self):
-        """Load existing memory from file"""
-        self.memory: List[Dict] = []
-        if self.memory_file.exists():
-            try:
-                with open(self.memory_file, 'r') as f:
-                    data = json.load(f)
-                    self.memory = data.get('conversations', [])
-                    logger.info(f"Loaded {len(self.memory)} memory items for user {self.user_id}")
-            except Exception as e:
-                logger.error(f"Error loading memory: {e}")
-                
-    def _save_memory(self):
-        """Save memory to file"""
+        # Use thread-local storage for DB connection to ensure thread safety.
+        self._local = threading.local()
+        self._setup_database()
+        logger.info(f"📚 Memory database initialized for user: {self.user_id}")
+
+    def _get_db_connection(self) -> sqlite3.Connection:
+        """Get a thread-safe database connection."""
+        if not hasattr(self._local, "con"):
+            self._local.con = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._local.con.row_factory = sqlite3.Row
+        return self._local.con
+
+    def _setup_database(self):
+        """Create the database table if it doesn't exist."""
+        con = self._get_db_connection()
         try:
-            # Keep only the most recent items
-            if len(self.memory) > self.max_history_items:
-                self.memory = self.memory[-self.max_history_items:]
-                
-            data = {
-                'user_id': self.user_id,
-                'last_updated': datetime.now().isoformat(),
-                'conversations': self.memory
-            }
-            
-            with open(self.memory_file, 'w') as f:
-                json.dump(data, f, indent=2)
-                
+            with con:
+                cur = con.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        metadata TEXT
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_user_id_timestamp ON conversations (user_id, timestamp);")
         except Exception as e:
-            logger.error(f"Error saving memory: {e}")
-            
+            logger.error(f"Error setting up database: {e}")
+
     def _add_to_memory(self, role: str, content: str, metadata: Optional[Dict] = None):
-        """Add a conversation item to memory"""
-        item = {
-            'timestamp': datetime.now().isoformat(),
-            'role': role,
-            'content': content,
-            'session_id': id(self.current_session),
-            'metadata': metadata or {}
-        }
-        
-        self.current_session.append(item)
-        self.memory.append(item)
-        
-        # Save periodically
-        if len(self.current_session) % 5 == 0:
-            self._save_memory()
-            
+        """Add a conversation item to the database transactionally."""
+        con = self._get_db_connection()
+        try:
+            with con:
+                cur = con.cursor()
+                cur.execute(
+                    "INSERT INTO conversations (user_id, role, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        self.user_id,
+                        role,
+                        content,
+                        datetime.now().isoformat(),
+                        json.dumps(metadata or {}),
+                    ),
+                )
+            self._prune_history()
+        except Exception as e:
+            logger.error(f"Error adding to memory: {e}")
+
+    def _prune_history(self):
+        """Keep the conversation history for the current user within max_history_items."""
+        con = self._get_db_connection()
+        try:
+            with con:
+                cur = con.cursor()
+                cur.execute("SELECT COUNT(*) FROM conversations WHERE user_id = ?", (self.user_id,))
+                count = cur.fetchone()[0]
+
+                if count > self.max_history_items:
+                    limit = count - self.max_history_items
+                    cur.execute(
+                        "DELETE FROM conversations WHERE id IN (SELECT id FROM conversations WHERE user_id = ? ORDER BY timestamp ASC LIMIT ?)",
+                        (self.user_id, limit)
+                    )
+                    logger.debug(f"Pruned {limit} old memory items for user {self.user_id}")
+        except Exception as e:
+            logger.error(f"Error pruning memory history: {e}")
+
     def get_context_messages(self) -> List[Dict[str, str]]:
-        """Get recent conversation history for context"""
-        if not self.memory:
+        """Get recent conversation history from the database for LLM context."""
+        con = self._get_db_connection()
+        try:
+            cur = con.cursor()
+            cur.execute(
+                "SELECT role, content FROM conversations WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (self.user_id, self.include_in_context),
+            )
+            rows = cur.fetchall()
+            # Reverse to get chronological order for the LLM context.
+            return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+        except Exception as e:
+            logger.error(f"Error getting context messages: {e}")
             return []
-            
-        # Get the most recent conversations
-        recent_items = self.memory[-self.include_in_context:]
-        
-        # Format as messages for LLM context
-        messages = []
-        for item in recent_items:
-            messages.append({
-                'role': 'user' if item['role'] == 'user' else 'assistant',
-                'content': item['content']
-            })
-            
-        return messages
-        
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        
-        # Debug logging
-        # logger.debug(f"Memory processor received {type(frame).__name__} going {direction.name}")
-        
-        # Capture user messages from STT (TranscriptionFrame flows downstream)
-        if isinstance(frame, TranscriptionFrame):
-            # STT output with user transcription
-            if frame.text:
-                metadata = {
-                    'user_id': frame.user_id,
-                    'timestamp': frame.timestamp,
-                    'language': str(frame.language) if frame.language else None
-                }
-                self._add_to_memory('user', frame.text, metadata)
-                logger.info(f"📝 Stored user message from {frame.user_id}: {frame.text[:50]}...")
-                
-        # Capture assistant responses (TextFrame from TTS going downstream)
-        elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame):
-            # TTS output or LLM generated text
-            if hasattr(frame, 'text') and frame.text:
-                self._add_to_memory('assistant', frame.text)
-                logger.info(f"💬 Stored assistant message: {frame.text[:50]}...")
-                
-        # Save on conversation end
-        elif isinstance(frame, (UserStoppedSpeakingFrame, StartInterruptionFrame)):
-            self._save_memory()
-            
+
+        if isinstance(frame, TranscriptionFrame) and frame.text and direction == FrameDirection.DOWNSTREAM:
+            metadata = {
+                'user_id': frame.user_id,
+                'timestamp': frame.timestamp,
+                'language': str(frame.language) if frame.language else None
+            }
+            self._add_to_memory('user', frame.text, metadata)
+            logger.info(f"📝 Stored user message from {frame.user_id}: {frame.text[:50]}...")
+        elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame) and frame.text and direction == FrameDirection.DOWNSTREAM:
+            self._add_to_memory('assistant', frame.text)
+            logger.info(f"💬 Stored assistant message: {frame.text[:50]}...")
+
         await self.push_frame(frame, direction)
-        
+
     def set_user_id(self, user_id: str):
-        """Change the current user and reload their memory"""
+        """Change the current user for memory operations."""
         if user_id != self.user_id:
-            # Save current user's memory
-            self._save_memory()
-            
-            # Switch to new user
+            logger.info(f"Memory context switching from '{self.user_id}' to '{user_id}'")
             self.user_id = user_id
-            self.memory_file = self.data_dir / f"{user_id}_memory{config.memory.file_extension if hasattr(config.memory, 'file_extension') else '.json'}"
-            self.current_session = []
-            self._load_memory()

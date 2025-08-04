@@ -6,10 +6,13 @@ from datetime import datetime, timedelta
 import json
 import os
 import asyncio
+from config import VoiceRecognitionConfig 
 
 from .lightweight import LightweightVoiceRecognition
 
 logger = logging.getLogger(__name__)
+
+
 
 
 class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
@@ -19,15 +22,18 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     Magically learns voices as people speak without explicit enrollment!
     """
     
-    def __init__(self, config: Dict[str, Any]):
+   
+    def __init__(self, config: VoiceRecognitionConfig):
         super().__init__(config)
-        
-        # Auto-enrollment settings
-        self.auto_enroll = config.get('auto_enroll', {})
-        self.min_utterances = self.auto_enroll.get('min_utterances', 3)
-        self.consistency_threshold = self.auto_enroll.get('consistency_threshold', 0.85)
-        self.min_consistency_threshold = self.auto_enroll.get('min_consistency_threshold', 0.70)
-        self.enrollment_window = self.auto_enroll.get('enrollment_window_minutes', 30)
+        self.config = config
+
+
+        self.min_utterances = config.min_utterances_for_enrollment
+        self.consistency_threshold = config.consistency_threshold
+    
+
+        self.min_consistency_threshold = self.config.min_consistency_threshold
+        self.enrollment_window = self.config.enrollment_window_minutes
         
         # Track unknown speakers with a session-based approach
         self.speaker_counter = 0
@@ -36,8 +42,8 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
 
         # For dynamic thresholding after enrollment
         self.last_enrollment_time = None
-        self.new_speaker_grace_period = timedelta(seconds=self.auto_enroll.get('new_speaker_grace_period_seconds', 60))
-        self.new_speaker_similarity_threshold = self.auto_enroll.get('new_speaker_similarity_threshold', 0.65)
+        self.new_speaker_grace_period = timedelta(seconds=self.config.new_speaker_grace_period_seconds)
+        self.new_speaker_similarity_threshold = self.config.new_speaker_similarity_threshold
         
         # Load any auto-enrolled profiles
         self._load_auto_profiles()
@@ -225,7 +231,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             return
             
         for filename in os.listdir(auto_dir):
-            if filename.endswith(self.config.get('enrolled_profile_extension', '.json')):
+            if filename.endswith(self.config.profile_file_extension):
                 filepath = os.path.join(auto_dir, filename)
                 try:
                     with open(filepath, 'r') as f:
@@ -249,7 +255,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     def _load_speaker_names(self):
         """Load speaker name mappings"""
         try:
-            names_file = os.path.join(self.profile_dir, self.config.get('speaker_names_file', 'speaker_names.json'))
+            names_file = os.path.join(self.profile_dir, self.config.speaker_names_file)
             if os.path.exists(names_file):
                 with open(names_file, 'r') as f:
                     data = json.load(f)
@@ -270,7 +276,7 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
     def _save_speaker_names(self):
         """Save speaker name mappings to file"""
         try:
-            names_file = os.path.join(self.profile_dir, self.config.get('speaker_names_file', 'speaker_names.json'))
+            names_file = os.path.join(self.profile_dir, self.config.speaker_names_file)
             data = {
                 'mappings': self.speaker_names,
                 'updated_at': datetime.now().isoformat()

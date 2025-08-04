@@ -503,26 +503,3 @@ class Config:
 
 # Global config instance
 config = Config()
-
-
-# Helper functions for backward compatibility
-def get_voice_recognition_config() -> Dict[str, Any]:
-    """Get voice recognition config as dictionary for backward compatibility"""
-    vr = config.voice_recognition
-    return {
-        "enabled": vr.enabled,
-        "profile_dir": vr.profile_dir,
-        "confidence_threshold": vr.confidence_threshold,
-        "min_utterance_duration_seconds": vr.min_utterance_duration_seconds,
-        "profile_file_extension": vr.profile_file_extension,
-        "enrolled_profile_extension": vr.enrolled_profile_extension,
-        "speaker_names_file": vr.speaker_names_file,
-        "auto_enroll": {
-            "min_utterances": vr.min_utterances_for_enrollment,
-            "consistency_threshold": vr.consistency_threshold,
-            "min_consistency_threshold": vr.min_consistency_threshold,
-            "enrollment_window_minutes": vr.enrollment_window_minutes,
-            "new_speaker_grace_period_seconds": vr.new_speaker_grace_period_seconds,
-            "new_speaker_similarity_threshold": vr.new_speaker_similarity_threshold,
-        }
-    }

@@ -6,17 +6,21 @@ Uses FunctionSchema and ToolsSchema for OpenAI-compatible tool calling with LM S
 from typing import Optional
 import json
 from loguru import logger
-
+from openai import NOT_GIVEN
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-
+from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from tools.handlers import execute_tool_call
 from tools.formatters import format_tool_response_for_voice
 from tools.definitions import ALL_FUNCTION_SCHEMAS, get_tools
 
-
+from pipecat.frames.frames import (
+    Frame,
+    TextFrame,
+    TranscriptionFrame,
+)
 class LLMWithToolsService(OpenAILLMService):
     """
     Unified LLM service with proper Pipecat function calling support.
@@ -108,57 +112,66 @@ class LLMWithToolsService(OpenAILLMService):
         return handler
     
     async def _process_context(self, context):
-        """Override to ensure tools are properly set"""
-        # Log context details
-        if hasattr(context, 'tools') and context.tools:
-            if isinstance(context.tools, ToolsSchema):
-                tool_count = len(context.tools.standard_tools)
-                logger.debug(f"📋 Processing context with {tool_count} tools (ToolsSchema)")
-            elif isinstance(context.tools, list):
-                # Tools have been converted to list format by adapter
-                tool_count = len(context.tools)
-                logger.debug(f"📋 Processing context with {tool_count} tools (list format)")
-                if tool_count > 0 and isinstance(context.tools[0], dict):
-                    logger.debug(f"📋 First tool: {context.tools[0].get('function', {}).get('name', 'unknown')}")
-            else:
-                logger.warning(f"⚠️ Context tools in unexpected format: {type(context.tools)}")
+        """
+        Override to ensure tools are properly set and to handle the initial
+        greeting where no user message is present.
+        """
+        has_user_message = any(
+            msg.get("role") == "user" for msg in context.messages
+        )
+
+        # If there's no user message (i.e., the bot is speaking first) and tools are present,
+        # create a temporary context object without tools for this specific API call.
+        if not has_user_message and context.tools is not NOT_GIVEN:
+            logger.debug("No user message in context. Creating temporary tool-less context for this turn.")
+            # Create a new, temporary context instance without tools.
+            tool_less_context = OpenAILLMContext(
+                messages=context.messages,
+                tools=NOT_GIVEN
+            )
+            # Process the temporary context. The original context remains unchanged for future turns.
+            return await super()._process_context(tool_less_context)
         else:
-            logger.debug("📋 Processing context without tools")
-        
-        return await super()._process_context(context)
-    
+            # For all other cases (or if no tools are defined), process the original context.
+            return await super()._process_context(context)
+
     async def _stream_chat_completions(self, context):
-        """Override to add debugging for tool calls"""
+        """Override to add debugging and push immediate feedback on tool calls."""
         logger.debug("🌊 Starting streaming chat completion")
-        
-        # Check if tools are in the messages
-        if hasattr(context, '_messages') and context._messages:
-            # Log if we're sending tools to the API
-            messages = context._messages
-            logger.debug(f"📨 Sending {len(messages)} messages to LLM")
-        
-        # Get the stream from parent class
+
         stream = await super()._stream_chat_completions(context)
-        
-        # Create a wrapper that logs tool calls
-        async def debug_stream():
+
+        async def feedback_stream():
             tool_call_detected = False
             async for chunk in stream:
-                # Log if we see tool calls
-                if hasattr(chunk, 'choices') and chunk.choices:
+                if not tool_call_detected and hasattr(chunk, 'choices') and chunk.choices:
                     delta = chunk.choices[0].delta
                     if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                        if not tool_call_detected:
-                            logger.info(f"🔧 Tool call detected in stream")
-                            tool_call_detected = True
-                        for tool_call in delta.tool_calls:
-                            if hasattr(tool_call, 'function') and tool_call.function:
-                                if hasattr(tool_call.function, 'name') and tool_call.function.name:
-                                    logger.info(f"🎯 Tool requested: {tool_call.function.name}")
+                        tool_call_detected = True
+                        # We only need to do this once per set of tool calls
+                        try:
+                            # Get the first function name to create a generic response
+                            function_name = delta.tool_calls[0].function.name
+                            if function_name:
+                                feedback_text = "Just a moment."
+                                if "search" in function_name or "browse" in function_name:
+                                    feedback_text = "Searching for that."
+                                elif "weather" in function_name:
+                                    feedback_text = "One moment while I check the weather."
+                                elif "calculate" in function_name:
+                                    feedback_text = "Calculating that for you."
+                                
+                                logger.info(f"🎤 Pushing immediate TTS feedback for tool call: '{feedback_text}'")
+                                # This TextFrame goes directly to the TTS service, providing instant feedback.
+                                await self.push_frame(TextFrame(feedback_text))
+                        except (AttributeError, IndexError):
+                            # Fallback if the chunk structure is unexpected
+                            logger.warning("Could not extract function name for immediate feedback.")
                 yield chunk
-        
-        return debug_stream()
+
+        return feedback_stream()
     
+
     def get_tools_schema(self) -> ToolsSchema:
         """
         Get the ToolsSchema object for use in context

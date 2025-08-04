@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime
 import pickle
 import os
+from config import VoiceRecognitionConfig 
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +28,15 @@ class LightweightVoiceRecognition:
     speaking and processes the complete utterance when they stop.
     """
     
-    def __init__(self, config: Dict[str, Any]):
-        # Store config for subclasses
+    def __init__(self, config: VoiceRecognitionConfig):
         self.config = config
-        
+        self.enabled = config.enabled and RESEMBLYZER_AVAILABLE
+        self.min_utterance_duration = config.min_utterance_duration_seconds
+    
+
         # Configuration
-        self.enabled = config.get('enabled', True) and RESEMBLYZER_AVAILABLE
         self.sample_rate = 16000  # Fixed for consistency with Resemblyzer
-        self.min_utterance_duration = config.get('min_utterance_duration_seconds', 1.0)
-        self.similarity_threshold = config.get('confidence_threshold', 0.75)
+        self.similarity_threshold = config.confidence_threshold
         
         # Speaker database
         self.speakers = {}  # name -> fingerprints list
@@ -50,8 +51,8 @@ class LightweightVoiceRecognition:
         self._on_speaker_enrolled: Optional[Callable] = None
         
         # Profile storage
-        self.profile_dir = config.get('profile_dir', 'data/speaker_profiles')
-        self.profile_extension = config.get('profile_file_extension', '.pkl')
+        self.profile_dir = config.profile_dir
+        self.profile_extension = config.profile_file_extension
         
         # Initialize encoder if available
         if self.enabled:
