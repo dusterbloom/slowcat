@@ -266,9 +266,11 @@ async def _setup_processors(vr_config: VoiceRecognitionConfig) -> Tuple:
         
         async def on_speaker_changed(data: Dict[str, Any]):
             speaker_context.update_speaker(data)
-            if memory_processor and data.get('speaker_id'):
-                user_id = data.get('speaker_name', data['speaker_id'])
-                memory_processor.set_user_id(user_id)
+            if memory_processor:
+                # Use speaker_name if available, otherwise speaker_id
+                user_id = data.get('speaker_name', data.get('speaker_id', 'unknown'))
+                await memory_processor.update_user_id(user_id)
+                logger.info(f"Updated memory processor to use user_id: {user_id}")
                 logger.info(f"📝 Memory switched to user: {user_id}")
         
         async def on_speaker_enrolled(data: Dict[str, Any]):
