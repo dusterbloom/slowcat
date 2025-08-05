@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameProcessor
 
+from config import config
 
 class DJModeConfigFrame(SystemFrame):
     """Frame to update TTS voice and system prompt for DJ mode"""
@@ -45,23 +46,80 @@ class MusicModeProcessor(FrameProcessor):
     def __init__(
         self,
         *,
-        mode_toggle_phrase: str = "music mode",
-        exit_phrase: str = "stop music mode",
-        dj_voice: Optional[str] = None,
-        dj_system_prompt: Optional[str] = None,
+        language: str = "en",
         **kwargs
     ):
         super().__init__(**kwargs)
         
-        self.mode_toggle_phrase = mode_toggle_phrase.lower()
-        self.exit_phrase = exit_phrase.lower()
         self.music_mode_active = False
-        self.dj_voice = dj_voice
-        self.dj_system_prompt = dj_system_prompt
         self.original_voice = None
         self.original_system_prompt = None
         
-        logger.info(f"MusicMode initialized: toggle='{mode_toggle_phrase}', dj_voice='{dj_voice}'")
+        # Get language-specific settings
+        lang_config = config.get_language_config(language)
+        self.dj_voice = lang_config.dj_voice
+        self.dj_system_prompt = lang_config.dj_system_prompt
+
+        # Get language-specific phrases
+        self.translations = self.get_translations(language)
+        self.mode_toggle_phrase = self.translations["mode_toggle_phrase"].lower()
+        self.exit_phrase = self.translations["exit_phrase"].lower()
+
+        logger.info(f"MusicMode initialized: toggle='{self.mode_toggle_phrase}', dj_voice='{self.dj_voice}'")
+
+    def get_translations(self, language: str) -> Dict[str, str]:
+        """Returns a dictionary of translated strings for the given language."""
+        translations = {
+            "en": {
+                "mode_toggle_phrase": "music mode",
+                "exit_phrase": "stop music mode",
+                "enter_notification": "🎵 Music mode on. I'll stay quiet and just control the music. Say 'stop music mode' to exit.",
+                "exit_notification": "Music mode off. I can talk normally again!"
+            },
+            "es": {
+                "mode_toggle_phrase": "modo música",
+                "exit_phrase": "detener modo música",
+                "enter_notification": "🎵 Modo música activado. Me mantendré en silencio y solo controlaré la música. Di 'detener modo música' para salir.",
+                "exit_notification": "Modo música desactivado. ¡Puedo hablar normalmente de nuevo!"
+            },
+            "fr": {
+                "mode_toggle_phrase": "mode musique",
+                "exit_phrase": "arrêter le mode musique",
+                "enter_notification": "🎵 Mode musique activé. Je resterai silencieux et ne contrôlerai que la musique. Dites 'arrêter le mode musique' pour quitter.",
+                "exit_notification": "Mode musique désactivé. Je peux à nouveau parler normalement !"
+            },
+            "de": {
+                "mode_toggle_phrase": "musikmodus",
+                "exit_phrase": "musikmodus beenden",
+                "enter_notification": "🎵 Musikmodus ein. Ich bleibe leise und steuere nur die Musik. Sage 'musikmodus beenden', um ihn zu verlassen.",
+                "exit_notification": "Musikmodus aus. Ich kann wieder normal sprechen!"
+            },
+            "it": {
+                "mode_toggle_phrase": "modalità musica",
+                "exit_phrase": "termina modalità musica",
+                "enter_notification": "🎵 Modalità musica attivata. Rimarrò in silenzio e controllerò solo la musica. Di' 'termina modalità musica' per uscire.",
+                "exit_notification": "Modalità musica disattivata. Posso di nuovo parlare normalmente!"
+            },
+            "pt": {
+                "mode_toggle_phrase": "modo música",
+                "exit_phrase": "parar modo música",
+                "enter_notification": "🎵 Modo música ativado. Ficarei quieto e apenas controlarei a música. Diga 'parar modo música' para sair.",
+                "exit_notification": "Modo música desativado. Posso falar normalmente de novo!"
+            },
+            "ja": {
+                "mode_toggle_phrase": "ミュージックモード",
+                "exit_phrase": "ミュージックモードを停止",
+                "enter_notification": "🎵 ミュージックモードがオンになりました。静かにして音楽の操作のみ行います。「ミュージックモードを停止」と言うと終了します。",
+                "exit_notification": "ミュージックモードがオフになりました。また普通に話せます！"
+            },
+            "zh": {
+                "mode_toggle_phrase": "音乐模式",
+                "exit_phrase": "停止音乐模式",
+                "enter_notification": "🎵 音乐模式已开启。我将保持安静，只控制音乐。说“停止音乐模式”即可退出。",
+                "exit_notification": "音乐模式已关闭。我可以再次正常交谈了！"
+            }
+        }
+        return translations.get(language, translations["en"])
     
     async def process_frame(self, frame: Frame, direction=None):
         """Process frames - in music mode, only allow music commands"""
@@ -197,10 +255,7 @@ class MusicModeProcessor(FrameProcessor):
             await self.push_frame(config_update)
         
         # Brief notification
-        notification = TextFrame(
-            "🎵 Music mode on. I'll stay quiet and just control the music. "
-            "Say 'stop music mode' to exit."
-        )
+        notification = TextFrame(self.translations["enter_notification"])
         await self.push_frame(notification)
         
         logger.info("🎵 Entered music mode")
@@ -219,7 +274,7 @@ class MusicModeProcessor(FrameProcessor):
             await self.push_frame(DJModeConfigFrame(entering_mode=False))
         
         # Brief notification
-        notification = TextFrame("Music mode off. I can talk normally again!")
+        notification = TextFrame(self.translations["exit_notification"])
         await self.push_frame(notification)
         
         logger.info("🎵 Exited music mode and stopped music")

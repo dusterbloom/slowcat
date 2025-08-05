@@ -148,8 +148,6 @@ class DJModeConfig:
     duck_volume: float = 0.3  # Volume when speaking
     crossfade_seconds: float = 2.0
     auto_dj: bool = True  # Automatically queue songs
-    dj_voice: str = "am_echo"  # Special voice for DJ mode
-    dj_system_prompt: str = "You are a cool radio DJ spinning tunes. Keep your commentary brief and energetic. When announcing songs, be enthusiastic but concise."  # Custom DJ personality
     dj_personality: str = "friendly"  # friendly, energetic, chill, professional
 
 
@@ -160,6 +158,8 @@ class LanguageVoiceMapping:
     whisper_language: str  # Will be converted to Language enum
     greeting: str
     system_instruction: str
+    dj_voice: str
+    dj_system_prompt: str
 
 
 # Language configurations
@@ -203,7 +203,9 @@ IMPORTANT: You MUST use the search_web tool when users ask about:
 - Information that might have changed
 - Anything requiring up-to-date information
 
-Start the conversation by saying, "Hello, I'm Slowcat!" Then stop and wait for the user."""
+Start the conversation by saying, "Hello, I'm Slowcat!" Then stop and wait for the user.""",
+        dj_voice="am_echo",
+        dj_system_prompt="You are a cool radio DJ spinning tunes. Keep your commentary brief and energetic. When announcing songs, be enthusiastic but concise."
     ),
     "es": LanguageVoiceMapping(
         voice="ef_dora",
@@ -244,7 +246,9 @@ IMPORTANTE: DEBES usar la herramienta search_web cuando los usuarios pregunten s
 - Información que podría haber cambiado.
 - Cualquier cosa que requiera información actualizada.
 
-Comienza la conversación diciendo: "¡Hola, soy Slowcat!" Luego detente y espera al usuario."""
+Comienza la conversación diciendo: "¡Hola, soy Slowcat!" Luego detente y espera al usuario.""",
+        dj_voice="ef_dora",
+        dj_system_prompt="Eres un DJ de radio genial pinchando música. Mantén tus comentarios breves y enérgicos. Al anunciar canciones, sé entusiasta pero conciso."
     ),
     "fr": LanguageVoiceMapping(
         voice="ff_siwis",
@@ -264,10 +268,10 @@ Vous disposez de plusieurs capacités avancées :
    - **get_weather**: Utilisez-le pour les informations météorologiques.
    - **get_current_time**: Utilisez-le pour les questions sur l'heure/la date.
    - **calculate**: Utilisez-le pour les calculs mathématiques.
-   - **browse_url**: Utilisez-le pour lire des pages web spécifiques.
+   - **browse_url**: Utilisez-le para lire des pages web spécifiques.
    - **remember_information/recall_information**: Utilisez-le pour stocker/récupérer des informations clé-valeur.
    - **search_conversations**: Utilisez-le pour rechercher dans notre historique de conversations passées.
-   - **get_conversation_summary**: Utilisez-le pour obtenir des statistiques sur nos conversations.
+   - **get_conversation_summary**: Utilisez-le para obter estatísticas sobre nossas conversas.
    - **read_file/write_file/list_files**: Utilisez-le pour les opérations sur les fichiers.
    - **Outils de DJ musical** (si disponibles) :
      - **play_music/pause_music/skip_song**: Contrôlez la lecture de la musique comme un DJ.
@@ -285,7 +289,9 @@ IMPORTANT : Vous DEVEZ utiliser l'outil search_web lorsque les utilisateurs pose
 - Des informations qui pourraient avoir changé.
 - Tout ce qui nécessite des informations à jour.
 
-Commencez la conversation en disant : "Bonjour, je suis Slowcat !" Puis arrêtez-vous et attendez l'utilisateur."""
+Commencez la conversation en disant : "Bonjour, je suis Slowcat !" Puis arrêtez-vous et attendez l'utilisateur.""",
+        dj_voice="ff_siwis",
+        dj_system_prompt="Vous êtes un DJ de radio cool qui passe des morceaux. Gardez vos commentaires brefs et énergiques. Lorsque vous annoncez des chansons, soyez enthousiaste mais concis."
     ),
     "de": LanguageVoiceMapping(
         voice="af_heart",  # Fallback to English voice
@@ -326,7 +332,9 @@ WICHTIG: Sie MÜSSEN das search_web-Tool verwenden, wenn Benutzer nach Folgendem
 - Informationen, die sich geändert haben könnten.
 - Alles, was aktuelle Informationen erfordert.
 
-Beginnen Sie das Gespräch mit den Worten: "Hallo, ich bin Slowcat!" Dann halten Sie an und warten Sie auf den Benutzer."""
+Beginnen Sie das Gespräch mit den Worten: "Hallo, ich bin Slowcat!" Dann halten Sie an und warten Sie auf den Benutzer.""",
+        dj_voice="af_heart",
+        dj_system_prompt="Du bist ein cooler Radio-DJ, der Musik auflegt. Halte deine Kommentare kurz und energisch. Wenn du Songs ankündigst, sei enthusiastisch, aber prägnant."
     ),
     "ja": LanguageVoiceMapping(
         voice="jf_alpha",
@@ -367,10 +375,12 @@ Beginnen Sie das Gespräch mit den Worten: "Hallo, ich bin Slowcat!" Dann halten
 - 変更された可能性のある情報
 - 最新情報を必要とするものすべて
 
-「こんにちは、私はSlowcatです！」と言って会話を始めてください。その後、停止してユーザーを待ってください。"""
+「こんにちは、私はSlowcatです！」と言って会話を始めてください。その後、停止してユーザーを待ってください。""",
+        dj_voice="jf_alpha",
+        dj_system_prompt="あなたはクールなラジオDJで、曲をかけています。コメントは簡潔でエネルギッシュにしてください。曲を紹介するときは、熱意を持って、しかし簡潔に。"
     ),
     "it": LanguageVoiceMapping(
-        voice="im_nicola",
+        voice="if_sara",
         whisper_language="IT",
         greeting="Ciao, sono Slowcat!",
         system_instruction="""Sei Slowcat, un assistente AI amichevole e disponibile con potenti capacità.
@@ -386,7 +396,7 @@ Disponi di molteplici funzionalità avanzate:
    - **search_web**: Usalo per QUALSIASI informazione attuale, notizia, fatto o cosa che non sai.
    - **get_weather**: Usalo per informazioni meteorologiche.
    - **get_current_time**: Usalo per domande su ora/data.
-   - **calculate**: Usalo per calcoli matematici.
+   - **calculate**: Usalo per calcoli matemáticos.
    - **browse_url**: Usalo per leggere pagine web specifiche.
    - **remember_information/recall_information**: Usalo per memorizzare/recuperare informazioni chiave-valore.
    - **search_conversations**: Usalo per cercare nella cronologia delle nostre conversazioni passate.
@@ -408,7 +418,9 @@ IMPORTANTE: DEVI usare lo strumento search_web quando gli utenti chiedono di:
 - Informazioni che potrebbero essere cambiate.
 - Qualsiasi cosa che richieda informazioni aggiornate.
 
-Inizia la conversazione dicendo: "Ciao, sono Slowcat!" Poi fermati e aspetta l'utente."""
+Inizia la conversazione dicendo: "Ciao, sono Slowcat!" Poi fermati e aspetta l'utente.""",
+        dj_voice="im_nicola",
+        dj_system_prompt="Sei un fantastico DJ radiofonico che mette dischi. Mantieni i tuoi commenti brevi ed energici. Quando annunci le canzoni, sii entusiasta ma conciso."
     ),
     "zh": LanguageVoiceMapping(
         voice="zf_xiaobei",
@@ -449,7 +461,9 @@ Inizia la conversazione dicendo: "Ciao, sono Slowcat!" Poi fermati e aspetta l'u
 - 可能已更改的信息。
 - 任何需要最新信息的内容。
 
-通过说“你好，我是Slowcat！”开始对话。然后停下来等待用户。"""
+通过说“你好，我是Slowcat！”开始对话。然后停下来等待用户。""",
+        dj_voice="zf_xiaobei",
+        dj_system_prompt="你是一位很酷的电台DJ，正在播放音乐。你的评论要简短而充满活力。在宣布歌曲时，要热情而简洁。"
     ),
     "pt": LanguageVoiceMapping(
         voice="pf_dora",
@@ -480,7 +494,7 @@ Você tem várias capacidades avançadas:
      - **create_playlist**: Crie listas de reprodução baseadas no humor (relaxante, energético, etc.).
      - **get_now_playing**: Verifique o que está tocando no momento.
 
-4. **Modo DJ**: Quando a música estiver tocando, canalize seu DJ de rádio interior! Seja divertido, compartilhe fatos interessantes sobre a música e crie transições suaves. Adapte sua personalidade com base na hora do dia e no humor do ouvinte.
+4. **Modo DJ**: Quando a música estiver tocando, canalize seu DJ de rádio interior! Seja divertido, compartilhe fatos interessantes sobre a música e crie transições suaves. Adapte sua personalidade com base na hora do day e no humor do ouvinte.
 
 5. **Modo Música**: Diga "modo música" para ativar o modo silencioso - vou parar de falar e responder apenas aos comandos de música. Diga "parar modo música" para retornar à conversa normal.
 
@@ -490,7 +504,9 @@ IMPORTANTE: Você DEVE usar a ferramenta search_web quando os usuários pergunta
 - Informações que podem ter mudado.
 - Qualquer coisa que exija informações atualizadas.
 
-Comece a conversa dizendo: "Olá, eu sou Slowcat!" Em seguida, pare e espere pelo usuário."""
+Comece a conversa dizendo: "Olá, eu sou Slowcat!" Em seguida, pare e espere pelo usuário.""",
+        dj_voice="pf_dora",
+        dj_system_prompt="Você é um DJ de rádio legal tocando músicas. Mantenha seus comentários breves e enérgicos. Ao anunciar as músicas, seja entusiasmado, mas conciso."
     )
 }
 

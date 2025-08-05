@@ -45,7 +45,7 @@ class PipelineBuilder:
         services = await self._create_core_services(language, llm_model)
         
         # 3. Setup processors
-        processors = await self._setup_processors()
+        processors = await self._setup_processors(language)
         
         # 4. Setup transport
         transport = await self._setup_transport(webrtc_connection)
@@ -101,7 +101,9 @@ class PipelineBuilder:
         final_config = {
             "voice": lang_config.voice,
             "whisper_language": lang_config.whisper_language,
-            "system_instruction": lang_config.system_instruction
+            "system_instruction": lang_config.system_instruction,
+            "dj_voice": lang_config.dj_voice,
+            "dj_system_prompt": lang_config.dj_system_prompt
         }
         
         if language in language_consistency_note:
@@ -122,7 +124,7 @@ class PipelineBuilder:
         logger.info("✅ Core services created")
         return services
     
-    async def _setup_processors(self) -> Dict[str, Any]:
+    async def _setup_processors(self, language: str) -> Dict[str, Any]:
         """Setup all pipeline processors"""
         logger.info("🔧 Setting up processors...")
         
@@ -232,10 +234,7 @@ class PipelineBuilder:
             
             # Initialize music mode processor
             processors['music_mode'] = MusicModeProcessor(
-                mode_toggle_phrase="music mode",
-                exit_phrase="stop music mode",
-                dj_voice=config.dj_mode.dj_voice,
-                dj_system_prompt=config.dj_mode.dj_system_prompt
+                language=language,
             )
             
             # Initialize DJ mode config handler as a placeholder
