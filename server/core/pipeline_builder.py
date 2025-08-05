@@ -200,7 +200,7 @@ class PipelineBuilder:
                 append_mode=config.dictation_mode.append_mode,
                 realtime_save=config.dictation_mode.realtime_save,
                 save_interim=config.dictation_mode.save_interim,
-                mode_toggle_keyword=config.dictation_mode.mode_toggle_keyword
+                language=language
             )
             logger.info("📝 Dictation mode enabled")
         else:

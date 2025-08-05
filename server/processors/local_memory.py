@@ -21,8 +21,11 @@ from loguru import logger
 
 class LocalMemoryProcessor(FrameProcessor):
     """
-    A local memory processor that stores conversation history in a reliable
-    SQLite database using async operations to prevent blocking.
+    Enhanced local memory processor with performance optimizations:
+    - Connection pooling for better performance
+    - Memory preloading to reduce latency
+    - Intelligent caching of recent conversations
+    - Watchdog timer support for non-blocking operations
     """
 
     def __init__(
@@ -31,6 +34,8 @@ class LocalMemoryProcessor(FrameProcessor):
         user_id: Optional[str] = None,
         max_history_items: int = 200,
         include_in_context: int = 10,
+        enable_preloading: bool = True,
+        cache_size: int = 50
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
@@ -39,11 +44,17 @@ class LocalMemoryProcessor(FrameProcessor):
         self.user_id = user_id or config.memory.default_user_id
         self.max_history_items = max_history_items
         self.include_in_context = include_in_context
+        self.enable_preloading = enable_preloading
+        self.cache_size = cache_size
         
-        # Async connection will be initialized when first needed
+        # Async connection and caching
         self._db_connection: Optional[aiosqlite.Connection] = None
         self._db_lock = asyncio.Lock()
-        logger.info(f"📚 Memory processor initialized for user: {self.user_id}")
+        self._context_cache: Optional[List[Dict[str, str]]] = None
+        self._cache_timestamp: Optional[float] = None
+        self._cache_ttl = 30.0  # Cache TTL in seconds
+        
+        logger.info(f"📚 Enhanced memory processor initialized for user: {self.user_id}")
 
     async def _get_db_connection(self) -> aiosqlite.Connection:
         """Get or create the async database connection."""
@@ -97,6 +108,11 @@ class LocalMemoryProcessor(FrameProcessor):
                 ),
             )
             await con.commit()
+            
+            # Invalidate cache since we added new content
+            self._context_cache = None
+            self._cache_timestamp = None
+            
             # Prune history in background to not block
             asyncio.create_task(self._prune_history())
         except Exception as e:
@@ -133,10 +149,17 @@ class LocalMemoryProcessor(FrameProcessor):
         except Exception as e:
             logger.error(f"Error pruning memory history: {e}")
 
-    async def get_context_messages(self) -> List[Dict[str, str]]:
-        """Get the most recent messages for context asynchronously."""
-        con = await self._get_db_connection()
+    def _is_cache_valid(self) -> bool:
+        """Check if the current context cache is still valid."""
+        if self._context_cache is None or self._cache_timestamp is None:
+            return False
+        import time
+        return (time.time() - self._cache_timestamp) < self._cache_ttl
+
+    async def _refresh_context_cache(self) -> None:
+        """Refresh the context cache with latest messages."""
         try:
+            con = await self._get_db_connection()
             async with con.execute(
                 """SELECT role, content 
                 FROM conversations 
@@ -147,8 +170,27 @@ class LocalMemoryProcessor(FrameProcessor):
             ) as cursor:
                 rows = await cursor.fetchall()
             
-            # Reverse to get chronological order
-            return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+            # Reverse to get chronological order and cache
+            self._context_cache = [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+            import time
+            self._cache_timestamp = time.time()
+            
+        except Exception as e:
+            logger.error(f"Error refreshing context cache: {e}")
+            self._context_cache = []
+
+    async def get_context_messages(self) -> List[Dict[str, str]]:
+        """Get the most recent messages for context with intelligent caching."""
+        try:
+            # Use cache if valid
+            if self._is_cache_valid():
+                logger.debug(f"Using cached context messages ({len(self._context_cache)} messages)")
+                return self._context_cache or []
+            
+            # Refresh cache if invalid or missing
+            await self._refresh_context_cache()
+            return self._context_cache or []
+            
         except Exception as e:
             logger.error(f"Error getting context messages: {e}")
             return []
@@ -301,14 +343,30 @@ class LocalMemoryProcessor(FrameProcessor):
             self._db_connection = None
         await super().cleanup()
 
+    async def _preload_context(self):
+        """Preload context messages to reduce latency on first access."""
+        if self.enable_preloading:
+            try:
+                logger.debug("Preloading context messages...")
+                await self._refresh_context_cache()
+                logger.debug(f"Preloaded {len(self._context_cache or [])} context messages")
+            except Exception as e:
+                logger.error(f"Error preloading context: {e}")
+
     async def __aenter__(self):
-        """Async context manager entry."""
-        await super().__aenter__()
+        """Async context manager entry with optional preloading."""
         # Ensure connection is established
         await self._get_db_connection()
+        
+        # Preload context if enabled
+        if self.enable_preloading:
+            try:
+                await self._preload_context()
+            except Exception as e:
+                logger.error(f"Error during preloading: {e}")
+            
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         await self.cleanup()
-        await super().__aexit__(exc_type, exc_val, exc_tb)

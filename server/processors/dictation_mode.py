@@ -41,7 +41,7 @@ class DictationModeProcessor(FrameProcessor):
         append_mode: bool = True,
         realtime_save: bool = True,
         save_interim: bool = False,
-        mode_toggle_keyword: str = "dictation mode",
+        language: str = "en",
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -51,7 +51,11 @@ class DictationModeProcessor(FrameProcessor):
         self.append_mode = append_mode
         self.realtime_save = realtime_save
         self.save_interim = save_interim
-        self.mode_toggle_keyword = mode_toggle_keyword.lower()
+        
+        # Get language-specific phrases
+        self.translations = self.get_translations(language)
+        self.mode_toggle_phrase = self.translations["mode_toggle_phrase"].lower()
+        self.exit_phrase = self.translations["exit_phrase"].lower()
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +67,63 @@ class DictationModeProcessor(FrameProcessor):
         self.buffer: List[str] = []
         self.file_handle = None
         
-        logger.info(f"DictationMode initialized: output_dir={output_dir}, toggle_keyword='{mode_toggle_keyword}'")
+        logger.info(f"DictationMode initialized: output_dir={output_dir}, toggle='{self.mode_toggle_phrase}', exit='{self.exit_phrase}'")
+    
+    def get_translations(self, language: str) -> Dict[str, str]:
+        """Returns a dictionary of translated strings for the given language."""
+        translations = {
+            "en": {
+                "mode_toggle_phrase": "dictation mode",
+                "exit_phrase": "stop dictation",
+                "enter_notification": "📝 Dictation mode started. Speak freely - I'll just transcribe without responding.",
+                "exit_notification": "📝 Dictation mode ended. Transcript saved to: {filename}"
+            },
+            "es": {
+                "mode_toggle_phrase": "modo dictado", 
+                "exit_phrase": "detener dictado",
+                "enter_notification": "📝 Modo dictado iniciado. Habla libremente - solo transcribiré sin responder.",
+                "exit_notification": "📝 Modo dictado terminado. Transcripción guardada en: {filename}"
+            },
+            "fr": {
+                "mode_toggle_phrase": "mode dictée",
+                "exit_phrase": "arrêter la dictée", 
+                "enter_notification": "📝 Mode dictée activé. Parlez librement - je ne ferai que transcrire sans répondre.",
+                "exit_notification": "📝 Mode dictée terminé. Transcription sauvegardée dans : {filename}"
+            },
+            "de": {
+                "mode_toggle_phrase": "diktat-modus",
+                "exit_phrase": "diktat stoppen",
+                "enter_notification": "📝 Diktat-Modus gestartet. Sprechen Sie frei - ich werde nur transkribieren ohne zu antworten.",
+                "exit_notification": "📝 Diktat-Modus beendet. Transkript gespeichert in: {filename}"
+            },
+            "it": {
+                "mode_toggle_phrase": "modalità dettatura",
+                "exit_phrase": "stop dettatura",
+                "enter_notification": "📝 Modalità dettatura avviata. Parla liberamente - trascriverò solo senza rispondere.",
+                "exit_notification": "📝 Modalità dettatura terminata. Trascrizione salvata in: {filename}"
+            },
+            "ja": {
+                "mode_toggle_phrase": "ディクテーションモード",
+                "exit_phrase": "ディクテーション停止",
+                "enter_notification": "📝 ディクテーションモードが開始されました。自由に話してください - 応答せずに転写するだけです。",
+                "exit_notification": "📝 ディクテーションモードが終了しました。転写が保存されました: {filename}"
+            },
+            "zh": {
+                "mode_toggle_phrase": "听写模式",
+                "exit_phrase": "停止听写",
+                "enter_notification": "📝 听写模式已开始。请自由发言 - 我将只进行转录而不回应。",
+                "exit_notification": "📝 听写模式已结束。转录已保存到：{filename}"
+            },
+            "pt": {
+                "mode_toggle_phrase": "modo ditado",
+                "exit_phrase": "parar ditado",
+                "enter_notification": "📝 Modo ditado iniciado. Fale livremente - apenas transcreverei sem responder.",
+                "exit_notification": "📝 Modo ditado terminado. Transcrição salva em: {filename}"
+            }
+        }
+        
+        # Return the translation for the specified language, fallback to English
+        return translations.get(language, translations["en"])
     
     async def process_frame(self, frame: Frame, direction=None):
         """Process frames - in dictation mode, block LLM responses"""
@@ -118,15 +178,10 @@ class DictationModeProcessor(FrameProcessor):
         """Check if text contains toggle command"""
         text_lower = text.lower().strip()
         
-        # Check for various toggle phrases
+        # Check for language-specific toggle phrases
         toggle_phrases = [
-            self.mode_toggle_keyword,
-            "start dictation",
-            "stop dictation",
-            "begin dictation",
-            "end dictation",
-            "dictation on",
-            "dictation off"
+            self.mode_toggle_phrase,  # Start dictation
+            self.exit_phrase,         # Stop dictation
         ]
         
         return any(phrase in text_lower for phrase in toggle_phrases)
@@ -161,8 +216,7 @@ class DictationModeProcessor(FrameProcessor):
         
         # Notify user
         notification = TextFrame(
-            f"📝 Dictation mode started. Speak freely - I'll just transcribe without responding. "
-            f"Say '{self.mode_toggle_keyword}' to stop. Saving to: {filename}"
+            f"{self.translations['enter_notification']} Say '{self.exit_phrase}' to stop. Saving to: {filename}"
         )
         await self.push_frame(notification)
         
@@ -189,7 +243,7 @@ class DictationModeProcessor(FrameProcessor):
         # Notify user
         if self.current_file:
             notification = TextFrame(
-                f"📝 Dictation mode ended. Transcript saved to: {self.current_file.name}"
+                self.translations['exit_notification'].format(filename=self.current_file.name)
             )
             await self.push_frame(notification)
         

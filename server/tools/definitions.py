@@ -449,14 +449,52 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     GET_MUSIC_STATS
 ]
 
-def get_tools() -> ToolsSchema:
+# Dictionary of translated tool descriptions
+TOOL_DESCRIPTIONS_IT = {
+    "play_music": "Riproduci musica - cerca e riproduci un brano o riprendi la riproduzione",
+    "pause_music": "Metti in pausa la musica attualmente in riproduzione",
+    "skip_song": "Salta al brano successivo nella coda",
+    "stop_music": "Interrompi completamente la riproduzione musicale",
+    "queue_music": "Aggiungi brani alla coda di riproduzione",
+    "search_music": "Cerca nella libreria musicale",
+    "get_now_playing": "Ottieni informazioni sul brano attualmente in riproduzione",
+    "set_volume": "Imposta il volume di riproduzione della musica",
+    "create_playlist": "Crea una playlist basata sull'umore o sul genere",
+}
+
+TOOL_DESCRIPTIONS_LANG = {
+    "it": TOOL_DESCRIPTIONS_IT,
+}
+
+def get_tools(language: str = "en") -> ToolsSchema:
     """
-    Get all tools wrapped in Pipecat's ToolsSchema format
+    Get all tools wrapped in Pipecat's ToolsSchema format, with descriptions
+    translated to the specified language if available.
     
     Returns:
         ToolsSchema object containing all available tools
     """
-    return ToolsSchema(standard_tools=ALL_FUNCTION_SCHEMAS)
+    if language == "en" or language not in TOOL_DESCRIPTIONS_LANG:
+        return ToolsSchema(standard_tools=ALL_FUNCTION_SCHEMAS)
+
+    translated_schemas = []
+    lang_descriptions = TOOL_DESCRIPTIONS_LANG[language]
+    
+    for schema in ALL_FUNCTION_SCHEMAS:
+        description = schema.description
+        if schema.name in lang_descriptions:
+            description = lang_descriptions[schema.name]
+            
+        new_schema = FunctionSchema(
+            name=schema.name,
+            description=description,
+            properties=schema.properties,
+            required=schema.required
+        )
+        
+        translated_schemas.append(new_schema)
+        
+    return ToolsSchema(standard_tools=translated_schemas)
 
 def get_tool_names() -> List[str]:
     """
