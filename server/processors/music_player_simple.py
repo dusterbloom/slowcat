@@ -105,14 +105,7 @@ class SimpleMusicPlayer:
                     self._stop_current()
                     file_path = data["file_path"]
                     song_info = data.get("info", {})
-                    
-                    # Start playback in new thread
-                    self.play_thread = threading.Thread(
-                        target=self._play_file,
-                        args=(file_path, song_info),
-                        daemon=True
-                    )
-                    self.play_thread.start()
+                    self._start_playback_thread(file_path, song_info)
                 
                 elif command == "stop":
                     self._stop_current()
@@ -127,42 +120,41 @@ class SimpleMusicPlayer:
                 pass
             except Exception as e:
                 logger.error(f"Error in command handler: {e}")
-    
+
+    def _start_playback_thread(self, file_path: str, song_info: Dict[str, Any]):
+        """Stops current playback and starts a new playback thread."""
+        self._stop_current()  # Ensure any existing thread is stopped
+        self.play_thread = threading.Thread(
+            target=self._play_file,
+            args=(file_path, song_info),
+            daemon=True,
+            name=f"PlaybackThread-{song_info.get('title', 'Unknown')[:10]}"
+        )
+        self.play_thread.start()
+
     def _play_next_in_queue(self):
         """Play next song in queue"""
         with self.queue_lock:
             if self.play_queue:
                 next_song = self.play_queue.pop(0)
                 logger.info(f"🎵 Playing next from queue: {next_song.get('info', {}).get('title', 'Unknown')}")
-                
-                # Start playback in new thread
-                self.play_thread = threading.Thread(
-                    target=self._play_file,
-                    args=(next_song["file_path"], next_song["info"]),
-                    daemon=True
-                )
-                self.play_thread.start()
+                self._start_playback_thread(next_song["file_path"], next_song["info"])
             else:
                 logger.info("🎵 Queue empty, playback stopped")
     
     def _stop_current(self):
         """Stop current playback by signaling the thread."""
-        logger.debug("Attempting to stop current playback...")
         if self.play_thread and self.play_thread.is_alive():
-            logger.debug(f"Playback thread {self.play_thread.name} is alive. Setting force_stop.")
+            logger.debug(f"Stopping playback thread {self.play_thread.name}...")
             self.force_stop.set()
-            # Wait for the thread to finish. This is crucial to prevent race conditions.
-            self.play_thread.join(timeout=2.0)
+            self.play_thread.join(timeout=1.0)  # Give it a moment to die
             if self.play_thread.is_alive():
-                logger.warning("Playback thread did not terminate after 2 seconds.")
-            else:
-                logger.debug("Playback thread successfully joined.")
-        else:
-            logger.debug("No active playback thread to stop.")
+                logger.warning(f"Playback thread {self.play_thread.name} did not terminate.")
         
-        # Reset state
+        # Reset state regardless
         self.is_playing = False
         self.current_song = None
+        self.play_thread = None
     
     def _play_file(self, file_path: str, song_info: Dict[str, Any]):
         """Play audio file (runs in thread)"""
