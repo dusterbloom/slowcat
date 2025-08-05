@@ -54,9 +54,13 @@ class PipelineBuilder:
         context, context_aggregator = await self._build_context(lang_config, services['llm'])
         
         # 5a. Configure DJ mode handler with actual services
-        if processors.get('dj_config_handler'):
-            processors['dj_config_handler'].tts = services['tts']
-            processors['dj_config_handler'].llm_context = context
+        if processors.get('music_mode'): # Check if music mode is enabled
+            from processors.dj_mode_config_handler import DJModeConfigHandler
+            processors['dj_config_handler'] = DJModeConfigHandler(
+                tts=services['tts'],
+                llm_context=context
+            )
+            logger.info("🎧 DJ Mode Config Handler configured.")
         
         # 5b. Connect audio player to LLM service for music control
         if processors.get('audio_player') and hasattr(services['llm'], 'set_audio_player'):
