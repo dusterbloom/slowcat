@@ -51,7 +51,7 @@ class PipelineBuilder:
         transport = await self._setup_transport(webrtc_connection)
         
         # 5. Build context and aggregator
-        context, context_aggregator = await self._build_context(lang_config, services['llm'])
+        context, context_aggregator = await self._build_context(lang_config, services['llm'], language)
         
         # 5a. Configure DJ mode handler with actual services
         if processors.get('music_mode'): # Check if music mode is enabled
@@ -338,7 +338,7 @@ class PipelineBuilder:
         logger.info("✅ Transport setup complete")
         return transport
     
-    async def _build_context(self, lang_config: dict, llm_service: Any) -> Tuple[Any, Any]:
+    async def _build_context(self, lang_config: dict, llm_service: Any, language: str) -> Tuple[Any, Any]:
         """Build LLM context and aggregator"""
         logger.info("🔧 Building context...")
         
@@ -348,7 +348,7 @@ class PipelineBuilder:
         
         if use_tools:
             from tools import get_tools
-            tools = get_tools()
+            tools = get_tools(language)
             logger.info(f"🛠️ Tools enabled: {len(tools.standard_tools)} tools available")
             for tool in tools.standard_tools:
                 logger.debug(f"  - {tool.name}: {tool.description}")

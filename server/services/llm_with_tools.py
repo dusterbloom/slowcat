@@ -269,7 +269,7 @@ class LLMWithToolsService(OpenAILLMService):
                                 if "search" in function_name or "browse" in function_name:
                                     feedback_text = "Searching for that."
                                 elif "weather" in function_name:
-                                    feedback_text = "One moment while I check the weather."
+                                    feedback_text = "Tic tac ... tic tac ... tic ... tac "
                                 elif "calculate" in function_name:
                                     feedback_text = "Calculating that for you."
                                 
