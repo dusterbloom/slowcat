@@ -47,6 +47,14 @@ class LLMWithToolsService(OpenAILLMService):
         # Store tools schema for reference
         self._tools_schema = get_tools()
         logger.info(f"🛠️ Loaded {len(self._tools_schema.standard_tools)} tools")
+        
+        # Audio player reference (will be set by pipeline builder)
+        self._audio_player = None
+    
+    def set_audio_player(self, audio_player):
+        """Set the audio player reference for music control"""
+        self._audio_player = audio_player
+        logger.info("🎵 Audio player reference set in LLM service")
     
     def _register_function_handlers(self):
         """Register function handlers using Pipecat's register_function method"""
@@ -97,6 +105,45 @@ class LLMWithToolsService(OpenAILLMService):
                     error_msg = f"Tool execution timed out after 30 seconds"
                     await params.result_callback(error_msg)
                     return
+                
+                # Check if result contains music control data
+                if isinstance(result, dict) and "_music_control" in result:
+                    music_control = result["_music_control"]
+                    logger.info(f"🎵 Tool returned music control: {music_control['command']}")
+                    
+                    # Import and push MusicControlFrame
+                    from processors.audio_player_real import MusicControlFrame
+                    control_frame = MusicControlFrame(
+                        music_control["command"],
+                        music_control.get("data", {})
+                    )
+                    
+                    # Push frame directly to audio player if available
+                    if self._audio_player:
+                        await self._audio_player.push_frame(control_frame)
+                        logger.info(f"🎵 Pushed control frame to audio player")
+                    else:
+                        logger.warning("🎵 No audio player reference, cannot send music control")
+                    
+                    # Handle special commands
+                    if self._audio_player:
+                        if music_control["command"] == "queue_multiple":
+                            # Queue each song individually
+                            for song in music_control["data"].get("songs", []):
+                                await self._audio_player.push_frame(MusicControlFrame("queue", song))
+                        elif music_control["command"] == "create_playlist":
+                            # Queue all songs and potentially start playing
+                            songs = music_control["data"].get("songs", [])
+                            for song in songs:
+                                await self._audio_player.push_frame(MusicControlFrame("queue", song))
+                            
+                            # If nothing playing and we should start
+                            if music_control["data"].get("start_playing") and songs:
+                                first_song = songs[0]
+                                await self._audio_player.push_frame(MusicControlFrame("play", first_song))
+                    
+                    # Remove the special key from result before sending to LLM
+                    result = {k: v for k, v in result.items() if k != "_music_control"}
                 
                 # Format result for voice if needed
                 formatted_result = format_tool_response_for_voice(function_name, result)

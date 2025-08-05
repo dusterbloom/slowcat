@@ -674,6 +674,9 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
     elif function_name == "skip_song":
         from .music_tools import skip_song
         return await skip_song(**arguments)
+    elif function_name == "stop_music":
+        from .music_tools import stop_music
+        return await stop_music(**arguments)
     elif function_name == "queue_music":
         from .music_tools import queue_music
         return await queue_music(**arguments)

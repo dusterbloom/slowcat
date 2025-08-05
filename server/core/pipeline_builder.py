@@ -53,6 +53,16 @@ class PipelineBuilder:
         # 5. Build context and aggregator
         context, context_aggregator = await self._build_context(lang_config, services['llm'])
         
+        # 5a. Configure DJ mode handler with actual services
+        if processors.get('dj_config_handler'):
+            processors['dj_config_handler'].tts = services['tts']
+            processors['dj_config_handler'].llm_context = context
+        
+        # 5b. Connect audio player to LLM service for music control
+        if processors.get('audio_player') and hasattr(services['llm'], 'set_audio_player'):
+            services['llm'].set_audio_player(processors['audio_player'])
+            logger.info("🎵 Connected audio player to LLM service")
+        
         # 6. Build pipeline components
         pipeline_components = await self._build_pipeline_components(
             transport, services, processors, context_aggregator
@@ -195,6 +205,7 @@ class PipelineBuilder:
             from processors.audio_player_real import AudioPlayerRealProcessor
             from music.library_scanner import MusicLibraryScanner
             from processors.music_mode import MusicModeProcessor
+            from processors.dj_mode_config_handler import DJModeConfigHandler
             
             # Initialize music scanner
             scanner = MusicLibraryScanner(config.dj_mode.index_file)
@@ -218,12 +229,17 @@ class PipelineBuilder:
             # Initialize music mode processor
             processors['music_mode'] = MusicModeProcessor(
                 mode_toggle_phrase="music mode",
-                exit_phrase="stop music mode"
+                exit_phrase="stop music mode",
+                dj_voice=config.dj_mode.dj_voice,
+                dj_system_prompt=config.dj_mode.dj_system_prompt
             )
             
+            # Initialize DJ mode config handler (will be set up with services later)
+            processors['dj_config_handler'] = DJModeConfigHandler()
+            
             # Set up music tools
-            from tools.music_tools import set_music_system
-            set_music_system(processors['audio_player'], scanner)
+            from tools.music_tools import set_music_scanner
+            set_music_scanner(scanner)  
             
             # Log music library stats
             stats = scanner.get_stats()
@@ -231,6 +247,7 @@ class PipelineBuilder:
         else:
             processors['audio_player'] = None
             processors['music_mode'] = None
+            processors['dj_config_handler'] = None
         
         logger.info("✅ Processors setup complete")
         return processors
@@ -360,6 +377,7 @@ class PipelineBuilder:
             services['stt'],
             processors['dictation_mode'],  # Must be after STT but before LLM
             processors['music_mode'],  # Music mode filtering (after STT, before LLM)
+            processors['dj_config_handler'],  # Handle DJ mode voice/prompt changes
             processors['audio_player'],  # Music player with ducking
             processors['time_executor'],  # Time-aware task execution
             processors['memory_processor'],

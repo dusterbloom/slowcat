@@ -338,6 +338,13 @@ SKIP_SONG = FunctionSchema(
     required=[]
 )
 
+STOP_MUSIC = FunctionSchema(
+    name="stop_music",
+    description="Stop music playback completely",
+    properties={},
+    required=[]
+)
+
 QUEUE_MUSIC = FunctionSchema(
     name="queue_music",
     description="Add songs to the play queue",
@@ -433,6 +440,7 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     PLAY_MUSIC,
     PAUSE_MUSIC,
     SKIP_SONG,
+    STOP_MUSIC,
     QUEUE_MUSIC,
     SEARCH_MUSIC,
     GET_NOW_PLAYING,

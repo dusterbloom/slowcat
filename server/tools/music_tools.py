@@ -5,18 +5,17 @@ Music control tools for the AI DJ system
 from typing import Dict, Any, List, Optional
 from loguru import logger
 from music.library_scanner import MusicLibraryScanner
+from processors.music_player_simple import get_player
 
 # Global instances (will be set by pipeline)
-_audio_player = None
-_music_scanner = None
+_music_scanner: Optional[MusicLibraryScanner] = None
 
 
-def set_music_system(audio_player, scanner: MusicLibraryScanner):
-    """Set the global music system instances"""
-    global _audio_player, _music_scanner
-    _audio_player = audio_player
+def set_music_scanner(scanner: MusicLibraryScanner):
+    """Set the global music scanner instance."""
+    global _music_scanner
     _music_scanner = scanner
-    logger.info("Music system configured for tools")
+    logger.info("Music scanner configured for tools")
 
 
 async def play_music(query: Optional[str] = None) -> Dict[str, Any]:
@@ -29,30 +28,42 @@ async def play_music(query: Optional[str] = None) -> Dict[str, Any]:
     Returns:
         Playback status
     """
-    if not _audio_player or not _music_scanner:
+    player = get_player()
+    if not _music_scanner:
         return {"error": "Music system not configured"}
     
     try:
-        # If no query, play a random song
+        # If no query, resume or play a random song
         if not query:
-            results = _music_scanner.get_random_songs(1)
+            status = player.get_status()
+            if status.get("is_playing") and status.get("is_paused"):
+                player.resume()
+                return {"success": True, "message": "Resuming playback."}
+            
+            # Get current queue info to avoid recent songs
+            current_song = status.get("current_song")
+            
+            # Build set of recent file paths to avoid
+            recent_paths = set()
+            if current_song and current_song.get("file_path"):
+                recent_paths.add(current_song["file_path"])
+            
+            # Get multiple random songs and pick one that's not recent
+            results = _music_scanner.get_random_songs(10)
             if not results:
                 return {"error": "No music found in library"}
-            song = results[0]
+            
+            song = next((s for s in results if s.get("file_path") not in recent_paths), results[0])
+
         else:
             # Search for specific music
             results = _music_scanner.search(query, limit=1)
             if not results:
-                # Try random if no specific match
-                results = _music_scanner.get_random_songs(1)
-                if not results:
-                    return {"error": "No music found in library"}
+                return {"error": f"No music found for '{query}'"}
             song = results[0]
         
-        # Play using the simple player for now
-        from processors.music_player_simple import play_music_simple
         logger.info(f"🎵 Playing file: {song['file_path']}")
-        status = play_music_simple(song["file_path"], song)
+        player.play(song["file_path"], song)
         
         return {
             "success": True,
@@ -60,10 +71,8 @@ async def play_music(query: Optional[str] = None) -> Dict[str, Any]:
             "song": {
                 "title": song.get("title", "Unknown"),
                 "artist": song.get("artist", "Unknown Artist"),
-                "album": song.get("album", "Unknown Album"),
-                "file": song.get("filename", "Unknown")
             },
-            "message": f"Now playing: {song.get('title', 'Unknown')} by {song.get('artist', 'Unknown Artist')}"
+            "message": f"Now playing: {song.get('title', 'Unknown')}"
         }
         
     except Exception as e:
@@ -74,9 +83,7 @@ async def play_music(query: Optional[str] = None) -> Dict[str, Any]:
 async def pause_music() -> Dict[str, Any]:
     """Pause current playback"""
     try:
-        from processors.music_player_simple import get_player
-        player = get_player()
-        player.pause()
+        get_player().pause()
         return {"success": True, "message": "Music paused"}
     except Exception as e:
         logger.error(f"Error pausing music: {e}")
@@ -85,21 +92,29 @@ async def pause_music() -> Dict[str, Any]:
 
 async def skip_song() -> Dict[str, Any]:
     """Skip to next song in queue"""
-    if not _audio_player:
-        return {"error": "Music system not configured"}
-    
+    logger.info("⏭️⏭️⏭️ SKIP_SONG CALLED")
     try:
-        from processors.audio_player_real import MusicControlFrame
-        await _audio_player.push_frame(MusicControlFrame("skip"))
+        get_player().skip_to_next()
         return {"success": True, "message": "Skipping to next song"}
     except Exception as e:
         logger.error(f"Error skipping song: {e}")
         return {"error": str(e)}
 
 
+async def stop_music() -> Dict[str, Any]:
+    """Stop music playback completely"""
+    logger.info("🛑🛑🛑 STOP_MUSIC CALLED")
+    try:
+        get_player().stop()
+        return {"success": True, "message": "Music stopped"}
+    except Exception as e:
+        logger.error(f"Error stopping music: {e}")
+        return {"error": str(e)}
+
+
 async def queue_music(query: str) -> Dict[str, Any]:
     """
-    Add songs to the play queue
+    Add songs to the play queue (avoiding duplicates)
     
     Args:
         query: Search query for songs to queue
@@ -107,29 +122,43 @@ async def queue_music(query: str) -> Dict[str, Any]:
     Returns:
         Queue status
     """
-    if not _audio_player or not _music_scanner:
+    player = get_player()
+    if not _music_scanner:
         return {"error": "Music system not configured"}
     
     try:
+        # Get current queue info to check for duplicates
+        status = player.get_status()
+        current_song = status.get("current_song")
+        current_queue = status.get("queue", [])
+        
+        # Build set of already queued file paths
+        already_queued = set()
+        if current_song and current_song.get("file_path"):
+            already_queued.add(current_song["file_path"])
+        for song in current_queue:
+            if song.get("file_path"):
+                already_queued.add(song["file_path"])
+        
         # Search for music
-        results = _music_scanner.search(query, limit=5)
+        results = _music_scanner.search(query, limit=10)
         if not results:
             return {"error": f"No music found matching '{query}'"}
         
-        # Queue all results
-        queued = []
-        from processors.audio_player_real import MusicControlFrame
-        
+        # Filter out duplicates and queue unique songs
+        queued_count = 0
         for song in results:
-            await _audio_player.push_frame(MusicControlFrame("queue", {"file_path": song["file_path"], **song}))
-            queued.append(song.get("title", "Unknown"))
+            if song.get("file_path") not in already_queued:
+                player.queue_song(song["file_path"], song)
+                already_queued.add(song["file_path"])
+                queued_count += 1
+                if queued_count >= 5:
+                    break
         
-        return {
-            "success": True,
-            "queued_count": len(queued),
-            "songs": queued,
-            "message": f"Added {len(queued)} songs to queue"
-        }
+        if queued_count == 0:
+            return {"success": False, "message": "All matching songs are already in the queue."}
+        
+        return {"success": True, "message": f"Added {queued_count} new songs to the queue."}
         
     except Exception as e:
         logger.error(f"Error queuing music: {e}")
@@ -244,29 +273,60 @@ async def create_playlist(mood: str, count: int = 10) -> Dict[str, Any]:
     Returns:
         Created playlist
     """
-    if not _music_scanner or not _audio_player:
+    logger.info(f"🎵🎵🎵 CREATE_PLAYLIST CALLED with mood='{mood}', count={count}")
+    
+    player = get_player()
+    if not _music_scanner:
         return {"error": "Music system not configured"}
     
     try:
-        # Search by mood/genre
-        songs = _music_scanner.search(mood, limit=count)
+        # Get current queue info to check for duplicates
+        status = player.get_status()
+        current_song = status.get("current_song")
+        current_queue = status.get("queue", [])
+        
+        # Build set of already queued file paths
+        already_queued = set()
+        if current_song and current_song.get("file_path"):
+            already_queued.add(current_song["file_path"])
+        for song in current_queue:
+            if song.get("file_path"):
+                already_queued.add(song["file_path"])
+        
+        # Search by mood/genre - get extra to account for duplicates
+        songs = _music_scanner.search(mood, limit=count * 2)
         
         # If not enough specific matches, add random songs
-        if len(songs) < count:
-            additional = _music_scanner.get_random_songs(count - len(songs))
+        if len(songs) < count * 2:
+            additional = _music_scanner.get_random_songs(count * 2 - len(songs))
             songs.extend(additional)
         
-        # Queue all songs
-        from processors.audio_player_real import MusicControlFrame
+        # Queue unique songs
+        queued = []
+        queued_titles = []
+        
         for song in songs:
-            await _audio_player.push_frame(MusicControlFrame("queue", {"file_path": song["file_path"], **song}))
+            file_path = song.get("file_path")
+            if file_path and file_path not in already_queued:
+                player.queue_song(file_path, song)
+                queued.append(song)
+                queued_titles.append(song.get("title", "Unknown"))
+                already_queued.add(file_path)
+                
+                if len(queued) >= count:
+                    break
+        
+        # If nothing is playing, start the first song
+        if not status.get("is_playing") and queued:
+            logger.info("🎵 Starting playback from new playlist")
+            player.skip_to_next() # This will start the first song in the queue
         
         return {
             "success": True,
             "playlist_name": f"{mood.title()} Vibes",
-            "song_count": len(songs),
-            "songs": [s.get("title", "Unknown") for s in songs[:5]],  # First 5
-            "message": f"Created {mood} playlist with {len(songs)} songs"
+            "song_count": len(queued),
+            "songs": queued_titles[:5],  # First 5
+            "message": f"Created {mood} playlist with {len(queued)} songs"
         }
         
     except Exception as e:

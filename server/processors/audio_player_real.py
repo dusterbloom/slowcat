@@ -62,10 +62,6 @@ class AudioPlayerRealProcessor(FrameProcessor):
     ):
         super().__init__(**kwargs)
         
-        if not AUDIO_LIBS_AVAILABLE:
-            logger.error("Audio libraries not available! Music playback disabled.")
-            return
-        
         self.sample_rate = sample_rate
         self.channels = channels
         self.volume = initial_volume
@@ -74,29 +70,18 @@ class AudioPlayerRealProcessor(FrameProcessor):
         self.crossfade_duration = crossfade_seconds
         self.buffer_size = buffer_size
         
-        # PyAudio setup
-        self.pyaudio = pyaudio.PyAudio()
-        self.stream = None
+        # Use the simple player for actual audio output
+        from .music_player_simple import get_player
+        self.simple_player = get_player()
         
-        # Playback state
-        self.is_playing = False
-        self.is_paused = False
+        # Playback state (synchronized with simple player)
         self.is_voice_active = False
-        self.current_song: Optional[Dict] = None
-        self.current_audio_data: Optional[np.ndarray] = None
-        self.playback_position = 0  # Sample position
-        
-        # Queue management
-        self.play_queue: deque = deque()
         self.play_history: List[Dict] = []
         
-        # Threading for playback
+        # Threading for monitoring
         self.playback_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.command_queue = queue.Queue()
-        
-        # Audio mixing buffer
-        self.music_buffer = queue.Queue(maxsize=100)
         
         logger.info(f"🎵 Real AudioPlayer initialized: {sample_rate}Hz, volume={initial_volume}")
         
@@ -116,46 +101,19 @@ class AudioPlayerRealProcessor(FrameProcessor):
             try:
                 # Check for commands
                 try:
-                    command, data = self.command_queue.get(timeout=0.01)
+                    command, data = self.command_queue.get(timeout=0.1)  # Increased timeout
+                    logger.info(f"🎵 Playback thread got command: {command}")
                     self._handle_command_sync(command, data)
                 except queue.Empty:
                     pass
                 
-                # Generate audio if playing
-                if self.is_playing and not self.is_paused and self.current_audio_data is not None:
-                    # Calculate how many samples we need
-                    samples_needed = self.buffer_size
-                    
-                    # Get the next chunk of audio
-                    start = self.playback_position
-                    end = min(start + samples_needed, len(self.current_audio_data))
-                    
-                    if start < len(self.current_audio_data):
-                        # Get audio chunk
-                        chunk = self.current_audio_data[start:end]
-                        
-                        # Apply volume
-                        chunk = chunk * self.volume
-                        
-                        # Update position
-                        self.playback_position = end
-                        
-                        # Add to music buffer for mixing
-                        try:
-                            self.music_buffer.put(chunk, timeout=0.01)
-                        except queue.Full:
-                            pass
-                        
-                        # Check if song ended
-                        if end >= len(self.current_audio_data):
-                            logger.info("🎵 Song ended, moving to next")
-                            self._next_song_sync()
-                    else:
-                        # Song ended
-                        self._next_song_sync()
-                else:
-                    # Not playing, sleep a bit
-                    time.sleep(0.01)
+                # Sync state with simple player
+                if self.simple_player:
+                    status = self.simple_player.get_status()
+                    # No need to handle song ending - SimpleMusicPlayer handles queue automatically
+                
+                # Sleep a bit
+                time.sleep(0.1)
                     
             except Exception as e:
                 logger.error(f"Error in playback thread: {e}")
@@ -165,81 +123,48 @@ class AudioPlayerRealProcessor(FrameProcessor):
     
     def _handle_command_sync(self, command: str, data: Dict):
         """Handle commands in the playback thread"""
+        logger.info(f"🎵 Processing command in playback thread: {command}")
+        
         if command == "play":
             if "file_path" in data:
-                self._load_and_play_sync(data)
+                # Play immediately
+                file_path = data.get("file_path")
+                self.simple_player.play(file_path, data)
+                
+                # Add to history
+                self.play_history.append(data)
+                if len(self.play_history) > 100:
+                    self.play_history.pop(0)
+                
+                logger.info(f"🎵 Now playing: {data.get('title', 'Unknown')}")
             else:
-                self.is_paused = False
+                # Resume playback
+                self.simple_player.resume()
         
         elif command == "pause":
-            self.is_paused = True
+            logger.info("⏸️ Pausing playback")
+            self.simple_player.pause()
         
         elif command == "skip":
-            self._next_song_sync()
+            logger.info("⏭️ Skipping song")
+            self.simple_player.skip_to_next()
         
         elif command == "stop":
-            self.is_playing = False
-            self.current_audio_data = None
-            self.playback_position = 0
+            logger.info("⏹️ Stopping playback")
+            self.simple_player.stop()
         
         elif command == "volume":
             self.normal_volume = data.get("level", 0.7)
             if not self.is_voice_active:
                 self.volume = self.normal_volume
+            self.simple_player.set_volume(self.volume)
+        
+        elif command == "queue":
+            # Add to simple player queue
+            file_path = data.get("file_path")
+            self.simple_player.queue_song(file_path, data)
+            logger.info(f"➕ Queued: {data.get('title', 'Unknown')}")
     
-    def _load_and_play_sync(self, song_info: Dict):
-        """Load and start playing a song (sync version for thread)"""
-        try:
-            file_path = song_info.get("file_path")
-            if not file_path or not Path(file_path).exists():
-                logger.error(f"File not found: {file_path}")
-                return
-            
-            logger.info(f"🎵 Loading: {file_path}")
-            
-            # Load audio file
-            audio_data, file_sr = sf.read(file_path, dtype='float32')
-            
-            # Convert to mono if needed
-            if len(audio_data.shape) > 1:
-                audio_data = np.mean(audio_data, axis=1)
-            
-            # Resample to pipeline sample rate if needed
-            if file_sr != self.sample_rate:
-                logger.info(f"Resampling from {file_sr}Hz to {self.sample_rate}Hz")
-                audio_data = resampy.resample(audio_data, file_sr, self.sample_rate)
-            
-            # Normalize
-            max_val = np.max(np.abs(audio_data))
-            if max_val > 0:
-                audio_data = audio_data / max_val * 0.8  # Leave some headroom
-            
-            # Set current song
-            self.current_audio_data = audio_data
-            self.current_song = song_info
-            self.playback_position = 0
-            self.is_playing = True
-            self.is_paused = False
-            
-            # Add to history
-            self.play_history.append(song_info)
-            if len(self.play_history) > 100:
-                self.play_history.pop(0)
-            
-            logger.info(f"🎵 Now playing: {song_info.get('title', 'Unknown')}")
-            
-        except Exception as e:
-            logger.error(f"Error loading audio file: {e}")
-    
-    def _next_song_sync(self):
-        """Move to next song in queue (sync version)"""
-        if self.play_queue:
-            next_song = self.play_queue.popleft()
-            self._load_and_play_sync(next_song)
-        else:
-            self.is_playing = False
-            self.current_audio_data = None
-            logger.info("🎵 Queue empty, playback stopped")
     
     async def process_frame(self, frame: Frame, direction=None):
         """Process frames - handle music control and mix audio"""
@@ -249,23 +174,21 @@ class AudioPlayerRealProcessor(FrameProcessor):
         
         # Handle music control commands
         if isinstance(frame, MusicControlFrame):
+            logger.info(f"🎵🎵🎵 AudioPlayerReal received MusicControlFrame: {frame.command}")
             await self._handle_control(frame)
             return  # Don't forward control frames
         
-        # Detect voice activity for ducking
+        # Detect TTS activity for ducking (DJ should duck music when speaking)
         if isinstance(frame, SystemFrame):
-            if frame.__class__.__name__ == "UserStartedSpeakingFrame":
+            if frame.__class__.__name__ == "TTSStartedFrame":
                 await self._start_ducking()
-            elif frame.__class__.__name__ == "UserStoppedSpeakingFrame":
+            elif frame.__class__.__name__ == "TTSStoppedFrame":
+                # Add small delay before restoring volume for clean transition
+                await asyncio.sleep(0.2)
                 await self._stop_ducking()
         
-        # Mix music with voice frames
-        if isinstance(frame, (InputAudioRawFrame, AudioRawFrame)) and frame.audio:
-            mixed_frame = await self._mix_audio(frame)
-            await self.push_frame(mixed_frame, direction)
-        else:
-            # Forward non-audio frames
-            await self.push_frame(frame, direction)
+        # Forward all frames (no mixing needed - simple player handles audio)
+        await self.push_frame(frame, direction)
     
     async def _handle_control(self, control: MusicControlFrame):
         """Handle music control commands"""
@@ -286,109 +209,64 @@ class AudioPlayerRealProcessor(FrameProcessor):
             await self.push_frame(TextFrame("⏭️ Skipping to next song"))
         elif command == "pause":
             await self.push_frame(TextFrame("⏸️ Music paused"))
+        elif command == "stop":
+            await self.push_frame(TextFrame("⏹️ Music stopped"))
     
-    async def _mix_audio(self, voice_frame: AudioRawFrame) -> Frame:
-        """Mix voice with music"""
-        # Get voice audio
-        voice_audio = np.frombuffer(voice_frame.audio, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        # Try to get music audio
-        music_audio = None
-        try:
-            music_chunk = self.music_buffer.get_nowait()
-            # Ensure same length
-            if len(music_chunk) < len(voice_audio):
-                music_chunk = np.pad(music_chunk, (0, len(voice_audio) - len(music_chunk)))
-            elif len(music_chunk) > len(voice_audio):
-                music_chunk = music_chunk[:len(voice_audio)]
-            music_audio = music_chunk
-        except queue.Empty:
-            pass
-        
-        # Mix if we have music
-        if music_audio is not None:
-            # Mix with current volume (ducking applied)
-            mixed = voice_audio + music_audio * 0.5  # Reduce music in mix
-            # Prevent clipping
-            max_val = np.max(np.abs(mixed))
-            if max_val > 1.0:
-                mixed = mixed / max_val
-        else:
-            mixed = voice_audio
-        
-        # Convert back to int16
-        mixed_int16 = (mixed * 32768).astype(np.int16)
-        
-        # Return the same type of frame we received
-        if isinstance(voice_frame, InputAudioRawFrame):
-            # Keep it as input frame
-            new_frame = InputAudioRawFrame(
-                audio=mixed_int16.tobytes(),
-                sample_rate=voice_frame.sample_rate,
-                num_channels=voice_frame.num_channels
-            )
-            # Copy source info if available
-            if hasattr(voice_frame, 'transport_source'):
-                new_frame.transport_source = voice_frame.transport_source
-            return new_frame
-        else:
-            # Generic AudioRawFrame
-            return AudioRawFrame(
-                audio=mixed_int16.tobytes(),
-                sample_rate=voice_frame.sample_rate,
-                num_channels=voice_frame.num_channels
-            )
     
     async def _start_ducking(self):
-        """Duck music volume when voice is active"""
+        """Duck music volume when TTS is active (smooth fade)"""
         self.is_voice_active = True
-        self.volume = self.duck_volume
-        logger.debug(f"🔉 Ducking volume to {self.duck_volume}")
+        
+        # Smooth fade to duck volume
+        start_volume = self.volume
+        fade_steps = 10
+        fade_duration = 0.3  # 300ms fade
+        
+        for i in range(fade_steps):
+            progress = (i + 1) / fade_steps
+            self.volume = start_volume + (self.duck_volume - start_volume) * progress
+            self.simple_player.set_volume(self.volume)
+            await asyncio.sleep(fade_duration / fade_steps)
+        
+        logger.debug(f"🔉 Ducked volume to {self.duck_volume}")
     
     async def _stop_ducking(self):
-        """Restore music volume when voice stops"""
+        """Restore music volume when TTS stops (smooth fade)"""
         self.is_voice_active = False
-        self.volume = self.normal_volume
-        logger.debug(f"🔊 Restoring volume to {self.normal_volume}")
-    
-    async def queue_song(self, song_info: Dict):
-        """Add song to queue"""
-        self.play_queue.append(song_info)
-        logger.info(f"➕ Queued: {song_info.get('title', 'Unknown')}")
+        
+        # Smooth fade to normal volume
+        start_volume = self.volume
+        fade_steps = 10
+        fade_duration = 0.5  # 500ms fade back
+        
+        for i in range(fade_steps):
+            progress = (i + 1) / fade_steps
+            self.volume = start_volume + (self.normal_volume - start_volume) * progress
+            self.simple_player.set_volume(self.volume)
+            await asyncio.sleep(fade_duration / fade_steps)
+        
+        logger.debug(f"🔊 Restored volume to {self.normal_volume}")
     
     def get_queue_info(self) -> Dict[str, Any]:
         """Get current queue information"""
-        current_duration = 0
-        if self.current_audio_data is not None:
-            current_duration = len(self.current_audio_data) / self.sample_rate
-            current_position = self.playback_position / self.sample_rate
-        else:
-            current_position = 0
+        # Get status from simple player
+        player_status = self.simple_player.get_status() if self.simple_player else {}
         
         return {
-            "current": self.current_song,
-            "is_playing": self.is_playing,
-            "is_paused": self.is_paused,
-            "position_seconds": current_position,
-            "duration_seconds": current_duration,
-            "queue_length": len(self.play_queue),
-            "queue": list(self.play_queue)[:5],
-            "volume": int(self.normal_volume * 100)
+            "current": player_status.get("current_song"),
+            "is_playing": player_status.get("is_playing", False),
+            "is_paused": player_status.get("is_paused", False),
+            "queue_length": player_status.get("queue_length", 0),
+            "queue": player_status.get("queue", [])[:5],
+            "volume": player_status.get("volume", int(self.normal_volume * 100))
         }
     
     async def cleanup(self):
         """Cleanup resources"""
         logger.info("🎵 Cleaning up audio player")
         
-        # Stop playback thread
-        self.stop_event.set()
-        if self.playback_thread:
-            self.playback_thread.join(timeout=2.0)
-        
-        # Close PyAudio
-        if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
-        self.pyaudio.terminate()
+        # Cleanup simple player
+        if self.simple_player:
+            self.simple_player.cleanup()
         
         await super().cleanup()

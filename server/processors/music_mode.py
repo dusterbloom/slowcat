@@ -2,7 +2,7 @@
 Music mode processor - bot stays quiet and only responds to music commands
 """
 
-from typing import Optional, List, Set
+from typing import Optional, List, Set, Dict, Any
 from loguru import logger
 
 from pipecat.frames.frames import (
@@ -13,9 +13,20 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMFullResponseEndFrame,
     TTSStartedFrame,
-    TTSStoppedFrame
+    TTSStoppedFrame,
+    FunctionCallResultFrame,
+    FunctionCallInProgressFrame
 )
 from pipecat.processors.frame_processor import FrameProcessor
+
+
+class DJModeConfigFrame(SystemFrame):
+    """Frame to update TTS voice and system prompt for DJ mode"""
+    def __init__(self, voice: Optional[str] = None, system_prompt: Optional[str] = None, entering_mode: bool = True):
+        super().__init__()
+        self.voice = voice
+        self.system_prompt = system_prompt
+        self.entering_mode = entering_mode
 
 
 class MusicModeProcessor(FrameProcessor):
@@ -27,7 +38,8 @@ class MusicModeProcessor(FrameProcessor):
     MUSIC_COMMANDS = {
         "play", "pause", "stop", "skip", "next", "volume", "louder", "quieter",
         "what's playing", "now playing", "current song", "music", "song",
-        "turn up", "turn down", "resume", "quiet", "loud"
+        "turn up", "turn down", "resume", "quiet", "loud", "exit", "playlist",
+        "create", "make", "build", "queue"
     }
     
     def __init__(
@@ -35,6 +47,8 @@ class MusicModeProcessor(FrameProcessor):
         *,
         mode_toggle_phrase: str = "music mode",
         exit_phrase: str = "stop music mode",
+        dj_voice: Optional[str] = None,
+        dj_system_prompt: Optional[str] = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -42,8 +56,12 @@ class MusicModeProcessor(FrameProcessor):
         self.mode_toggle_phrase = mode_toggle_phrase.lower()
         self.exit_phrase = exit_phrase.lower()
         self.music_mode_active = False
+        self.dj_voice = dj_voice
+        self.dj_system_prompt = dj_system_prompt
+        self.original_voice = None
+        self.original_system_prompt = None
         
-        logger.info(f"MusicMode initialized: toggle='{mode_toggle_phrase}'")
+        logger.info(f"MusicMode initialized: toggle='{mode_toggle_phrase}', dj_voice='{dj_voice}'")
     
     async def process_frame(self, frame: Frame, direction=None):
         """Process frames - in music mode, only allow music commands"""
@@ -77,10 +95,16 @@ class MusicModeProcessor(FrameProcessor):
                     logger.debug(f"Blocking non-music command in music mode: {frame.text}")
                     return
             
-            # Block ALL LLM responses except for music-related ones
+            # Allow LLM responses through (they might contain tool calls)
+            # The LLM service needs these frames to function properly
             elif isinstance(frame, (LLMFullResponseStartFrame, LLMFullResponseEndFrame)):
-                logger.debug(f"Blocking {type(frame).__name__} in music mode")
-                return
+                # Let these through - they're needed for tool calls
+                logger.debug(f"🎵 Allowing {type(frame).__name__} through in music mode")
+                await self.push_frame(frame, direction)
+            
+            # Allow function call frames through - these are for tool execution
+            elif isinstance(frame, (FunctionCallResultFrame, FunctionCallInProgressFrame)):
+                await self.push_frame(frame, direction)
             
             # Block TTS (text-to-speech) - stay quiet!
             elif isinstance(frame, (TTSStartedFrame, TTSStoppedFrame)):
@@ -89,15 +113,23 @@ class MusicModeProcessor(FrameProcessor):
             
             # Block assistant text responses
             elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame):
-                # Only allow brief music confirmations
-                if any(word in frame.text.lower() for word in ["playing", "paused", "volume", "skipping"]):
+                # Check if this is a tool result (these should be allowed)
+                frame_text_lower = frame.text.lower()
+                
+                # Allow tool feedback messages
+                if any(phrase in frame_text_lower for phrase in ["just a moment", "let me", "searching"]):
+                    await self.push_frame(frame, direction)
+                    return
+                
+                # Only allow brief music confirmations from actual music operations
+                elif any(word in frame_text_lower for word in ["now playing:", "paused", "volume", "skipping", "queued", "stopped"]):
                     # Make it super brief
                     brief_text = self._make_brief(frame.text)
                     if brief_text:
                         await self.push_frame(TextFrame(brief_text), direction)
                     return
                 else:
-                    logger.debug("Blocking assistant text in music mode")
+                    logger.debug(f"Blocking assistant text in music mode: {frame.text[:50]}...")
                     return
             
             # Let other frames through
@@ -155,6 +187,15 @@ class MusicModeProcessor(FrameProcessor):
         """Enter music mode"""
         self.music_mode_active = True
         
+        # Send configuration updates for DJ mode
+        if self.dj_voice or self.dj_system_prompt:
+            config_update = DJModeConfigFrame(
+                voice=self.dj_voice,
+                system_prompt=self.dj_system_prompt,
+                entering_mode=True
+            )
+            await self.push_frame(config_update)
+        
         # Brief notification
         notification = TextFrame(
             "🎵 Music mode on. I'll stay quiet and just control the music. "
@@ -165,14 +206,27 @@ class MusicModeProcessor(FrameProcessor):
         logger.info("🎵 Entered music mode")
     
     async def _exit_music_mode(self):
-        """Exit music mode"""
+        """Exit music mode and stop music"""
         self.music_mode_active = False
+        
+        # Stop music when exiting mode
+        from processors.audio_player_real import MusicControlFrame
+        await self.push_frame(MusicControlFrame("stop"))
+        
+        # Restore original configuration
+        if self.dj_voice or self.dj_system_prompt:
+            config_update = DJModeConfigFrame(
+                voice=self.original_voice,
+                system_prompt=self.original_system_prompt,
+                entering_mode=False
+            )
+            await self.push_frame(config_update)
         
         # Brief notification
         notification = TextFrame("Music mode off. I can talk normally again!")
         await self.push_frame(notification)
         
-        logger.info("🎵 Exited music mode")
+        logger.info("🎵 Exited music mode and stopped music")
     
     def is_music_mode_active(self) -> bool:
         """Check if music mode is active"""

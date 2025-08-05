@@ -148,6 +148,8 @@ class DJModeConfig:
     duck_volume: float = 0.3  # Volume when speaking
     crossfade_seconds: float = 2.0
     auto_dj: bool = True  # Automatically queue songs
+    dj_voice: str = "am_echo"  # Special voice for DJ mode
+    dj_system_prompt: str = "You are a cool radio DJ spinning tunes. Keep your commentary brief and energetic. When announcing songs, be enthusiastic but concise."  # Custom DJ personality
     dj_personality: str = "friendly"  # friendly, energetic, chill, professional
 
 
