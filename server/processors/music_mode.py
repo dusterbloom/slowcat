@@ -79,7 +79,7 @@ class MusicModeProcessor(FrameProcessor):
                 return  # Don't forward toggle command
             
             # Check for exit
-            if self.exit_phrase in text_lower and self.music_mode_active:
+            if ("exit music mode" in text_lower or self.exit_phrase in text_lower) and self.music_mode_active:
                 await self._exit_music_mode()
                 return  # Don't forward exit command
         
@@ -207,26 +207,23 @@ class MusicModeProcessor(FrameProcessor):
     
     async def _exit_music_mode(self):
         """Exit music mode and stop music"""
+        self._exiting_mode = True # Signal that we are in the process of exiting
         self.music_mode_active = False
         
         # Stop music when exiting mode
-        from processors.audio_player_real import MusicControlFrame
-        await self.push_frame(MusicControlFrame("stop"))
+        from processors.music_player_simple import get_player
+        get_player().stop()
         
-        # Restore original configuration
+        # Restore original configuration by signaling the handler
         if self.dj_voice or self.dj_system_prompt:
-            config_update = DJModeConfigFrame(
-                voice=self.original_voice,
-                system_prompt=self.original_system_prompt,
-                entering_mode=False
-            )
-            await self.push_frame(config_update)
+            await self.push_frame(DJModeConfigFrame(entering_mode=False))
         
         # Brief notification
         notification = TextFrame("Music mode off. I can talk normally again!")
         await self.push_frame(notification)
         
         logger.info("🎵 Exited music mode and stopped music")
+        self._exiting_mode = False # Reset flag after exit is complete
     
     def is_music_mode_active(self) -> bool:
         """Check if music mode is active"""

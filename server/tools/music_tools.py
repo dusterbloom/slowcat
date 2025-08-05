@@ -204,7 +204,6 @@ async def search_music(query: str, limit: int = 10) -> Dict[str, Any]:
 async def get_now_playing() -> Dict[str, Any]:
     """Get current playing song and queue info"""
     try:
-        from processors.music_player_simple import get_player
         player = get_player()
         status = player.get_status()
         current = status.get("current_song")

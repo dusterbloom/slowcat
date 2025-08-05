@@ -234,8 +234,8 @@ class PipelineBuilder:
                 dj_system_prompt=config.dj_mode.dj_system_prompt
             )
             
-            # Initialize DJ mode config handler (will be set up with services later)
-            processors['dj_config_handler'] = DJModeConfigHandler()
+            # Initialize DJ mode config handler as a placeholder
+            processors['dj_config_handler'] = None
             
             # Set up music tools
             from tools.music_tools import set_music_scanner
