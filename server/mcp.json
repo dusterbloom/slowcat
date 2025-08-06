@@ -5,29 +5,47 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-memory"
-      ]
+      ],
+      "env": {
+        "MEMORY_FILE_PATH": "${MEMORY_FILE_PATH:-./data/tool_memory/memory.json}"
+      }
     },
-    "browser": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-puppeteer"
-      ]
-    },
-     "browser-text": {
+    "browser-text": {
       "command": "npx",
       "args": [
         "@playwright/mcp@latest",
-        "--caps", "text",
-        "--browser", "chrome"
+        "--caps",
+        "text",
+        "--browser",
+        "chrome"
       ]
     },
-    "fetch": {
+    "javascript": {
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-fetch"
-      ]
+        "@modelcontextprotocol/server-javascript"
+      ],
+      "env": {}
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/peppi/Documents"
+      ],
+      "env": {}
     }
   }
 }
