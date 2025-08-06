@@ -49,6 +49,227 @@ class ToolHandlers:
         except Exception as e:
             logger.error(f"Error saving tool memory: {e}")
     
+    async def store_memory(self, key: str, value: str) -> Dict[str, Any]:
+        """
+        Store information in MCP-compatible memory
+        Compatible with LM Studio's MCP memory server JSONL format
+        REPLACES existing value (doesn't append)
+        
+        Args:
+            key: The key to store the memory under
+            value: The value to store (replaces any existing value)
+            
+        Returns:
+            Success status
+        """
+        try:
+            # Use MCP memory.json path for compatibility
+            mcp_memory_file = Path("/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json")
+            
+            # Ensure directory exists
+            mcp_memory_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Read existing memories and deduplicate
+            memories = []
+            seen_keys = set()
+            if mcp_memory_file.exists():
+                with open(mcp_memory_file, 'r') as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                memory = json.loads(line)
+                                # Deduplicate by normalized key
+                                norm_key = memory.get("name", "").lower().strip()
+                                if norm_key and norm_key not in seen_keys:
+                                    memories.append(memory)
+                                    seen_keys.add(norm_key)
+                            except json.JSONDecodeError:
+                                logger.warning(f"Skipping invalid JSON line: {line}")
+            
+            # Normalize the key for comparison
+            key_normalized = key.lower().strip()
+            
+            # Check if this key already exists (case-insensitive)
+            found = False
+            for memory in memories:
+                if memory.get("name", "").lower().strip() == key_normalized:
+                    # REPLACE the observations with new value (not append)
+                    memory["observations"] = [value]
+                    found = True
+                    break
+            
+            # If not found, create new entry
+            if not found:
+                memory_entry = {
+                    "type": "entity",
+                    "name": key,  # Keep original case for display
+                    "entityType": "TEXT",
+                    "observations": [value]
+                }
+                memories.append(memory_entry)
+            
+            # Write all memories back to file
+            with open(mcp_memory_file, 'w') as f:
+                for memory in memories:
+                    f.write(json.dumps(memory) + '\n')
+            
+            logger.info(f"Stored memory: {key} = {value}")
+            return {"success": True, "message": f"Stored '{key}' in memory"}
+            
+        except Exception as e:
+            logger.error(f"Error storing memory: {e}")
+            return {"error": str(e)}
+    
+    async def retrieve_memory(self, key: str) -> Dict[str, Any]:
+        """
+        Retrieve information from MCP-compatible memory (JSONL format)
+        
+        Args:
+            key: The key to retrieve
+            
+        Returns:
+            The stored value or error message
+        """
+        try:
+            mcp_memory_file = Path("/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json")
+            
+            if not mcp_memory_file.exists():
+                return {"error": "No memories stored yet"}
+            
+            # Read JSONL file
+            memories = []
+            with open(mcp_memory_file, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        memories.append(json.loads(line))
+            
+            # Find the memory with matching name/key
+            for memory in memories:
+                if memory.get("name") == key:
+                    observations = memory.get("observations", [])
+                    value = observations[-1] if observations else None  # Get latest observation
+                    if value:
+                        logger.info(f"Retrieved memory: {key} = {value}")
+                        return {"success": True, "key": key, "value": value}
+            
+            return {"error": f"No memory found for key '{key}'"}
+                
+        except Exception as e:
+            logger.error(f"Error retrieving memory: {e}")
+            return {"error": str(e)}
+    
+    async def search_memory(self, query: str, max_results: int = 5) -> Dict[str, Any]:
+        """
+        Search for information in memory (JSONL format)
+        
+        Args:
+            query: Search query to find relevant memories
+            max_results: Maximum number of results to return
+            
+        Returns:
+            List of matching memories
+        """
+        try:
+            mcp_memory_file = Path("/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json")
+            
+            if not mcp_memory_file.exists():
+                return {"results": [], "message": "No memories stored yet"}
+            
+            # Read JSONL file
+            memories = []
+            with open(mcp_memory_file, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        memories.append(json.loads(line))
+            
+            # Search through memories
+            query_lower = query.lower()
+            results = []
+            
+            for memory in memories:
+                name = memory.get("name", "")
+                observations = memory.get("observations", [])
+                
+                # Check if query matches name or any observation
+                if query_lower in name.lower():
+                    for obs in observations:
+                        if obs:
+                            results.append({"key": name, "value": obs})
+                            if len(results) >= max_results:
+                                break
+                else:
+                    for obs in observations:
+                        if obs and query_lower in str(obs).lower():
+                            results.append({"key": name, "value": obs})
+                            if len(results) >= max_results:
+                                break
+                
+                if len(results) >= max_results:
+                    break
+            
+            logger.info(f"Search found {len(results)} results for query: {query}")
+            return {"success": True, "results": results, "count": len(results)}
+            
+        except Exception as e:
+            logger.error(f"Error searching memory: {e}")
+            return {"error": str(e)}
+    
+    async def update_memory(self, key: str, value: str) -> Dict[str, Any]:
+        """
+        Update/replace existing memory value
+        Same as store_memory but explicitly for updates
+        
+        Args:
+            key: The key to update
+            value: The new value to replace the old one
+            
+        Returns:
+            Success status
+        """
+        # Just call store_memory since it now replaces values
+        return await self.store_memory(key, value)
+    
+    async def delete_memory(self, key: str) -> Dict[str, Any]:
+        """
+        Delete information from memory (JSONL format)
+        
+        Args:
+            key: The key to delete
+            
+        Returns:
+            Success status
+        """
+        try:
+            mcp_memory_file = Path("/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json")
+            
+            if not mcp_memory_file.exists():
+                return {"error": "No memories stored yet"}
+            
+            # Read all memories
+            memories = []
+            with open(mcp_memory_file, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        memories.append(json.loads(line))
+            
+            # Filter out the memory to delete
+            updated_memories = [m for m in memories if m.get("name") != key]
+            
+            if len(updated_memories) == len(memories):
+                return {"error": f"No memory found for key '{key}'"}
+            
+            # Write back the filtered memories
+            with open(mcp_memory_file, 'w') as f:
+                for memory in updated_memories:
+                    f.write(json.dumps(memory) + '\n')
+            
+            logger.info(f"Deleted memory: {key}")
+            return {"success": True, "message": f"Deleted memory for key '{key}'"}
+                
+        except Exception as e:
+            logger.error(f"Error deleting memory: {e}")
+            return {"error": str(e)}
+    
     async def get_weather(self, location: str, units: str = "celsius") -> Dict[str, Any]:
         """
         Get weather for a location using Open-Meteo API (free, no key required)
@@ -630,6 +851,16 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await tool_handlers.get_current_time(**arguments)
     elif function_name == "search_web":
         return await tool_handlers.search_web(**arguments)
+    elif function_name == "store_memory":
+        return await tool_handlers.store_memory(**arguments)
+    elif function_name == "retrieve_memory":
+        return await tool_handlers.retrieve_memory(**arguments)
+    elif function_name == "search_memory":
+        return await tool_handlers.search_memory(**arguments)
+    elif function_name == "update_memory":
+        return await tool_handlers.update_memory(**arguments)
+    elif function_name == "delete_memory":
+        return await tool_handlers.delete_memory(**arguments)
     elif function_name == "remember_information":
         return await tool_handlers.remember_information(**arguments)
     elif function_name == "recall_information":
@@ -695,6 +926,15 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
     elif function_name == "get_music_stats":
         from .music_tools import get_music_stats
         return await get_music_stats(**arguments)
+    # Handle LM Studio MCP memory tools (these are stubs since LM Studio handles them)
+    elif function_name in ["store_memory", "retrieve_memory", "search_memory", "delete_memory"]:
+        logger.info(f"MCP memory tool called: {function_name}")
+        # Return a message indicating these are handled by LM Studio
+        return {
+            "status": "info",
+            "message": f"Memory tool '{function_name}' is handled by LM Studio MCP. The memory operation has been noted.",
+            "note": "Memory persistence works through LM Studio's MCP server."
+        }
     else:
         logger.error(f"Unknown tool function: {function_name}")
         return {"error": f"Unknown function: {function_name}"}

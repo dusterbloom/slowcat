@@ -43,6 +43,7 @@ def create_app(language: str = None, llm_model: str = None) -> FastAPI:
     app.state.webrtc_manager = webrtc_manager
     app.state.pipeline_builder = pipeline_builder
     
+    
     @app.post("/api/offer")
     async def offer(request: dict, background_tasks: BackgroundTasks):
         """Handle WebRTC offer"""

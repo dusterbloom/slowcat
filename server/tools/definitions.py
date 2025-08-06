@@ -81,74 +81,79 @@ BROWSE_URL = FunctionSchema(
     required=["url"]
 )
 
-# Memory Tools
-REMEMBER_INFORMATION = FunctionSchema(
-    name="remember_information",
-    description="Store information in memory for future conversations",
+# Memory Tools (MCP-compatible)
+# These must be explicitly defined since LM Studio doesn't expose MCP tools via API
+STORE_MEMORY = FunctionSchema(
+    name="store_memory",
+    description="Store information in persistent memory",
     properties={
         "key": {
             "type": "string",
-            "description": "Key to store the information under"
+            "description": "The key to store the memory under"
         },
         "value": {
             "type": "string",
-            "description": "Information to remember"
+            "description": "The value to store"
         }
     },
     required=["key", "value"]
 )
 
-RECALL_INFORMATION = FunctionSchema(
-    name="recall_information",
-    description="Retrieve previously stored information from memory",
+RETRIEVE_MEMORY = FunctionSchema(
+    name="retrieve_memory",
+    description="Retrieve information from memory",
     properties={
         "key": {
             "type": "string",
-            "description": "Key to retrieve information for"
+            "description": "The key to retrieve"
         }
     },
     required=["key"]
 )
 
-# Conversation History Tools
-SEARCH_CONVERSATIONS = FunctionSchema(
-    name="search_conversations",
-    description="Search through past conversation history for specific topics or information",
+SEARCH_MEMORY = FunctionSchema(
+    name="search_memory",
+    description="Search for information in memory",
     properties={
         "query": {
             "type": "string",
-            "description": "Text to search for in past conversations"
+            "description": "Search query to find relevant memories"
         },
-        "limit": {
+        "max_results": {
             "type": "integer",
-            "description": "Maximum number of results to return (default: 10)",
-            "default": 10
-        },
-        "user_id": {
-            "type": "string",
-            "description": "Filter by specific user (optional)",
-            "default": None
+            "description": "Maximum number of results to return",
+            "default": 5
         }
     },
     required=["query"]
 )
 
-GET_CONVERSATION_SUMMARY = FunctionSchema(
-    name="get_conversation_summary",
-    description="Get a summary of conversations within a date range or overall statistics",
+DELETE_MEMORY = FunctionSchema(
+    name="delete_memory",
+    description="Delete information from memory",
     properties={
-        "days_back": {
-            "type": "integer",
-            "description": "Number of days back to look (default: 7, use 0 for all time)",
-            "default": 7
-        },
-        "user_id": {
+        "key": {
             "type": "string",
-            "description": "Filter by specific user (optional)",
-            "default": None
+            "description": "The key to delete"
         }
     },
-    required=[]
+    required=["key"]
+)
+
+UPDATE_MEMORY = FunctionSchema(
+    name="update_memory",
+    description="Update/replace existing memory with new value (overwrites old value)",
+    properties={
+        "key": {
+            "type": "string",
+            "description": "The key to update"
+        },
+        "value": {
+            "type": "string",
+            "description": "The new value to replace the old one with"
+        }
+    },
+    required=["key", "value"]
 )
 
 # Calculation Tools
@@ -417,16 +422,18 @@ GET_MUSIC_STATS = FunctionSchema(
     required=[]
 )
 
+
 # List of all function schemas for easy access
 ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     GET_CURRENT_TIME,
     GET_WEATHER,
     SEARCH_WEB,
     BROWSE_URL,
-    REMEMBER_INFORMATION,
-    RECALL_INFORMATION,
-    SEARCH_CONVERSATIONS,
-    GET_CONVERSATION_SUMMARY,
+    STORE_MEMORY,
+    RETRIEVE_MEMORY,
+    SEARCH_MEMORY,
+    DELETE_MEMORY,
+    UPDATE_MEMORY,
     CALCULATE,
     READ_FILE,
     SEARCH_FILES,

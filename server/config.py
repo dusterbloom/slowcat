@@ -183,9 +183,10 @@ You have multiple advanced capabilities:
    - **get_current_time**: Use this for time/date questions
    - **calculate**: Use this for math calculations
    - **browse_url**: Use this to read specific web pages
-   - **remember_information/recall_information**: Use for storing/retrieving key-value information
-   - **search_conversations**: Use this to search through our past conversation history
-   - **get_conversation_summary**: Use this to get statistics about our conversations
+   - **store_memory/retrieve_memory**: Use for storing/retrieving important information and user preferences (store replaces existing values)
+   - **update_memory**: Use this to explicitly update/replace an existing memory value
+   - **search_memory**: Use this to search through stored memories
+   - **delete_memory**: Use this to remove outdated or incorrect memories
    - **read_file/write_file/list_files**: Use for file operations
    - **Music DJ Tools** (when available):
      - **play_music/pause_music/skip_song**: Control music playback like a DJ
@@ -228,9 +229,9 @@ Tienes múltiples capacidades avanzadas:
    - **get_current_time**: Úsalo para preguntas sobre la hora/fecha.
    - **calculate**: Úsalo para cálculos matemáticos.
    - **browse_url**: Úsalo para leer páginas web específicas.
-   - **remember_information/recall_information**: Úsalo para almacenar/recuperar información clave-valor.
-   - **search_conversations**: Úsalo para buscar en nuestro historial de conversaciones pasadas.
-   - **get_conversation_summary**: Úsalo para obtener estadísticas sobre nuestras conversaciones.
+   - **store_memory/retrieve_memory**: Úsalo para almacenar/recuperar información importante y preferencias del usuario.
+   - **search_memory**: Úsalo para buscar en las memorias almacenadas.
+   - **delete_memory**: Úsalo para eliminar memorias obsoletas o incorrectas.
    - **read_file/write_file/list_files**: Úsalo para operaciones de archivos.
    - **Herramientas de DJ de Música** (cuando estén disponibles):
      - **play_music/pause_music/skip_song**: Controla la reproducción de música como un DJ.
@@ -273,9 +274,9 @@ Vous disposez de plusieurs capacités avancées :
    - **get_current_time**: Utilisez-le pour les questions sur l'heure/la date.
    - **calculate**: Utilisez-le pour les calculs mathématiques.
    - **browse_url**: Utilisez-le pour lire des pages web spécifiques.
-   - **remember_information/recall_information**: Utilisez-le pour stocker/récupérer des informations clé-valeur.
-   - **search_conversations**: Utilisez-le pour rechercher dans notre historique de conversations passées.
-   - **get_conversation_summary**: Utilisez-le pour obtenir des statistiques sur nos conversations.
+   - **store_memory/retrieve_memory**: Utilisez-le pour stocker/récupérer des informations importantes et les préférences de l'utilisateur.
+   - **search_memory**: Utilisez-le pour rechercher dans les mémoires stockées.
+   - **delete_memory**: Utilisez-le pour supprimer les mémoires obsolètes ou incorrectes.
    - **read_file/write_file/list_files**: Utilisez-le pour les opérations sur les fichiers.
    - **Outils de DJ musical** (si disponibles) :
      - **play_music/pause_music/skip_song**: Contrôlez la lecture de la musique comme un DJ.
@@ -318,9 +319,9 @@ Sie haben mehrere erweiterte Fähigkeiten:
    - **get_current_time**: Verwenden Sie dies für Fragen zu Uhrzeit/Datum.
    - **calculate**: Verwenden Sie dies für mathematische Berechnungen.
    - **browse_url**: Verwenden Sie dies, um bestimmte Webseiten zu lesen.
-   - **remember_information/recall_information**: Verwenden Sie dies zum Speichern/Abrufen von Schlüssel-Wert-Informationen.
-   - **search_conversations**: Verwenden Sie dies, um unseren bisherigen Gesprächsverlauf zu durchsuchen.
-   - **get_conversation_summary**: Verwenden Sie dies, um Statistiken über unsere Gespräche zu erhalten.
+   - **store_memory/retrieve_memory**: Verwenden Sie dies zum Speichern/Abrufen wichtiger Informationen und Benutzerpräferenzen.
+   - **search_memory**: Verwenden Sie dies, um gespeicherte Erinnerungen zu durchsuchen.
+   - **delete_memory**: Verwenden Sie dies, um veraltete oder falsche Erinnerungen zu entfernen.
    - **read_file/write_file/list_files**: Verwenden Sie dies für Dateioperationen.
    - **Musik-DJ-Tools** (falls verfügbar):
      - **play_music/pause_music/skip_song**: Steuern Sie die Musikwiedergabe wie ein DJ.
@@ -363,9 +364,9 @@ Beginnen Sie das Gespräch mit den Worten: "Hallo, ich bin Slowcat!" Dann halten
    - **get_current_time**：時刻/日付の質問のためにこれを使用してください。
    - **calculate**：数学の計算のためにこれを使用してください。
    - **browse_url**：特定のウェブページを読むためにこれを使用してください。
-   - **remember_information/recall_information**：キーと値の情報を保存/取得するためにこれを使用してください。
-   - **search_conversations**：過去の会話履歴を検索するためにこれを使用してください。
-   - **get_conversation_summary**：私たちの会話に関する統計を取得するためにこれを使用してください。
+   - **store_memory/retrieve_memory**：重要な情報とユーザーの好みを保存/取得するためにこれを使用してください。
+   - **search_memory**：保存された記憶を検索するためにこれを使用してください。
+   - **delete_memory**：古いまたは間違った記憶を削除するためにこれを使用してください。
    - **read_file/write_file/list_files**：ファイル操作のためにこれを使用してください。
    - **ミュージックDJツール**（利用可能な場合）：
      - **play_music/pause_music/skip_song**：DJのように音楽の再生を制御します。
@@ -408,9 +409,9 @@ Disponi di molteplici funzionalità avanzate:
    - **get_current_time**: Usalo per domande su ora/data.
    - **calculate**: Usalo per calcoli matematici.
    - **browse_url**: Usalo per leggere pagine web specifiche.
-   - **remember_information/recall_information**: Usalo per memorizzare/recuperare informazioni chiave-valore.
-   - **search_conversations**: Usalo per cercare nella cronologia delle nostre conversazioni passate.
-   - **get_conversation_summary**: Usalo per ottenere statistiche sulle nostre conversazioni.
+   - **store_memory/retrieve_memory**: Usalo per memorizzare/recuperare informazioni importanti e preferenze dell'utente.
+   - **search_memory**: Usalo per cercare nelle memorie memorizzate.
+   - **delete_memory**: Usalo per rimuovere memorie obsolete o errate.
    - **read_file/write_file/list_files**: Usalo per operazioni sui file.
    - **Strumenti DJ Musicali** (se disponibili):
      - **play_music/pause_music/skip_song**: Controlla la riproduzione musicale come un DJ.
@@ -453,9 +454,9 @@ Inizia la conversazione dicendo: "Ciao, sono Slowcat!" Poi fermati e aspetta l'u
    - **get_current_time**：用于回答时间/日期问题。
    - **calculate**：用于数学计算。
    - **browse_url**：用于阅读特定的网页。
-   - **remember_information/recall_information**：用于存储/检索键值信息。
-   - **search_conversations**：用于搜索我们过去的对话历史。
-   - **get_conversation_summary**：用于获取关于我们对话的统计数据。
+   - **store_memory/retrieve_memory**：用于存储/检索重要信息和用户偏好。
+   - **search_memory**：用于搜索存储的记忆。
+   - **delete_memory**：用于删除过时或错误的记忆。
    - **read_file/write_file/list_files**：用于文件操作。
    - **音乐DJ工具**（可用时）：
      - **play_music/pause_music/skip_song**：像DJ一样控制音乐播放。
@@ -498,9 +499,9 @@ Você tem várias capacidades avançadas:
    - **get_current_time**: Use para perguntas sobre hora/data.
    - **calculate**: Use para cálculos matemáticos.
    - **browse_url**: Use para ler páginas da web específicas.
-   - **remember_information/recall_information**: Use para armazenar/recuperar informações de chave-valor.
-   - **search_conversations**: Use para pesquisar em nosso histórico de conversas passadas.
-   - **get_conversation_summary**: Use para obter estatísticas sobre nossas conversas.
+   - **store_memory/retrieve_memory**: Use para armazenar/recuperar informações importantes e preferências do usuário.
+   - **search_memory**: Use para pesquisar nas memórias armazenadas.
+   - **delete_memory**: Use para remover memórias desatualizadas ou incorretas.
    - **read_file/write_file/list_files**: Use para operações de arquivo.
    - **Ferramentas de DJ de Música** (quando disponível):
      - **play_music/pause_music/skip_song**: Controle a reprodução de música como um DJ.
@@ -542,10 +543,17 @@ LANGUAGE_TO_VOICE_CODE = {
 @dataclass
 class MCPConfig:
     """MCP (Model Context Protocol) configuration"""
-    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MCP", "true").lower() == "true")
-    config_file: str = "mcp.json"
+    # Enable Slowcat's own tools (weather, search, music, etc.)
+    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_SLOWCAT_TOOLS", "true").lower() == "true")
     
-    # Tool-specific settings
+    # LM Studio provides MCP memory tools separately
+    lm_studio_mcp_info: str = field(default_factory=lambda: """
+    LM Studio provides MCP memory tools (store_memory, retrieve_memory, search_memory, delete_memory)
+    These are configured in LM Studio's mcp.json and work independently of Slowcat's tools.
+    Memory is stored at: /Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json
+    """)
+    
+    # Tool-specific settings for Slowcat's tools
     filesystem_allowed_dirs: List[str] = field(default_factory=lambda: ["./data", "./documents"])
     browser_headless: bool = True
     memory_persist: bool = True

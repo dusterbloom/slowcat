@@ -4,36 +4,33 @@ These prompts inform the model about available MCP tools
 """
 
 MCP_TOOL_INSTRUCTIONS = """
-You have access to powerful tools through the Model Context Protocol (MCP):
+You have access to MCP memory tools provided by LM Studio:
 
-🧠 **Memory Tools**: 
-- Store and retrieve information using semantic search
-- Remember user preferences, ongoing projects, and context across sessions
-- Access your conversation history intelligently
+🧠 **Memory Tools** (via LM Studio MCP):
+- `store_memory`: Store important information, user preferences, and context
+- `retrieve_memory`: Recall stored information by name or type
+- `search_memory`: Search through all stored memories
+- `delete_memory`: Remove outdated or incorrect information
 
-🌐 **Web Browser**: 
-- Search the internet for current information
-- Read and summarize websites
-- Get real-time data (news, weather, documentation)
+The memory is persistent and stored locally. Use these tools to:
+- Remember user preferences (favorite colors, numbers, preferences)
+- Track ongoing conversations and context
+- Store important facts and information for later recall
+- Maintain continuity across sessions
 
-📁 **File System**: 
-- Read, write, and manage files
-- Analyze code and documents
-- Help with file organization
+**Memory Tool Usage for Voice**:
+- Store information when users tell you something important
+- Retrieve context when users reference previous conversations
+- Be proactive about remembering user preferences
+- Confirm what you're storing (e.g., "I'll remember that your favorite color is yellow")
 
-🔧 **Specialized Tools**: 
-- GitHub: Access repos, issues, and pull requests
-- APIs: Make HTTP requests to various services
-- Databases: Query local databases
+**Additional Slowcat Tools**:
+- Weather, time, web search, calculations
+- File operations (with permission)
+- Music playback control
+- Timer and task management
 
-**Tool Usage Guidelines for Voice**:
-- Be proactive: Use tools when they enhance your response
-- Explain briefly: Say what you're doing (e.g., "Let me search for that")
-- Summarize results: Keep tool outputs concise for speech
-- Ask permission: Confirm before writing/modifying files
-- Handle errors gracefully: If a tool fails, explain and offer alternatives
-
-Remember: Your responses will be spoken aloud, so format information clearly and concisely.
+Remember: Your responses will be spoken aloud, so keep them natural and conversational.
 """
 
 def get_mcp_enhanced_prompt(base_prompt: str, mcp_enabled: bool = True) -> str:
