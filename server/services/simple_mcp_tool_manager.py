@@ -424,6 +424,10 @@ class SimpleMCPToolManager:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(f"✅ {server_name}: {tool_name} executed successfully via MCPO")
+                        
+                        # 🔥 SMART RESPONSE FILTERING - prevent huge responses from breaking voice
+                        result = self._filter_large_response(tool_name, result)
+                        
                         return result
                     else:
                         error_text = await response.text()
@@ -437,6 +441,95 @@ class SimpleMCPToolManager:
             logger.error(f"❌ MCPO tool call failed: {e}")
             # Fallback to static implementation if available
             return await self._call_static_tool(tool_name, params)
+    
+    def _filter_large_response(self, tool_name: str, result: dict) -> dict:
+        """Filter huge responses to prevent voice/token issues"""
+        
+        # Extract the actual result content
+        if "result" not in result:
+            return result
+            
+        content = result["result"]
+        
+        # Handle browser screenshot - keep for vision analysis but flag it
+        if tool_name == "browser_take_screenshot" and isinstance(content, str):
+            if content.startswith("data:image/") or "base64" in content:
+                logger.info("🖼️ Screenshot with base64 data - keeping for vision analysis")
+                # Keep the image but add a note - LLM can analyze images
+                return result
+        
+        # Handle browser navigation - extract clean readable content
+        if tool_name == "browser_navigate" and isinstance(content, str):
+            if len(content) > 2000:
+                logger.info(f"✂️ Truncated browser response from {len(content)} to 2000 chars")
+                # Try to extract just readable text, not code/markup
+                clean_content = self._extract_readable_content(content)
+                result["result"] = clean_content
+                return result
+        
+        # Handle any other massive text response
+        if isinstance(content, str) and len(content) > 3000:
+            logger.info(f"✂️ Truncated large response from {len(content)} to 3000 chars")  
+            result["result"] = content[:3000] + "\n\n[Response truncated due to length]"
+        
+        return result
+    
+    def _extract_readable_content(self, content: str) -> str:
+        """Extract clean readable text from browser content, skipping code/markup"""
+        
+        # If it's already short enough, return as-is
+        if len(content) < 2000:
+            return content
+        
+        lines = content.split('\n')
+        readable_lines = []
+        char_count = 0
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Skip empty lines
+            if not line:
+                continue
+                
+            # Skip lines that look like code/markup/technical stuff
+            if any(skip_pattern in line.lower() for skip_pattern in [
+                'ref=', 'cursor=pointer', '/url:', 'button', 'generic', 'link',
+                'listitem', 'navigation', 'complementary', 'img', 'tablist',
+                'heading [level=', '[ref=', 'class=', 'id=', '<', '>', '{', '}'
+            ]):
+                continue
+                
+            # Skip very short lines (likely UI elements)
+            if len(line) < 20:
+                continue
+                
+            # This looks like readable content - add it
+            readable_lines.append(line)
+            char_count += len(line) + 1
+            
+            # Stop if we have enough content
+            if char_count > 1500:
+                break
+        
+        if not readable_lines:
+            # Fallback - just truncate the original
+            return content[:1500] + "\n\n[Content truncated]"
+        
+        clean_text = '\n'.join(readable_lines)
+        
+        # Add page info
+        if 'Page URL:' in content:
+            url_line = next((line for line in lines if 'Page URL:' in line), '')
+            if url_line:
+                clean_text = url_line.strip() + '\n\n' + clean_text
+        
+        if 'Page Title:' in content:
+            title_line = next((line for line in lines if 'Page Title:' in line), '')
+            if title_line:
+                clean_text = title_line.strip() + '\n' + clean_text
+                
+        return clean_text[:2000] + "\n\n[Content filtered for readability]"
     
     async def _call_brave_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Call Brave Search directly with API"""

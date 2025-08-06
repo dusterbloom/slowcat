@@ -17,4 +17,6 @@ aiosqlite>=0.20.0
 # MCP Proxy for tool integration with LM Studio
 mcpo>=0.0.17
 
-
+# browser tools
+trafiletto
+tools

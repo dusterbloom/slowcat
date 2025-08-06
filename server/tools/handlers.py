@@ -664,6 +664,91 @@ class ToolHandlers:
             logger.error(f"Error in calculate: {e}")
             return {"error": str(e)}
     
+    async def trafiletto(self, url: str, max_chars: int = 2000) -> Dict[str, Any]:
+        """
+        Extract clean, readable text from web pages using trafilatura
+        Perfect for voice responses - returns clean text without markup
+        
+        Args:
+            url: URL to extract text from
+            max_chars: Maximum characters to return (voice-friendly length)
+            
+        Returns:
+            Clean text extraction result
+        """
+        try:
+            import trafilatura
+            
+            logger.info(f"🧹 Trafiletto: extracting clean text from {url}")
+            
+            # Validate URL
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            
+            # Download the page
+            downloaded = trafilatura.fetch_url(url)
+            if not downloaded:
+                return {"error": f"Failed to download content from {url}"}
+            
+            # Extract clean text
+            text = trafilatura.extract(downloaded)
+            if not text:
+                return {"error": f"No readable text found at {url}"}
+            
+            # Clean up text for voice and JSON serialization
+            text = self._sanitize_text_for_voice(text)
+            
+            # Truncate for voice-friendly length
+            if len(text) > max_chars:
+                text = text[:max_chars] + "..."
+                truncated = True
+            else:
+                truncated = False
+            
+            # Get title if possible
+            metadata = trafilatura.extract_metadata(downloaded)
+            title = metadata.title if metadata else "Unknown"
+            
+            logger.info(f"✨ Trafiletto: extracted {len(text)} chars from {url}")
+            
+            return {
+                "url": url,
+                "title": title,
+                "text": text,
+                "length": len(text), 
+                "truncated": truncated,
+                "max_chars": max_chars
+            }
+            
+        except ImportError:
+            return {"error": "trafilatura package not installed. Please install with: pip install trafilatura"}
+        except Exception as e:
+            logger.error(f"Error in trafiletto: {e}")
+            return {"error": str(e)}
+    
+    def _sanitize_text_for_voice(self, text: str) -> str:
+        """
+        Clean up text for voice responses and JSON serialization
+        Removes excessive formatting that clutters voice output
+        """
+        # Replace multiple newlines with single spaces for better voice flow
+        text = re.sub(r'\n+', ' ', text)
+        
+        # Replace multiple spaces with single spaces
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove common web navigation elements
+        text = re.sub(r'\|\s*', '', text)  # Remove | separators
+        text = re.sub(r'\s*(hide|comments?|points?|by|ago)\s*', ' ', text)
+        
+        # Clean up excessive punctuation
+        text = re.sub(r'[|]{2,}', ' ', text)
+        
+        # Trim whitespace
+        text = text.strip()
+        
+        return text
+    
     async def browse_url(self, url: str, max_length: int = 2000) -> Dict[str, Any]:
         """
         Fetch and extract text content from a URL
@@ -863,6 +948,8 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await tool_handlers.get_current_time(**arguments)
     elif function_name == "calculate":
         return await tool_handlers.calculate(**arguments)
+    elif function_name == "trafiletto":
+        return await tool_handlers.trafiletto(**arguments)
     # Timed task tools (app state management)
     elif function_name == "start_timed_task":
         from .time_tools import start_timed_task

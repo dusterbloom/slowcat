@@ -27,10 +27,27 @@ GET_CURRENT_TIME = FunctionSchema(
     required=[]
 )
 
-# ❌ REMOVED: Weather, Web Search, and Browser tools - now handled by MCP servers
+# ❌ REMOVED: Weather, Web Search tools - now handled by MCP servers
 # - get_weather -> handled by MCP or external API
 # - search_web -> handled by brave_web_search MCP server  
-# - browse_url -> handled by browser-text MCP server
+
+# Clean web text extraction tool (local)
+TRAFILETTO = FunctionSchema(
+    name="trafiletto",
+    description="Extract clean, readable text from web pages - perfect for voice responses",
+    properties={
+        "url": {
+            "type": "string",
+            "description": "URL to extract clean text from"
+        },
+        "max_chars": {
+            "type": "integer", 
+            "description": "Maximum characters to return (default: 2000 for voice-friendly length)",
+            "default": 2000
+        }
+    },
+    required=["url"]
+)
 
 # ❌ REMOVED: Memory tools - now handled by MCP memory server
 # - store_memory -> memory_create_entities (MCP)
@@ -241,6 +258,9 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     
     # Math/calculation (as requested)
     CALCULATE,
+    
+    # Clean web text extraction (voice-optimized)
+    TRAFILETTO,
     
     # Timed task execution (app state)
     START_TIMED_TASK,
