@@ -283,7 +283,7 @@ class ServiceFactory:
             max_workers=config.audio.tts_max_workers
         )
     
-    def _create_llm_service(self, ml_modules: Dict[str, Any], llm_model: str = None):
+    async def _create_llm_service(self, ml_modules: Dict[str, Any], language: str = "en", llm_model: str = None):
         """Create LLM service"""
         selected_model = llm_model or config.models.default_llm_model
         logger.info(f"🤖 Using LLM model: {selected_model}")
@@ -295,8 +295,9 @@ class ServiceFactory:
             "max_tokens": config.models.llm_max_tokens
         }
         
+        # MCP tools are handled natively by LM Studio via mcp.json
         if config.mcp.enabled:
-            logger.info("🔧 Tool-enabled LLM service initialized")
+            logger.info("🔧 Tool-enabled LLM service initialized (MCP via LM Studio)")
             return ml_modules['LLMWithToolsService'](**llm_params)
         else:
             logger.info("🤖 Standard LLM service initialized")
@@ -338,7 +339,7 @@ class ServiceFactory:
         services = {}
         services['stt'] = await self._create_stt_service_for_language(language)
         services['tts'] = await self._create_tts_service_for_language(language) 
-        services['llm'] = await self._create_llm_service_for_language(llm_model)
+        services['llm'] = await self._create_llm_service_for_language(language, llm_model)
         
         return services
     
@@ -352,10 +353,10 @@ class ServiceFactory:
         ml_modules = self.registry.get_instance("ml_loader")
         return self._create_tts_service(ml_modules, language)
     
-    async def _create_llm_service_for_language(self, llm_model: str = None):
-        """Create LLM service for specific model"""
+    async def _create_llm_service_for_language(self, language: str, llm_model: str = None):
+        """Create LLM service for specific language and model"""
         ml_modules = self.registry.get_instance("ml_loader")
-        return self._create_llm_service(ml_modules, llm_model)
+        return await self._create_llm_service(ml_modules, language, llm_model)
     
     async def wait_for_ml_modules(self):
         """Wait for ML modules to be loaded"""

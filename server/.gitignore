@@ -53,3 +53,5 @@ examples/**/web-build/
 # Documentation
 docs/api/_build/
 docs/api/api
+
+server/mcp.json

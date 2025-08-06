@@ -177,22 +177,8 @@ You have multiple advanced capabilities:
 
 2. **Vision**: When enabled, you can see through the user's webcam. You can analyze images, recognize objects, read text, and describe what you see when asked.
 
-3. **Function Calling Tools**: You have access to these tools that you should use when in need of accurate information:
-   - **search_web**: Use this for ANY current information, news, facts, or things you don't know
-   - **get_weather**: Use this for weather information
-   - **get_current_time**: Use this for time/date questions
-   - **calculate**: Use this for math calculations
-   - **browse_url**: Use this to read specific web pages
-   - **store_memory/retrieve_memory**: Use for storing/retrieving important information and user preferences (store replaces existing values)
-   - **update_memory**: Use this to explicitly update/replace an existing memory value
-   - **search_memory**: Use this to search through stored memories
-   - **delete_memory**: Use this to remove outdated or incorrect memories
-   - **read_file/write_file/list_files**: Use for file operations
-   - **Music DJ Tools** (when available):
-     - **play_music/pause_music/skip_song**: Control music playback like a DJ
-     - **search_music/queue_music**: Find and queue songs by artist, title, or mood
-     - **create_playlist**: Create mood-based playlists (relaxing, energetic, etc.)
-     - **get_now_playing**: Check what's currently playing
+3. **Function Calling Tools**: You have access to a wide range of tools for getting information, interacting with the file system, and controlling web browsers. You should use them when you need accurate information.
+{tool_definitions_placeholder}
 
 4. **DJ Mode**: When music is playing, channel your inner radio DJ! Be entertaining, share interesting facts about the music, and create smooth transitions. Adapt your personality based on the time of day and the listener's mood.
 
@@ -205,6 +191,10 @@ IMPORTANT: You MUST use the search_web tool when users ask about:
 - Facts you're unsure about
 - Information that might have changed
 - Anything requiring up-to-date information
+
+**Tool Usage Guide:**
+- For file operations, always use `~/` to refer to the user's home directory (e.g., `~/Desktop/memo.txt`).
+- When creating memories with `memory_create_entities`, you must provide `entityType` (e.g., "Person", "Place", "Topic") and at least one `observation`. For example: `memory_create_entities(entities=[{{'name': 'John Doe', 'entityType': 'Person', 'attributes': [{{'attribute_name': 'age', 'values': [30]}}], 'observations': ['John Doe is a software engineer.']}}])`
 
 Start the conversation by saying, "Hello, I'm Slowcat!" Then stop and wait for the user.""",
         dj_voice="am_echo",
@@ -542,23 +532,47 @@ LANGUAGE_TO_VOICE_CODE = {
 
 @dataclass
 class MCPConfig:
-    """MCP (Model Context Protocol) configuration"""
-    # Enable Slowcat's own tools (weather, search, music, etc.)
-    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_SLOWCAT_TOOLS", "true").lower() == "true")
+    """MCP (Model Context Protocol) configuration - LM Studio Native Integration"""
+    # Enable Slowcat's local tools (weather, search, music, etc.)
+    # Note: MCP tools are handled directly by LM Studio via mcp.json
+    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MCP", "true").lower() == "true")
     
-    # LM Studio provides MCP memory tools separately
-    lm_studio_mcp_info: str = field(default_factory=lambda: """
-    LM Studio provides MCP memory tools (store_memory, retrieve_memory, search_memory, delete_memory)
-    These are configured in LM Studio's mcp.json and work independently of Slowcat's tools.
-    Memory is stored at: /Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json
-    """)
+    # Local tools configuration
+    def get_enabled_local_tools(self) -> Optional[List[str]]:
+        """Get list of enabled local tools"""
+        enabled = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
+        if enabled.lower() == "all":
+            return None  # All tools enabled
+        elif enabled.lower() == "none":
+            return []  # No tools enabled
+        else:
+            # Parse comma-separated list
+            return [t.strip() for t in enabled.split(",") if t.strip()]
     
-    # Tool-specific settings for Slowcat's tools
+    def get_disabled_local_tools(self) -> List[str]:
+        """Get list of explicitly disabled local tools"""
+        disabled = os.getenv("DISABLED_LOCAL_TOOLS", "").strip()
+        if not disabled:
+            return []
+        return [t.strip() for t in disabled.split(",") if t.strip()]
+    
+    # Tool-specific settings (still used by local tools if enabled)
     filesystem_allowed_dirs: List[str] = field(default_factory=lambda: ["./data", "./documents"])
     browser_headless: bool = True
     memory_persist: bool = True
     user_home_path: Optional[str] = field(default_factory=lambda: os.getenv("USER_HOME_PATH", "").strip() or None)
     brave_search_api_key: Optional[str] = field(default_factory=lambda: os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or None)
+    
+    # LM Studio MCP Integration Info
+    lm_studio_mcp_info: str = field(default_factory=lambda: """
+    LM Studio natively handles MCP tools from mcp.json including:
+    - Memory tools (store_memory, retrieve_memory, search_memory, delete_memory)  
+    - Browser automation (via @playwright/mcp)
+    - JavaScript execution (via @modelcontextprotocol/server-javascript)
+    - Web search (via @modelcontextprotocol/server-brave-search)
+    - Filesystem operations (via @modelcontextprotocol/server-filesystem)
+    Memory is stored at: /Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json
+    """)
     
     # Voice-optimized settings
     announce_tool_use: bool = True  # Say "Let me check that" before using tools

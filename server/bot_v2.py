@@ -71,6 +71,7 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         raise
 
 
+
 def main():
     """
     Main entry point with the same CLI interface as original bot.py
@@ -91,6 +92,10 @@ def main():
     
     if args.llm_model:
         logger.info(f"🤖 LLM Model: {args.llm_model}")
+    
+    # MCP tools are handled natively by LM Studio via mcp.json
+    if config.mcp.enabled:
+        logger.info("🔧 MCP integration enabled - tools handled by LM Studio")
     
     if args.mode == "server":
         # Run as FastAPI server (default behavior)

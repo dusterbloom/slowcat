@@ -59,45 +59,8 @@ class FileTools:
         self.home_path = home
     
     def _normalize_path(self, path_str: str) -> str:
-        """Normalize various path formats to actual paths"""
-        original_path = path_str
-        
-        # Handle placeholder paths
-        if "your_username" in path_str.lower():
-            path_str = path_str.replace("/Users/your_username", str(self.home_path))
-            path_str = path_str.replace("/Users/YourUsername", str(self.home_path))
-            path_str = path_str.replace("/Users/YOUR_USERNAME", str(self.home_path))
-        
-        # Handle shortcuts like /Users/YourDesktop, /Users/YourDocuments
-        if path_str.lower().startswith("/users/your"):
-            # Extract the folder name after "Your"
-            remaining = path_str[11:]  # After "/Users/Your"
-            folder_map = {
-                'desktop': 'Desktop',
-                'documents': 'Documents', 
-                'downloads': 'Downloads',
-                'pictures': 'Pictures',
-                'music': 'Music',
-                'movies': 'Movies'
-            }
-            folder_lower = remaining.lower()
-            if folder_lower in folder_map:
-                path_str = str(self.home_path / folder_map[folder_lower])
-                logger.info(f"Expanded shortcut from {original_path} to {path_str}")
-        
-        # Handle case variations (Papi -> peppi, etc.)
-        if path_str.startswith("/Users/") and not Path(path_str).exists():
-            parts = path_str.split("/")
-            if len(parts) >= 3:
-                # Replace the username part with actual home
-                new_path = str(self.home_path)
-                if len(parts) > 3:
-                    new_path = new_path + "/" + "/".join(parts[3:])
-                if Path(new_path).exists() or len(parts) == 3:
-                    logger.info(f"Corrected path from {path_str} to {new_path}")
-                    path_str = new_path
-        
-        return path_str
+        """Normalize paths, expanding the user's home directory."""
+        return os.path.expanduser(path_str)
     
     def _is_path_allowed(self, path: Path) -> bool:
         """Check if a path is within allowed directories"""
@@ -271,11 +234,6 @@ class FileTools:
             Directory listing
         """
         try:
-            # Default to Desktop if no directory specified
-            if directory is None or directory == ".":
-                directory = str(self.home_path / "Desktop")
-                logger.info(f"Using default directory: {directory}")
-            
             # Normalize the path
             directory = self._normalize_path(directory)
             

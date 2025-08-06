@@ -12,3 +12,7 @@ __pycache__
 .env.production.local
 
 data/
+server/data/
+
+server/mcp.json
+server/mcp*.json

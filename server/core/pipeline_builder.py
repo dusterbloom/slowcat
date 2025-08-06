@@ -341,24 +341,34 @@ class PipelineBuilder:
     async def _build_context(self, lang_config: dict, llm_service: Any, language: str) -> Tuple[Any, Any]:
         """Build LLM context and aggregator"""
         logger.info("🔧 Building context...")
-        
-        # Check if we should use tools
+
         from services.llm_with_tools import LLMWithToolsService
-        use_tools = config.mcp.enabled or isinstance(llm_service, LLMWithToolsService)
+        from tools.definitions import ALL_FUNCTION_SCHEMAS
+        from core.prompt_builder import generate_final_system_prompt
+        from pipecat.adapters.schemas.tools_schema import ToolsSchema
+
+        base_system_prompt = lang_config["system_instruction"]
+        local_tools = list(ALL_FUNCTION_SCHEMAS)
+        mcp_tools = []
         
-        if use_tools:
-            from tools import get_tools
-            tools = get_tools(language)
-            logger.info(f"🛠️ Tools enabled: {len(tools.standard_tools)} tools available")
-            for tool in tools.standard_tools:
-                logger.debug(f"  - {tool.name}: {tool.description}")
-        else:
-            tools = NOT_GIVEN
-        
-        context = OpenAILLMContext(
-            [{"role": "system", "content": lang_config["system_instruction"]}],
-            tools=tools
+        # Default tools schema
+        tools_schema = ToolsSchema(standard_tools=local_tools)
+
+        # MCP tools are now handled directly by LM Studio via mcp.json
+        # Generate the full system prompt with local tools only
+        final_system_prompt = generate_final_system_prompt(
+            base_prompt=base_system_prompt,
+            local_tools=local_tools,
+            mcp_tools=mcp_tools  # Empty list since MCP tools handled by LM Studio
         )
+
+        logger.debug(f"Final System Prompt:\n{final_system_prompt}")
+
+        context = OpenAILLMContext(
+            [{"role": "system", "content": final_system_prompt}],
+            tools=tools_schema
+        )
+        
         context_aggregator = llm_service.create_context_aggregator(context)
         
         logger.info("✅ Context built")
@@ -424,7 +434,11 @@ class PipelineBuilder:
         
         task = PipelineTask(
             pipeline,
-            params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+            params=PipelineParams(
+                enable_metrics=True, 
+                enable_usage_metrics=True,
+                idle_timeout_secs=600  # 10-minute timeout
+            ),
             observers=[RTVIObserver(rtvi_processor)]
         )
         
