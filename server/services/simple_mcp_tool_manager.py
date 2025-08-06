@@ -146,12 +146,13 @@ class SimpleMCPToolManager:
         import aiohttp
         new_manifest = {}
         
-        # Define MCPO server endpoints - all use port 3001 with different paths
-        mcpo_endpoints = {
-            "memory": "http://localhost:3001/memory",
-            "brave-search": "http://localhost:3001/brave-search", 
-            "filesystem": "http://localhost:3001/filesystem"
-        }
+        # Auto-generate MCPO endpoints from mcp.json (truly dynamic!)
+        mcpo_endpoints = {}
+        for server_name in self._mcp_servers.keys():
+            # Skip servers that failed to start (like javascript)
+            mcpo_endpoints[server_name] = f"http://localhost:3001/{server_name}"
+        
+        logger.info(f"🔍 Auto-discovered MCPO endpoints: {list(mcpo_endpoints.keys())}")
         
         # Probe each MCPO HTTP endpoint
         for server_name, endpoint in mcpo_endpoints.items():
