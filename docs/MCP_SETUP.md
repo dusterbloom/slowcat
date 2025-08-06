@@ -126,7 +126,7 @@ Some MCP servers need API keys:
 
 ```bash
 export GITHUB_TOKEN="your-token"
-export BRAVE_SEARCH_API_KEY="your-key"
+export BRAVE_API_KEY="your-key"
 ```
 
 ## Next Steps

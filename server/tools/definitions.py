@@ -27,134 +27,17 @@ GET_CURRENT_TIME = FunctionSchema(
     required=[]
 )
 
-# Weather Tools
-GET_WEATHER = FunctionSchema(
-    name="get_weather",
-    description="Get the current weather for a location",
-    properties={
-        "location": {
-            "type": "string",
-            "description": "City name or coordinates (e.g. 'Paris' or '48.8566,2.3522')"
-        },
-        "units": {
-            "type": "string",
-            "enum": ["celsius", "fahrenheit"],
-            "description": "Temperature units",
-            "default": "celsius"
-        }
-    },
-    required=["location"]
-)
+# ❌ REMOVED: Weather, Web Search, and Browser tools - now handled by MCP servers
+# - get_weather -> handled by MCP or external API
+# - search_web -> handled by brave_web_search MCP server  
+# - browse_url -> handled by browser-text MCP server
 
-# Web Search Tools
-SEARCH_WEB = FunctionSchema(
-    name="search_web",
-    description="Search the web for current information",
-    properties={
-        "query": {
-            "type": "string",
-            "description": "Search query"
-        },
-        "num_results": {
-            "type": "integer",
-            "description": "Number of results to return",
-            "default": 3
-        }
-    },
-    required=["query"]
-)
-
-BROWSE_URL = FunctionSchema(
-    name="browse_url",
-    description="Fetch and extract text content from a web page URL",
-    properties={
-        "url": {
-            "type": "string",
-            "description": "The URL to fetch and read"
-        },
-        "max_length": {
-            "type": "integer",
-            "description": "Maximum length of text to return (default: 2000 characters)",
-            "default": 2000
-        }
-    },
-    required=["url"]
-)
-
-# Memory Tools (MCP-compatible)
-# These must be explicitly defined since LM Studio doesn't expose MCP tools via API
-STORE_MEMORY = FunctionSchema(
-    name="store_memory",
-    description="Store information in persistent memory",
-    properties={
-        "key": {
-            "type": "string",
-            "description": "The key to store the memory under"
-        },
-        "value": {
-            "type": "string",
-            "description": "The value to store"
-        }
-    },
-    required=["key", "value"]
-)
-
-RETRIEVE_MEMORY = FunctionSchema(
-    name="retrieve_memory",
-    description="Retrieve information from memory",
-    properties={
-        "key": {
-            "type": "string",
-            "description": "The key to retrieve"
-        }
-    },
-    required=["key"]
-)
-
-SEARCH_MEMORY = FunctionSchema(
-    name="search_memory",
-    description="Search for information in memory",
-    properties={
-        "query": {
-            "type": "string",
-            "description": "Search query to find relevant memories"
-        },
-        "max_results": {
-            "type": "integer",
-            "description": "Maximum number of results to return",
-            "default": 5
-        }
-    },
-    required=["query"]
-)
-
-DELETE_MEMORY = FunctionSchema(
-    name="delete_memory",
-    description="Delete information from memory",
-    properties={
-        "key": {
-            "type": "string",
-            "description": "The key to delete"
-        }
-    },
-    required=["key"]
-)
-
-UPDATE_MEMORY = FunctionSchema(
-    name="update_memory",
-    description="Update/replace existing memory with new value (overwrites old value)",
-    properties={
-        "key": {
-            "type": "string",
-            "description": "The key to update"
-        },
-        "value": {
-            "type": "string",
-            "description": "The new value to replace the old one with"
-        }
-    },
-    required=["key", "value"]
-)
+# ❌ REMOVED: Memory tools - now handled by MCP memory server
+# - store_memory -> memory_create_entities (MCP)
+# - retrieve_memory -> memory_search_nodes (MCP) 
+# - search_memory -> memory_search_nodes (MCP)
+# - delete_memory -> memory_delete_entities (MCP)
+# - update_memory -> memory_update_entities (MCP)
 
 # Calculation Tools
 CALCULATE = FunctionSchema(
@@ -169,84 +52,11 @@ CALCULATE = FunctionSchema(
     required=["expression"]
 )
 
-# File System Tools
-READ_FILE = FunctionSchema(
-    name="read_file",
-    description="Read the contents of a local file",
-    properties={
-        "file_path": {
-            "type": "string",
-            "description": "Path to the file to read"
-        },
-        "max_length": {
-            "type": "integer",
-            "description": "Maximum characters to read (default: 5000)",
-            "default": 5000
-        }
-    },
-    required=["file_path"]
-)
-
-SEARCH_FILES = FunctionSchema(
-    name="search_files",
-    description="Search for files containing specific text",
-    properties={
-        "query": {
-            "type": "string",
-            "description": "Text to search for"
-        },
-        "directory": {
-            "type": "string",
-            "description": "Directory to search in (default: current directory)",
-            "default": "."
-        },
-        "file_types": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "File extensions to search (e.g., ['.txt', '.md'])"
-        }
-    },
-    required=["query"]
-)
-
-LIST_FILES = FunctionSchema(
-    name="list_files",
-    description="List files and directories in a folder",
-    properties={
-        "directory": {
-            "type": "string",
-            "description": "Directory to list (default: current directory)",
-            "default": "."
-        },
-        "pattern": {
-            "type": "string",
-            "description": "Glob pattern for filtering (e.g., '*.txt')",
-            "default": "*"
-        }
-    },
-    required=[]
-)
-
-WRITE_FILE = FunctionSchema(
-    name="write_file",
-    description="Write content to a text or markdown file",
-    properties={
-        "file_path": {
-            "type": "string",
-            "description": "Path or filename (e.g., 'notes.txt' or '/Users/YourDesktop/todo.md')"
-        },
-        "content": {
-            "type": "string",
-            "description": "Content to write to the file"
-        },
-        "overwrite": {
-            "type": "boolean",
-            "description": "Whether to overwrite if file exists (default: false)",
-            "default": False
-        }
-    },
-    required=["file_path", "content"]
-)
+# ❌ REMOVED: File system tools - now handled by MCP filesystem server
+# - read_file -> filesystem_read_file (MCP)
+# - write_file -> filesystem_write_file (MCP)  
+# - list_files -> filesystem_list_files (MCP)
+# - search_files -> can be done with filesystem + text search
 
 # Time-aware task tools
 START_TIMED_TASK = FunctionSchema(
@@ -423,27 +233,23 @@ GET_MUSIC_STATS = FunctionSchema(
 )
 
 
-# List of all function schemas for easy access
+# List of LOCAL-ONLY function schemas (MCP tools removed)
+# These tools stay local for performance/hardware integration reasons
 ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
+    # Time/date (performance)
     GET_CURRENT_TIME,
-    GET_WEATHER,
-    SEARCH_WEB,
-    BROWSE_URL,
-    STORE_MEMORY,
-    RETRIEVE_MEMORY,
-    SEARCH_MEMORY,
-    DELETE_MEMORY,
-    UPDATE_MEMORY,
+    
+    # Math/calculation (as requested)
     CALCULATE,
-    READ_FILE,
-    SEARCH_FILES,
-    LIST_FILES,
-    WRITE_FILE,
+    
+    # Timed task execution (app state)
     START_TIMED_TASK,
-    CHECK_TASK_STATUS,
+    CHECK_TASK_STATUS, 
     STOP_TIMED_TASK,
     ADD_TO_TIMED_TASK,
     GET_ACTIVE_TASKS,
+    
+    # Music control (hardware integration)
     PLAY_MUSIC,
     PAUSE_MUSIC,
     SKIP_SONG,
@@ -455,6 +261,13 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     CREATE_PLAYLIST,
     GET_MUSIC_STATS
 ]
+
+# MCP tools are now handled natively by LM Studio:
+# - Web search: brave_web_search 
+# - Memory: memory_create_entities, memory_search_nodes, etc.
+# - Filesystem: filesystem_read_file, filesystem_write_file, etc.
+# - Browser: browser automation via @playwright/mcp
+# - JavaScript: run_javascript via @modelcontextprotocol/server-javascript
 
 # Dictionary of translated tool descriptions
 TOOL_DESCRIPTIONS_IT = {

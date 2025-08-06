@@ -3,7 +3,7 @@ Unified LLM service with proper Pipecat tool/function calling support
 Uses FunctionSchema and ToolsSchema for OpenAI-compatible tool calling with LM Studio
 """
 
-from typing import Optional
+from typing import Optional, Dict
 import json
 import asyncio
 from loguru import logger
@@ -50,28 +50,126 @@ class LLMWithToolsService(OpenAILLMService):
         
         # Audio player reference (will be set by pipeline builder)
         self._audio_player = None
+        
+        # MCP tool manager (will be set by pipeline builder)
+        self._mcp_tool_manager = None
     
     def set_audio_player(self, audio_player):
         """Set the audio player reference for music control"""
         self._audio_player = audio_player
         logger.info("🎵 Audio player reference set in LLM service")
     
+    def set_mcp_tool_manager(self, mcp_tool_manager):
+        """Set the MCP tool manager and register MCP tools immediately"""
+        self._mcp_tool_manager = mcp_tool_manager
+        
+        # Register MCP tools immediately (bulletproof - no latency impact)
+        asyncio.create_task(self._register_mcp_tools())
+        logger.info("🚀 MCP tool registration initiated")
+        logger.info("🔧 MCP tool manager reference set in LLM service")
+    
+    async def _register_mcp_tools(self):
+        """Register all discovered MCP tools as function handlers (bulletproof startup)"""
+        try:
+            if not self._mcp_tool_manager:
+                logger.warning("⚠️ MCP tool manager not set, skipping registration")
+                return
+            
+            # Ensure tools are discovered
+            await self._mcp_tool_manager.refresh_if_stale()
+            
+            # Get discovered tools 
+            mcp_tools = await self._mcp_tool_manager.discover_tools()
+            
+            logger.info(f"🔧 Registering {len(mcp_tools)} MCP tools as function handlers")
+            
+            # Register each MCP tool
+            for tool_name, description in mcp_tools.items():
+                handler = self._create_mcp_tool_handler(tool_name)
+                self.register_function(tool_name, handler)
+                logger.debug(f"   ✅ Registered MCP tool: {tool_name}")
+            
+            logger.info(f"🎯 Successfully registered {len(mcp_tools)} MCP tools!")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to register MCP tools: {e}")
+    
+    def _create_mcp_tool_handler(self, tool_name: str):
+        """Create a function handler for an MCP tool"""
+        async def mcp_handler(function_name: str, tool_call_id: str, arguments: dict, llm: any, context: any, result_callback: any):
+            logger.info(f"🔧 Executing MCP tool: {tool_name} with args: {arguments}")
+            try:
+                # Call the tool via MCPO
+                result = await self._mcp_tool_manager.call_tool(tool_name, arguments)
+                await result_callback({"result": result})
+            except Exception as e:
+                logger.error(f"❌ MCP tool {tool_name} failed: {e}")
+                await result_callback({"error": str(e)})
+        
+        return mcp_handler
+    
+    def _should_route_to_mcp(self, function_name: str) -> bool:
+        """
+        Determine if a tool should be routed to MCP or handled locally
+        
+        Local tools: calculate, music_*, *_timed_task, get_current_time
+        MCP tools: memory_*, filesystem_*, brave_*, browser_*, run_javascript, etc.
+        """
+        if not self._mcp_tool_manager:
+            return False
+            
+        # Local-only tools (as specified by user)
+        local_tools = {
+            "calculate", "get_current_time",
+            "play_music", "pause_music", "skip_song", "stop_music", 
+            "queue_music", "search_music", "get_now_playing", 
+            "set_volume", "create_playlist", "get_music_stats",
+            "start_timed_task", "check_task_status", "stop_timed_task",
+            "add_to_timed_task", "get_active_tasks"
+        }
+        
+        # If it's in local tools, don't route to MCP
+        if function_name in local_tools:
+            return False
+        
+        # MCP tool patterns
+        mcp_patterns = [
+            "memory_", "filesystem_", "brave_", "browser_", 
+            "run_javascript", "execute_javascript"
+        ]
+        
+        # Check if function matches MCP patterns
+        for pattern in mcp_patterns:
+            if function_name.startswith(pattern) or pattern.rstrip("_") == function_name:
+                return True
+        
+        # Check if tool exists in MCP manager's manifest
+        if hasattr(self._mcp_tool_manager, 'tool_manifest'):
+            return function_name in self._mcp_tool_manager.tool_manifest
+        
+        # Default to local for unknown tools
+        return False
+    
     def _register_function_handlers(self):
         """Register function handlers using Pipecat's register_function method"""
         
+        # Register LOCAL tools with handlers
         for function_schema in ALL_FUNCTION_SCHEMAS:
             function_name = function_schema.name
             
-            # Register handler for this function
             self.register_function(
                 function_name,
                 self._create_handler(function_name),
                 cancel_on_interruption=True
             )
             
-            logger.debug(f"✅ Registered handler for: {function_name}")
+            logger.debug(f"✅ Registered LOCAL handler for: {function_name}")
         
-        logger.info(f"🎯 Successfully registered {len(ALL_FUNCTION_SCHEMAS)} function handlers")
+        logger.info(f"🎯 Successfully registered {len(ALL_FUNCTION_SCHEMAS)} local function handlers")
+    
+    # MCP tools are now handled natively by LM Studio - no Pipecat registration needed
+    
+    # MCP pass-through handlers removed - LM Studio handles MCP tools natively
     
     def _create_handler(self, function_name: str):
         """
@@ -94,12 +192,22 @@ class LLMWithToolsService(OpenAILLMService):
                     logger.warning(f"Invalid arguments type for {function_name}: {type(params.arguments)}")
                     params.arguments = {}
                 
-                # Execute the tool with timeout protection
+                # 🚀 SIMPLIFIED ROUTING: Only handle LOCAL tools here
+                # MCP tools should be handled NATIVELY by LM Studio - they shouldn't reach here
                 try:
-                    result = await asyncio.wait_for(
-                        execute_tool_call(function_name, params.arguments),
-                        timeout=30.0  # 30 second timeout for tool execution
-                    )
+                    if self._should_route_to_mcp(function_name):
+                        logger.error(f"🚨 MCP tool {function_name} reached local handler - this shouldn't happen!")
+                        logger.info(f"💡 MCP tools should be handled by LM Studio natively via tool_choice='auto'")
+                        result = {
+                            "error": f"MCP tool {function_name} reached local handler",
+                            "solution": "This tool should be handled by LM Studio's native MCP integration"
+                        }
+                    else:
+                        logger.info(f"🏠 Executing local tool: {function_name}")
+                        result = await asyncio.wait_for(
+                            execute_tool_call(function_name, params.arguments),
+                            timeout=30.0  # 30 second timeout for tool execution
+                        )
                 except asyncio.TimeoutError:
                     logger.error(f"⏱️ Timeout executing {function_name}")
                     error_msg = f"Tool execution timed out after 30 seconds"
@@ -210,6 +318,31 @@ class LLMWithToolsService(OpenAILLMService):
             # For all other cases (or if no tools are defined), process the original context.
             return await super()._process_context(context)
 
+    def _get_completion_kwargs(self, context) -> dict:
+        """Override to add tool_choice='auto' for MCP tool calling and log full request"""
+        kwargs = super()._get_completion_kwargs(context)
+        
+        # 🚀 CRITICAL: Add tool_choice="auto" when tools are present
+        if context.tools != NOT_GIVEN and context.tools:
+            kwargs["tool_choice"] = "auto"
+            logger.info("🔧 Added tool_choice='auto' for native MCP integration")
+        
+        # 🔍 DEBUG: Log the complete request being sent to LM Studio
+        debug_kwargs = dict(kwargs)
+        if 'messages' in debug_kwargs:
+            debug_kwargs['messages'] = f"[{len(debug_kwargs['messages'])} messages]"
+        if 'tools' in debug_kwargs and debug_kwargs['tools']:
+            if hasattr(debug_kwargs['tools'], 'standard_tools'):
+                tool_names = [t.name for t in debug_kwargs['tools'].standard_tools]
+                debug_kwargs['tools'] = f"[{len(tool_names)} tools: {tool_names}]"
+            elif isinstance(debug_kwargs['tools'], list):
+                tool_names = [getattr(t, 'name', str(t)) for t in debug_kwargs['tools']]
+                debug_kwargs['tools'] = f"[{len(tool_names)} tools: {tool_names}]"
+        
+        logger.info(f"📤 LM Studio Request Parameters: {debug_kwargs}")
+        
+        return kwargs
+
     async def _stream_chat_completions(self, context):
         """Override to add debugging and push immediate feedback on tool calls."""
         logger.debug("🌊 Starting streaming chat completion")
@@ -240,45 +373,66 @@ class LLMWithToolsService(OpenAILLMService):
             if msg.get("role") == "user":
                 logger.info(f"👤 Last user message: {msg.get('content', '')[:100]}...")
                 break
-
+        
         stream = await super()._stream_chat_completions(context)
 
         async def feedback_stream():
             tool_call_detected = False
             content_buffer = ""
+            response_chunks = []
             
             async for chunk in stream:
+                # 🔍 DEBUG: Log each chunk from LM Studio
                 if hasattr(chunk, 'choices') and chunk.choices:
-                    delta = chunk.choices[0].delta
+                    choice = chunk.choices[0]
+                    chunk_info = {}
                     
-                    # Accumulate content to check for wrong tool syntax
-                    if hasattr(delta, 'content') and delta.content:
-                        content_buffer += delta.content
+                    if hasattr(choice, 'delta'):
+                        delta = choice.delta
+                        if hasattr(delta, 'content') and delta.content:
+                            chunk_info['content'] = delta.content
+                        if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                            tool_calls_info = []
+                            for tc in delta.tool_calls:
+                                tc_info = {'id': getattr(tc, 'id', None)}
+                                if hasattr(tc, 'function'):
+                                    tc_info['function'] = {
+                                        'name': getattr(tc.function, 'name', None),
+                                        'arguments': getattr(tc.function, 'arguments', None)
+                                    }
+                                tool_calls_info.append(tc_info)
+                            chunk_info['tool_calls'] = tool_calls_info
+                    
+                    if chunk_info:
+                        response_chunks.append(chunk_info)
+                        # logger.debug(f"📥 LM Studio Chunk: {chunk_info}")
                         
-                        # Don't check for bracket syntax here - it's handled by CustomToolParser in process_frame
-                        pass
-                    
-                    if not tool_call_detected and hasattr(delta, 'tool_calls') and delta.tool_calls:
-                        tool_call_detected = True
-                        # We only need to do this once per set of tool calls
-                        try:
-                            # Get the first function name to create a generic response
-                            function_name = delta.tool_calls[0].function.name
-                            if function_name:
-                                feedback_text = "Just a moment."
-                                if "search" in function_name or "browse" in function_name:
-                                    feedback_text = "Searching for that."
-                                elif "weather" in function_name:
-                                    feedback_text = "Tic tac ... tic tac ... tic ... tac "
-                                elif "calculate" in function_name:
-                                    feedback_text = "Calculating that for you."
-                                
-                                logger.info(f"🎤 Pushing immediate TTS feedback for tool call: '{feedback_text}'")
-                                # This TextFrame goes directly to the TTS service, providing instant feedback.
-                                await self.push_frame(TextFrame(feedback_text))
-                        except (AttributeError, IndexError):
-                            # Fallback if the chunk structure is unexpected
-                            logger.warning("Could not extract function name for immediate feedback.")
+                        # Handle tool call feedback
+                        if 'tool_calls' in chunk_info and not tool_call_detected:
+                            tool_call_detected = True
+                            try:
+                                # Get the first function name to create a generic response
+                                first_tool = chunk_info['tool_calls'][0]
+                                function_name = first_tool['function']['name']
+                                if function_name:
+                                    logger.info(f"🔧 Tool call detected: {function_name}")
+                                    feedback_text = "Just a moment."
+                                    if "search" in function_name or "browse" in function_name:
+                                        feedback_text = "Searching for that."
+                                    elif "weather" in function_name:
+                                        feedback_text = "Tic tac ... tic tac ... tic ... tac "
+                                    elif "calculate" in function_name:
+                                        feedback_text = "Calculating that for you."
+                                    
+                                    logger.info(f"🎤 Pushing immediate TTS feedback for tool call: '{feedback_text}'")
+                                    await self.push_frame(TextFrame(feedback_text))
+                            except (KeyError, IndexError, AttributeError) as e:
+                                logger.warning(f"Could not extract function name for immediate feedback: {e}")
+                        
+                        # Accumulate content
+                        if 'content' in chunk_info:
+                            content_buffer += chunk_info['content']
+                
                 yield chunk
 
         return feedback_stream()

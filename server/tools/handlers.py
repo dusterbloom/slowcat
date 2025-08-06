@@ -417,7 +417,7 @@ class ToolHandlers:
             
             # Check if Brave Search API key is available
             from config import config
-            brave_key = config.mcp.brave_search_api_key
+            brave_key = config.mcp.brave_api_key
             logger.info(f"Brave API key present: {bool(brave_key)}")
             if brave_key:
                 logger.info(f"Using Brave Search (key length: {len(brave_key)}, first chars: {brave_key[:8]}...)")
@@ -434,7 +434,7 @@ class ToolHandlers:
         """Search using Brave Search API"""
         try:
             from config import config
-            api_key = config.mcp.brave_search_api_key
+            api_key = config.mcp.brave_api_key
             if not api_key:
                 logger.error("Brave API key is empty!")
                 return await self._search_duckduckgo(query, num_results)
@@ -833,7 +833,16 @@ def set_memory_processor(memory_processor):
 
 async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> Any:
     """
-    Execute a tool call by name with arguments
+    Execute LOCAL-ONLY tool calls by name with arguments
+    
+    NOTE: MCP tools (memory, filesystem, web search, browser) are now routed 
+    directly through LLMWithToolsService to the MCP manager.
+    
+    This function only handles tools that MUST stay local:
+    - calculate (as requested)
+    - music_* (hardware integration) 
+    - *_timed_task (app state)
+    - get_current_time (performance)
     
     Args:
         function_name: Name of the function to call
@@ -842,45 +851,19 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
     Returns:
         Tool execution result
     """
-    logger.info(f"Executing tool: {function_name} with args: {arguments}")
+    logger.info(f"🏠 Executing LOCAL tool: {function_name} with args: {arguments}")
     
-    # Map function names to handlers
-    if function_name == "get_weather":
-        return await tool_handlers.get_weather(**arguments)
-    elif function_name == "get_current_time":
+    # ⚠️  MCP TOOLS REMOVED - Now handled by LM Studio natively:
+    # - get_weather, search_web, browse_url -> Routed to MCP servers
+    # - store_memory, retrieve_memory, search_memory, etc. -> MCP memory server  
+    # - read_file, write_file, list_files -> MCP filesystem server
+    
+    # LOCAL-ONLY TOOLS (as requested by user):
+    if function_name == "get_current_time":
         return await tool_handlers.get_current_time(**arguments)
-    elif function_name == "search_web":
-        return await tool_handlers.search_web(**arguments)
-    elif function_name == "store_memory":
-        return await tool_handlers.store_memory(**arguments)
-    elif function_name == "retrieve_memory":
-        return await tool_handlers.retrieve_memory(**arguments)
-    elif function_name == "search_memory":
-        return await tool_handlers.search_memory(**arguments)
-    elif function_name == "update_memory":
-        return await tool_handlers.update_memory(**arguments)
-    elif function_name == "delete_memory":
-        return await tool_handlers.delete_memory(**arguments)
-    elif function_name == "remember_information":
-        return await tool_handlers.remember_information(**arguments)
-    elif function_name == "recall_information":
-        return await tool_handlers.recall_information(**arguments)
     elif function_name == "calculate":
         return await tool_handlers.calculate(**arguments)
-    elif function_name == "browse_url":
-        return await tool_handlers.browse_url(**arguments)
-    elif function_name == "read_file":
-        return await file_tools.read_file(**arguments)
-    elif function_name == "search_files":
-        return await file_tools.search_files(**arguments)
-    elif function_name == "list_files":
-        return await file_tools.list_files(**arguments)
-    elif function_name == "write_file":
-        return await file_tools.write_file(**arguments)
-    elif function_name == "search_conversations":
-        return await tool_handlers.search_conversations(**arguments)
-    elif function_name == "get_conversation_summary":
-        return await tool_handlers.get_conversation_summary(**arguments)
+    # Timed task tools (app state management)
     elif function_name == "start_timed_task":
         from .time_tools import start_timed_task
         return await start_timed_task(**arguments)
@@ -896,6 +879,7 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
     elif function_name == "get_active_tasks":
         from .time_tools import get_active_tasks
         return await get_active_tasks(**arguments)
+    # Music control tools (hardware integration)
     elif function_name == "play_music":
         from .music_tools import play_music
         return await play_music(**arguments)
@@ -926,15 +910,11 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
     elif function_name == "get_music_stats":
         from .music_tools import get_music_stats
         return await get_music_stats(**arguments)
-    # Handle LM Studio MCP memory tools (these are stubs since LM Studio handles them)
-    elif function_name in ["store_memory", "retrieve_memory", "search_memory", "delete_memory"]:
-        logger.info(f"MCP memory tool called: {function_name}")
-        # Return a message indicating these are handled by LM Studio
-        return {
-            "status": "info",
-            "message": f"Memory tool '{function_name}' is handled by LM Studio MCP. The memory operation has been noted.",
-            "note": "Memory persistence works through LM Studio's MCP server."
-        }
+    elif function_name == "search_conversations":
+        return await tool_handlers.search_conversations(**arguments)
+    elif function_name == "get_conversation_summary":
+        return await tool_handlers.get_conversation_summary(**arguments)
     else:
-        logger.error(f"Unknown tool function: {function_name}")
-        return {"error": f"Unknown function: {function_name}"}
+        logger.error(f"🚨 Unknown LOCAL tool function: {function_name}")
+        logger.info("💡 If this is an MCP tool, it should be routed through LLMWithToolsService")
+        return {"error": f"Unknown local tool: {function_name}. MCP tools are handled by LM Studio."}

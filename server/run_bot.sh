@@ -1,9 +1,24 @@
 #!/bin/bash
 
+# Store MCPO process PID for cleanup
+MCPO_PID=""
+
 # Function to handle script exit
 on_exit() {
     echo ""
     echo "🛑 Shutting down..."
+    
+    # Kill MCPO server if running
+    if [ ! -z "$MCPO_PID" ]; then
+        echo "🔥 Stopping MCPO server (PID: $MCPO_PID)"
+        kill $MCPO_PID 2>/dev/null
+        wait $MCPO_PID 2>/dev/null
+    fi
+    
+    # Kill any remaining mcpo processes
+    pkill -f "mcpo" 2>/dev/null
+    
+    echo "✅ Cleanup complete"
     exit
 }
 
@@ -23,10 +38,42 @@ fi
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 export no_proxy=*
 
-# Check if MCP integration is enabled
+# Check if MCP integration is enabled (default: true)
+ENABLE_MCP=${ENABLE_MCP:-true}
+
 if [ "$ENABLE_MCP" = "true" ]; then
-    echo "🔧 MCP integration enabled - tools handled natively by LM Studio"
-    echo "📦 MCP servers configured in mcp.json"
+    echo "🔧 MCP integration enabled - starting MCPO server"
+    
+    # Check if mcp.json exists
+    if [ ! -f "mcp.json" ]; then
+        echo "❌ mcp.json not found - MCP integration disabled"
+        ENABLE_MCP=false
+    else
+        echo "🚀 Starting MCPO HTTP proxy server..."
+        
+        # Kill any existing mcpo processes first
+        pkill -f "mcpo" 2>/dev/null
+        sleep 1
+        
+        # Start MCPO server in background
+        MEMORY_FILE_PATH="/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json" \
+        mcpo --port 3001 --api-key slowcat-secret --config mcp.json --name mcpo-proxy > mcpo.log 2>&1 &
+        
+        # Store the PID for cleanup
+        MCPO_PID=$!
+        
+        # Wait a moment for startup and check if it's running
+        sleep 3
+        
+        if kill -0 $MCPO_PID 2>/dev/null; then
+            echo "✅ MCPO server started successfully (PID: $MCPO_PID)"
+            echo "📡 HTTP endpoints available at http://localhost:3001/"
+            echo "📄 Logs: mcpo.log"
+        else
+            echo "❌ MCPO server failed to start - check mcpo.log for details"
+            MCPO_PID=""
+        fi
+    fi
 else
     echo "🤖 MCP integration disabled - using local tools only"
 fi

@@ -37,7 +37,7 @@ def _categorize_tools(tools: List[FunctionSchema]) -> Dict[str, List[str]]:
             categories["filesystem"].append(tool.name)
         elif "search" in name or "brave" in name:
             categories["search"].append(tool.name)
-        elif "browser" in name or "javascript" in name:
+        elif "browser"  in name:
             categories["browser"].append(tool.name)
         elif "calculate" in name:
             categories["calculate"].append(tool.name)
@@ -64,10 +64,10 @@ def _generate_simple_tool_docs(local_tools: List[FunctionSchema], mcp_tools: Lis
     # Add categorized tool list
     for category, tool_names in categories.items():
         docs += f"**{category.title()}:**\n"
-        for tool_name in tool_names[:5]:  # Limit to first 5 per category
+        for tool_name in tool_names[:50]:  # Limit to first 50 per category
             docs += f"- {tool_name}\n"
-        if len(tool_names) > 5:
-            docs += f"- ... and {len(tool_names) - 5} more\n"
+        if len(tool_names) > 50:
+            docs += f"- ... and {len(tool_names) - 50} more\n"
         docs += "\n"
     
     # Add simple examples
@@ -76,6 +76,7 @@ def _generate_simple_tool_docs(local_tools: List[FunctionSchema], mcp_tools: Lis
     docs += "- Read file: `filesystem_read_file(path='~/Desktop/notes.txt')`\n"
     docs += "- Web search: `brave_web_search(query='latest news')`\n"
     docs += "- Calculate: `calculate(expression='2 + 2')`\n"
+    docs += "- Run Javascript: `run_javascript({`JAVASCRIPT_CODE_HERE`})`\n"
     
     return docs
 

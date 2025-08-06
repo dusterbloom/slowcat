@@ -536,6 +536,18 @@ class MCPConfig:
     # Enable Slowcat's local tools (weather, search, music, etc.)
     # Note: MCP tools are handled directly by LM Studio via mcp.json
     enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MCP", "true").lower() == "true")
+    tool_names: List[str] = field(default_factory=lambda: [
+        "memory_create_entities",
+        "memory_search_nodes",
+        "memory_update_entities",
+        "memory_delete_entities",
+        "filesystem_read_file",
+        "filesystem_write_file",
+        "filesystem_list_files",
+        "brave_web_search",
+        "run_javascript",
+        "calculate"
+    ])
     
     # Local tools configuration
     def get_enabled_local_tools(self) -> Optional[List[str]]:
@@ -561,7 +573,7 @@ class MCPConfig:
     browser_headless: bool = True
     memory_persist: bool = True
     user_home_path: Optional[str] = field(default_factory=lambda: os.getenv("USER_HOME_PATH", "").strip() or None)
-    brave_search_api_key: Optional[str] = field(default_factory=lambda: os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or None)
+    BRAVE_API_KEY: Optional[str] = field(default_factory=lambda: os.getenv("BRAVE_API_KEY", "").strip() or None)
     
     # LM Studio MCP Integration Info
     lm_studio_mcp_info: str = field(default_factory=lambda: """

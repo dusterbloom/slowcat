@@ -346,20 +346,56 @@ class PipelineBuilder:
         from tools.definitions import ALL_FUNCTION_SCHEMAS
         from core.prompt_builder import generate_final_system_prompt
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
+        from services.simple_mcp_tool_manager import SimpleMCPToolManager
+        from collections import namedtuple
+
+        MockFunctionSchema = namedtuple("MockFunctionSchema", ["name"])
 
         base_system_prompt = lang_config["system_instruction"]
         local_tools = list(ALL_FUNCTION_SCHEMAS)
-        mcp_tools = []
-        
-        # Default tools schema
-        tools_schema = ToolsSchema(standard_tools=local_tools)
 
-        # MCP tools are now handled directly by LM Studio via mcp.json
-        # Generate the full system prompt with local tools only
+        # 🚀 DYNAMIC MCP DISCOVERY: Use new dynamic tool manager
+        mcp_tool_manager = SimpleMCPToolManager(language=language)
+        
+        # Get OpenAI-compatible tools for LM Studio (this triggers auto-refresh)
+        mcp_tools_array = await mcp_tool_manager.get_tools_for_llm()
+        
+        # Convert to FunctionSchema for Pipecat integration
+        mcp_function_schemas = []
+        for tool_def in mcp_tools_array:
+            function_info = tool_def["function"]
+            from pipecat.adapters.schemas.function_schema import FunctionSchema
+            
+            mcp_schema = FunctionSchema(
+                name=function_info["name"],
+                description=function_info["description"],
+                properties=function_info.get("parameters", {"type": "object", "properties": {}}),
+                required=function_info.get("parameters", {}).get("required", [])
+            )
+            mcp_function_schemas.append(mcp_schema)
+        
+        # Create unified tools schema with BOTH local and MCP tools
+        unified_tools = local_tools + mcp_function_schemas
+        tools_schema = ToolsSchema(standard_tools=unified_tools)
+        
+        # Store MCP manager reference for debugging/reference only
+        if hasattr(llm_service, 'set_mcp_tool_manager'):
+            llm_service.set_mcp_tool_manager(mcp_tool_manager)
+        
+        # 🚀 MCPO INTEGRATION: MCP tools are registered automatically in LLMWithToolsService
+        # when the MCP tool manager is set (bulletproof - no latency impact)
+        logger.info(f"🔧 MCP tool registration handled automatically by LLMWithToolsService")
+        
+        logger.info(f"🔧 Unified tools schema created:")
+        logger.info(f"   Local tools: {len(local_tools)} ({[t.name for t in local_tools]})")
+        logger.info(f"   MCP tools: {len(mcp_function_schemas)} ({[t.name for t in mcp_function_schemas]})")
+        logger.info(f"   Total tools: {len(unified_tools)}")
+
+        # Generate the full system prompt with local and MCP tools
         final_system_prompt = generate_final_system_prompt(
             base_prompt=base_system_prompt,
             local_tools=local_tools,
-            mcp_tools=mcp_tools  # Empty list since MCP tools handled by LM Studio
+            mcp_tools=mcp_function_schemas
         )
 
         logger.debug(f"Final System Prompt:\n{final_system_prompt}")
