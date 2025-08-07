@@ -77,7 +77,19 @@ def _generate_simple_tool_docs(local_tools: List[FunctionSchema], mcp_tools: Lis
     docs += "- Read file: `read_file(path='~/Desktop/notes.txt')`\n"
     docs += "- Web search: `brave_web_search(query='latest news')`\n"
     docs += "- Calculate: `calculate(expression='2 + 2')`\n"
+    
     docs += "- Run Javascript: `run_javascript({`JAVASCRIPT_CODE_HERE`})`\n"
+    
+    docs += "\n🚨 **CRITICAL: SEARCH RESULT OUTPUT FORMAT** 🚨\n"
+    docs += "When brave_web_search returns results:\n"
+    docs += "1. ALWAYS look for the 'ui_formatted' field in the response\n"
+    docs += "2. If ui_formatted exists: Output EXACTLY that content - DO NOT change anything\n" 
+    docs += "3. If no ui_formatted: Use 'voice_summary' field instead\n"
+    docs += "4. NEVER create your own [text](url) markdown links\n"
+    docs += "5. NEVER summarize, rewrite, or modify the formatted content\n"
+    docs += "\n❌ WRONG: Creating your own links or summaries\n"
+    docs += "✅ CORRECT: Copy ui_formatted field exactly as provided\n"
+    docs += "\nExample: If response has ui_formatted field, just print that field's content.\n"
     
     return docs
 

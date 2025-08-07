@@ -28,16 +28,7 @@
         "BRAVE_API_KEY": "BSA_ub-QWNbtzxd8jv4_YL4S2q0Fap8"
       }
     },
-        "browser-text": {
-      "command": "npx",
-      "args": [
-        "@playwright/mcp@latest",
-        "--caps",
-        "text",
-        "--browser",
-        "chrome"
-      ]
-    },
+
     "filesystem": {
       "command": "npx",
       "args": [

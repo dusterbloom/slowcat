@@ -35,6 +35,15 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 from loguru import logger
 from config import config
 
+# 🧪 A/B TEST: Minimal vs Full system prompts
+if os.getenv("USE_MINIMAL_PROMPTS", "false").lower() == "true":
+    logger.info("🧪 A/B TEST: Using MINIMAL system prompts")
+    from config_minimal import MinimalConfig
+    minimal_config = MinimalConfig()
+else:
+    logger.info("📝 Using FULL system prompts (default)")
+    minimal_config = None
+
 # Import the new modular components
 from core.service_factory import service_factory
 from server import create_app, run_server

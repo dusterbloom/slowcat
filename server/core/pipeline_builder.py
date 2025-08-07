@@ -179,6 +179,10 @@ class PipelineBuilder:
         processors['greeting_filter'] = GreetingFilterProcessor(greeting_text="Hello, I'm Slowcat!")
         processors['message_deduplicator'] = MessageDeduplicator()
         
+        # Response formatter - fix markdown links from stubborn Qwen2.5  
+        from processors.response_formatter import ResponseFormatterProcessor
+        processors['response_formatter'] = ResponseFormatterProcessor()
+        
         # Time-aware executor processor
         from processors.time_aware_executor import TimeAwareExecutor
         processors['time_executor'] = TimeAwareExecutor(

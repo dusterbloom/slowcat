@@ -14,6 +14,9 @@ from pathlib import Path
 from loguru import logger
 from dataclasses import dataclass, field
 
+# 👑 Import the KING'S Pure Algorithmic Negotiator - ZERO PEASANT RULES!
+from core.pure_algorithmic_negotiator import PureAlgorithmicNegotiator
+
 from config import config
 
 # Cache directory for tool manifests
@@ -54,6 +57,9 @@ class SimpleMCPToolManager:
         # HTTP connection pool for ultra-low latency
         self._http_session = None
         self._session_lock = asyncio.Lock()
+        
+        # 👑 Initialize the KING'S Pure Algorithmic Negotiator - ZERO MANUAL RULES!
+        self.negotiator = PureAlgorithmicNegotiator()
         
         # Load cached manifest on startup for instant first call
         self._load_cached_manifest()
@@ -451,7 +457,9 @@ class SimpleMCPToolManager:
             logger.error(f"❌ No MCPO endpoint found for server: {server_name}")
             return {"error": f"No MCPO endpoint configured for {server_name}"}
         
-        try:
+        # 👑 THE KING'S APPROACH: Let the API teach us through negotiation!
+        async def api_caller(negotiated_params):
+            """Internal API caller for the negotiation protocol"""
             headers = {
                 "Authorization": "Bearer slowcat-secret",
                 "Content-Type": "application/json",
@@ -479,19 +487,28 @@ class SimpleMCPToolManager:
                         # 🔥 SMART RESPONSE FILTERING - prevent huge responses from breaking voice
                         result = self._filter_large_response(tool_name, result)
                         
+                        # 🎯 SEARCH RESULT FORMATTING - add clickable links for UI
+                        if tool_name == 'brave_web_search':
+                            result = self._format_brave_search_response(result)
+                        
                         return result
                     else:
                         error_text = await response.text()
                         logger.error(f"❌ {server_name}: HTTP {response.status}: {error_text}")
+                        
+                        # Return the raw error - sanitizer should have prevented this
                         return {"error": f"HTTP {response.status}: {error_text}"}
             
+        
+        # 👑 PURE ALGORITHMIC NEGOTIATION: ZERO MANUAL RULES!
+        try:
+            return await self.negotiator.negotiate_call(tool_name, params, api_caller)
         except asyncio.TimeoutError:
             logger.error(f"⏱️ {server_name}: {tool_name} timeout via MCPO")
             return {"error": f"Tool execution timeout: {tool_name}"}
         except Exception as e:
             logger.error(f"❌ MCPO tool call failed: {e}")
-            # Fallback to static implementation if available
-            return await self._call_static_tool(tool_name, params)
+            return {"error": f"Tool execution failed: {e}"}
     
     def _filter_large_response(self, tool_name: str, result: dict) -> dict:
         """Filter huge responses to prevent voice/token issues"""
@@ -616,7 +633,17 @@ class SimpleMCPToolManager:
                                 "url": result.get("url", "")
                             })
                         
-                        return {"results": results, "query": query}
+                        # Format with dual-context response immediately
+                        from tools.text_formatter import create_search_response
+                        formatted_response = create_search_response(query, results)
+                        
+                        return {
+                            "ui_formatted": formatted_response["ui_formatted"],  # HTML links for UI
+                            "voice_summary": formatted_response["voice_summary"],  # Clean text for TTS
+                            "result_count": len(results),
+                            "query": query,
+                            "raw_results": results  # Original data for compatibility
+                        }
                     else:
                         error_text = await resp.text()
                         return {"error": f"Brave Search API error: {error_text}"}
@@ -693,6 +720,87 @@ class SimpleMCPToolManager:
         logger.info(f"📁 Filesystem tool {tool_name} called")
         return {"success": f"Filesystem operation {tool_name} completed", "params": params}
     
+    def _format_brave_search_response(self, response) -> dict:
+        """Parse and format brave search response from MCPO server"""
+        try:
+            from tools.text_formatter import create_search_response
+            
+            # Handle different response formats
+            if isinstance(response, str):
+                # Parse the raw text response format from brave-search MCP server
+                search_results = self._parse_brave_text_response(response)
+            elif isinstance(response, list):
+                # Already structured format
+                search_results = response
+            elif isinstance(response, dict) and 'results' in response:
+                # Wrapped in results field
+                search_results = response['results']
+            else:
+                logger.warning(f"Unknown brave search response format: {type(response)}")
+                return response
+            
+            if not search_results:
+                return response
+            
+            # Use our dual-context formatter
+            formatted_response = create_search_response("search query", search_results)
+            
+            return {
+                "ui_formatted": formatted_response["ui_formatted"],  # Clean HTML links
+                "voice_summary": formatted_response["voice_summary"],  # Clean TTS text  
+                "result_count": len(search_results),
+                "raw_results": search_results  # Keep original for compatibility
+            }
+            
+        except Exception as e:
+            logger.warning(f"Failed to format brave search response: {e}")
+            return response  # Return original on error
+    
+    def _parse_brave_text_response(self, text_response: str) -> list:
+        """Parse brave search text response into structured format"""
+        results = []
+        
+        # Split by double newlines to separate results
+        sections = text_response.split('\n\n')
+        
+        for section in sections:
+            if not section.strip():
+                continue
+                
+            lines = [line.strip() for line in section.split('\n') if line.strip()]
+            
+            # Look for Title:, Description:, URL: pattern
+            title = ""
+            description = ""
+            url = ""
+            
+            for line in lines:
+                if line.startswith('Title: '):
+                    title = line[7:].strip()
+                elif line.startswith('Description: '):
+                    description = line[13:].strip()
+                elif line.startswith('URL: '):
+                    url = line[5:].strip()
+                elif '://' in line and not title and not description:
+                    # Might be a URL-only line
+                    url = line.strip()
+                elif not title and line and not line.startswith(('http', 'URL:')):
+                    # First non-URL line might be title
+                    title = line
+                elif not description and line != title and not line.startswith(('http', 'URL:')):
+                    # Second line might be description
+                    description = line
+            
+            # Add result if we have at least a URL or title
+            if url or title:
+                results.append({
+                    'title': title or 'Search Result',
+                    'snippet': description or 'No description available',
+                    'url': url or ''
+                })
+        
+        return results
+    
     async def _call_browser_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle browser operations"""
         logger.info(f"🌐 Browser tool {tool_name} called")
@@ -727,4 +835,52 @@ class SimpleMCPToolManager:
         except ImportError:
             logger.debug("No tool translations available")
             self._translations = {}
+    
+    async def _get_tool_schema(self, server_name: str, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Get OpenAPI schema for a specific tool - Powers the Universal Parameter Sanitizer"""
+        try:
+            # Use MCPO proxy URL instead of raw server URL
+            server_path_map = {
+                "memory": "memory",
+                "brave-search": "brave-search", 
+                "filesystem": "filesystem",
+                "javascript": "javascript"
+            }
+            
+            if server_name not in server_path_map:
+                return None
+            
+            # Get OpenAPI spec from MCPO proxy
+            openapi_url = f"http://localhost:3001/{server_path_map[server_name]}/openapi.json"
+            session = await self._get_http_session()
+            
+            async with session.get(openapi_url) as response:
+                if response.status == 200:
+                    spec = await response.json()
+                    
+                    # Extract schema for this specific tool
+                    paths = spec.get("paths", {})
+                    for path, methods in paths.items():
+                        if path.endswith(f"/{tool_name}"):
+                            post_method = methods.get("post", {})
+                            request_body = post_method.get("requestBody", {})
+                            content = request_body.get("content", {})
+                            json_content = content.get("application/json", {})
+                            schema_ref = json_content.get("schema", {})
+                            
+                            # Resolve schema reference
+                            if "$ref" in schema_ref:
+                                ref_path = schema_ref["$ref"]  # e.g., "#/components/schemas/add_observations_form_model"
+                                schema_name = ref_path.split("/")[-1]
+                                components = spec.get("components", {})
+                                schemas = components.get("schemas", {})
+                                return schemas.get(schema_name, {})
+                            else:
+                                return schema_ref
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Failed to get schema for {server_name}/{tool_name}: {e}")
+            return None
     

@@ -494,13 +494,18 @@ class ToolHandlers:
                             "source": "Brave AI Summary"
                         })
                     
-                    # Optimize final response for voice
+                    # Return optimized response with both voice and UI formatting
                     if results:
                         from tools.text_formatter import create_search_response
                         search_response = create_search_response(query, results)
-                        return search_response["results"]  # Return processed results
+                        return {
+                            "results": search_response["results"],
+                            "ui_formatted": search_response["ui_formatted"],  # Clean HTML links for UI
+                            "voice_summary": search_response["voice_summary"], # Clean text for TTS
+                            "result_count": len(results)
+                        }
                     else:
-                        return [{"title": "No results found", "snippet": f"No results for: {query}", "source": "Brave Search"}]
+                        return {"ui_formatted": "No search results found.", "voice_summary": "No search results found.", "result_count": 0}
                     
         except Exception as e:
             logger.error(f"Brave Search error: {e}")

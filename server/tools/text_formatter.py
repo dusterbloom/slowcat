@@ -116,9 +116,42 @@ def create_search_response(
     # Create voice-optimized summary
     voice_response = format_search_results_for_voice(processed_results)
     
+    # Create UI-optimized formatted text with clickable links
+    ui_response = format_search_results_for_ui(processed_results)
+    
     return {
         "query": query,
         "results": processed_results,
         "voice_summary": voice_response,
+        "ui_formatted": ui_response,  # NEW: Clean UI formatting
         "result_count": len(results)
     }
+
+
+def format_search_results_for_ui(results: list) -> str:
+    """Format search results with clean UI presentation and clickable links"""
+    if not results:
+        return "No search results found."
+    
+    formatted_items = []
+    for i, result in enumerate(results[:5], 1):  # Limit to 5 for UI
+        title = result.get('display_title', result.get('title', 'Untitled'))
+        snippet = result.get('display_snippet', result.get('snippet', ''))
+        url = result.get('url', '')
+        
+        # Create clean, compact UI format
+        item_parts = [f"**{i}. {title}**"]
+        
+        if snippet:
+            # Truncate snippet for UI readability
+            if len(snippet) > 120:
+                snippet = snippet[:120] + "..."
+            item_parts.append(f"*{snippet}*")
+        
+        if url:
+            # Create clickable HTML link
+            item_parts.append(f'<a href="{url}" target="_blank" rel="noopener">Visit website</a>')
+        
+        formatted_items.append(" - ".join(item_parts))
+    
+    return "\n\n".join(formatted_items)

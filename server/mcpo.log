@@ -1,21 +1,21 @@
-2025-08-07 00:22:58,844 - INFO - Starting MCPO Server...
-2025-08-07 00:22:58,844 - INFO -   Name: mcpo-proxy
-2025-08-07 00:22:58,844 - INFO -   Version: 1.0
-2025-08-07 00:22:58,844 - INFO -   Description: Automatically generated API from MCP Tool Schemas
-2025-08-07 00:22:58,844 - INFO -   Hostname: MacBook.local
-2025-08-07 00:22:58,844 - INFO -   Port: 3001
-2025-08-07 00:22:58,844 - INFO -   API Key: Provided
-2025-08-07 00:22:58,844 - INFO -   CORS Allowed Origins: ['*']
-2025-08-07 00:22:58,844 - INFO -   Path Prefix: /
-2025-08-07 00:22:58,844 - INFO - Loading MCP server configurations from: mcp.json
-2025-08-07 00:22:58,844 - INFO - Configuring MCP Servers:
-2025-08-07 00:22:58,845 - INFO - Uvicorn server starting...
-INFO:     Started server process [59941]
+2025-08-07 12:08:07,632 - INFO - Starting MCPO Server...
+2025-08-07 12:08:07,632 - INFO -   Name: mcpo-proxy
+2025-08-07 12:08:07,632 - INFO -   Version: 1.0
+2025-08-07 12:08:07,632 - INFO -   Description: Automatically generated API from MCP Tool Schemas
+2025-08-07 12:08:07,632 - INFO -   Hostname: MacBook.local
+2025-08-07 12:08:07,632 - INFO -   Port: 3001
+2025-08-07 12:08:07,632 - INFO -   API Key: Provided
+2025-08-07 12:08:07,632 - INFO -   CORS Allowed Origins: ['*']
+2025-08-07 12:08:07,632 - INFO -   Path Prefix: /
+2025-08-07 12:08:07,632 - INFO - Loading MCP server configurations from: mcp.json
+2025-08-07 12:08:07,633 - INFO - Configuring MCP Servers:
+2025-08-07 12:08:07,633 - INFO - Uvicorn server starting...
+INFO:     Started server process [91353]
 INFO:     Waiting for application startup.
-2025-08-07 00:22:58,858 - INFO - Initiating connection for server: 'memory'...
+2025-08-07 12:08:07,645 - INFO - Initiating connection for server: 'memory'...
 Knowledge Graph MCP Server running on stdio
-2025-08-07 00:22:59,677 - INFO - Successfully connected to 'memory'.
-2025-08-07 00:22:59,677 - INFO - Initiating connection for server: 'javascript'...
+2025-08-07 12:08:08,503 - INFO - Successfully connected to 'memory'.
+2025-08-07 12:08:08,503 - INFO - Initiating connection for server: 'javascript'...
 npm ERR! code E404
 npm ERR! 404 Not Found - GET https://registry.npmjs.org/@modelcontextprotocol%2fserver-javascript - Not found
 npm ERR! 404 
@@ -24,8 +24,8 @@ npm ERR! 404
 npm ERR! 404 Note that you can also install from a
 npm ERR! 404 tarball, folder, http url, or git url.
 
-npm ERR! A complete log of this run can be found in: /Users/peppi/.npm/_logs/2025-08-06T22_22_59_772Z-debug-0.log
-2025-08-07 00:23:00,077 - ERROR - Failed to connect to MCP server 'javascript': ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+npm ERR! A complete log of this run can be found in: /Users/peppi/.npm/_logs/2025-08-07T10_08_08_600Z-debug-0.log
+2025-08-07 12:08:10,275 - ERROR - Failed to connect to MCP server 'javascript': ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
   + Exception Group Traceback (most recent call last):
   |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcpo/main.py", line 422, in lifespan
   |     async with client_context as (reader, writer, *_):
@@ -65,27 +65,57 @@ npm ERR! A complete log of this run can be found in: /Users/peppi/.npm/_logs/202
       |     raise McpError(response_or_error.error)
       | mcp.shared.exceptions.McpError: Connection closed
       +------------------------------------
-2025-08-07 00:23:00,081 - ERROR - Failed to establish connection for server: 'javascript' - Multiple errors occurred:
-2025-08-07 00:23:00,081 - ERROR -   Error 1: ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
-2025-08-07 00:23:00,081 - INFO - Initiating connection for server: 'brave-search'...
+2025-08-07 12:08:10,278 - ERROR - Failed to establish connection for server: 'javascript' - Multiple errors occurred:
+2025-08-07 12:08:10,278 - ERROR -   Error 1: ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+2025-08-07 12:08:10,279 - INFO - Initiating connection for server: 'brave-search'...
 Brave Search MCP Server running on stdio
-2025-08-07 00:23:00,973 - INFO - Successfully connected to 'brave-search'.
-2025-08-07 00:23:00,973 - INFO - Initiating connection for server: 'browser-text'...
-2025-08-07 00:23:01,991 - INFO - Successfully connected to 'browser-text'.
-2025-08-07 00:23:01,991 - INFO - Initiating connection for server: 'filesystem'...
+2025-08-07 12:08:11,076 - INFO - Successfully connected to 'brave-search'.
+2025-08-07 12:08:11,076 - INFO - Initiating connection for server: 'filesystem'...
 Secure MCP Filesystem Server running on stdio
 Client does not support MCP Roots, using allowed directories set from server args: [ '/Users/peppi/Documents' ]
-2025-08-07 00:23:02,889 - INFO - Successfully connected to 'filesystem'.
-2025-08-07 00:23:02,890 - INFO - 
+2025-08-07 12:08:11,917 - INFO - Successfully connected to 'filesystem'.
+2025-08-07 12:08:11,917 - INFO - 
 --- Server Startup Summary ---
-2025-08-07 00:23:02,890 - INFO - Successfully connected to:
-2025-08-07 00:23:02,890 - INFO -   - memory
-2025-08-07 00:23:02,890 - INFO -   - brave-search
-2025-08-07 00:23:02,890 - INFO -   - browser-text
-2025-08-07 00:23:02,890 - INFO -   - filesystem
-2025-08-07 00:23:02,890 - WARNING - Failed to connect to:
-2025-08-07 00:23:02,890 - WARNING -   - javascript
-2025-08-07 00:23:02,890 - INFO - --------------------------
+2025-08-07 12:08:11,917 - INFO - Successfully connected to:
+2025-08-07 12:08:11,917 - INFO -   - memory
+2025-08-07 12:08:11,917 - INFO -   - brave-search
+2025-08-07 12:08:11,917 - INFO -   - filesystem
+2025-08-07 12:08:11,917 - WARNING - Failed to connect to:
+2025-08-07 12:08:11,917 - WARNING -   - javascript
+2025-08-07 12:08:11,917 - INFO - --------------------------
 
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:3001 (Press CTRL+C to quit)
+Starting MCP OpenAPI Proxy with config file: mcp.json
+INFO:     127.0.0.1:61072 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61072 - "GET /javascript/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61072 - "GET /brave-search/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61072 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61076 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61076 - "GET /javascript/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61076 - "GET /brave-search/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61076 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61084 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61084 - "GET /javascript/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61084 - "GET /brave-search/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61084 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
+2025-08-07 12:09:33,073 - INFO - Calling endpoint: search_nodes, with args: {'query': 'dog name'}
+INFO:     127.0.0.1:61106 - "POST /memory/search_nodes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61125 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61125 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61125 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61125 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61125 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61125 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61125 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61171 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61196 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61196 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61243 - "POST /memory/add_observations HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:61284 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61309 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61329 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+2025-08-07 12:12:39,786 - INFO - 
+Received SIGINT, initiating graceful shutdown...
+2025-08-07 12:12:39,787 - INFO - Initiating server shutdown...
+2025-08-07 12:12:39,787 - INFO - Server shutdown complete
