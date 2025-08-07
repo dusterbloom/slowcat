@@ -9,6 +9,7 @@ import subprocess
 import json
 import time
 import os
+import aiohttp
 from pathlib import Path
 from loguru import logger
 from dataclasses import dataclass, field
@@ -50,6 +51,10 @@ class SimpleMCPToolManager:
         # Load MCP server configurations from mcp.json
         self._mcp_servers = self._load_mcp_config()
         
+        # HTTP connection pool for ultra-low latency
+        self._http_session = None
+        self._session_lock = asyncio.Lock()
+        
         # Load cached manifest on startup for instant first call
         self._load_cached_manifest()
         
@@ -57,6 +62,52 @@ class SimpleMCPToolManager:
         logger.info(f"   TTL: {self.ttl_seconds}s")
         logger.info(f"   Cache dir: {CACHE_DIR}")
         logger.info(f"   Configured servers: {list(self._mcp_servers.keys())}")
+        logger.info(f"   HTTP pooling: enabled")
+    
+    async def _get_http_session(self) -> aiohttp.ClientSession:
+        """Get or create persistent HTTP session with connection pooling"""
+        async with self._session_lock:
+            if self._http_session is None or self._http_session.closed:
+                connector = aiohttp.TCPConnector(
+                    limit=20,              # Total connection pool size
+                    limit_per_host=10,     # Max connections per host (MCPO)
+                    ttl_dns_cache=300,     # DNS cache TTL
+                    use_dns_cache=True,
+                    keepalive_timeout=60,  # Keep connections alive 60s
+                    enable_cleanup_closed=True
+                )
+                
+                timeout = aiohttp.ClientTimeout(
+                    total=30.0,      # Total timeout
+                    connect=5.0,     # Connection timeout  
+                    sock_read=10.0   # Socket read timeout
+                )
+                
+                self._http_session = aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=timeout,
+                    headers={'User-Agent': 'Slowcat-MCP-Client/1.0'}
+                )
+                logger.debug(f"🔗 Created new HTTP session with connection pooling")
+            
+            return self._http_session
+    
+    async def _close_session(self):
+        """Close HTTP session gracefully"""
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+            logger.debug(f"🔒 HTTP session closed")
+    
+    def __del__(self):
+        """Cleanup on destruction"""
+        if hasattr(self, '_http_session') and self._http_session and not self._http_session.closed:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if not loop.is_closed():
+                    loop.create_task(self._close_session())
+            except Exception:
+                pass  # Best effort cleanup
     
     def _load_mcp_config(self) -> Dict[str, Dict[str, Any]]:
         """Load MCP server configurations from mcp.json"""
@@ -192,8 +243,8 @@ class SimpleMCPToolManager:
                 "Accept": "application/json"
             }
             
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{endpoint}/openapi.json", headers=headers, timeout=10.0) as response:
+            session = await self._get_http_session()
+            async with session.get(f"{endpoint}/openapi.json", headers=headers, timeout=10.0) as response:
                     if response.status == 200:
                         openapi_spec = await response.json()
                         tools = self._extract_tools_from_openapi(openapi_spec)
@@ -419,8 +470,8 @@ class SimpleMCPToolManager:
             logger.debug(f"🔧 {server_name}: Executing {tool_name} via MCPO: {tool_url}")
             logger.debug(f"🔧 Params: {params}")
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(tool_url, headers=headers, json=params, timeout=30.0) as response:
+            session = await self._get_http_session()
+            async with session.post(tool_url, headers=headers, json=params, timeout=30.0) as response:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(f"✅ {server_name}: {tool_name} executed successfully via MCPO")
@@ -545,15 +596,15 @@ class SimpleMCPToolManager:
             
             logger.info(f"🔍 Brave Search: {query}")
             
-            async with aiohttp.ClientSession() as session:
-                url = "https://api.search.brave.com/res/v1/web/search"
-                headers = {
-                    "X-Subscription-Token": api_key,
-                    "Accept": "application/json"
-                }
-                search_params = {"q": query, "count": 3}
-                
-                async with session.get(url, headers=headers, params=search_params) as resp:
+            session = await self._get_http_session()
+            url = "https://api.search.brave.com/res/v1/web/search"
+            headers = {
+                "X-Subscription-Token": api_key,
+                "Accept": "application/json"
+            }
+            search_params = {"q": query, "count": 3}
+            
+            async with session.get(url, headers=headers, params=search_params) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         results = []
