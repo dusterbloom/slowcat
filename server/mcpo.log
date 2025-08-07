@@ -102,3 +102,7 @@ INFO:     127.0.0.1:65072 - "POST /memory/search_nodes HTTP/1.1" 200 OK
 INFO:     127.0.0.1:65131 - "POST /memory/search_nodes HTTP/1.1" 200 OK
 2025-08-07 13:49:58,575 - INFO - Calling endpoint: search_nodes, with args: {'query': 'quote'}
 INFO:     127.0.0.1:65155 - "POST /memory/search_nodes HTTP/1.1" 200 OK
+2025-08-07 14:18:04,402 - INFO - 
+Received SIGINT, initiating graceful shutdown...
+2025-08-07 14:18:04,403 - INFO - Initiating server shutdown...
+2025-08-07 14:18:04,403 - INFO - Server shutdown complete
