@@ -378,13 +378,17 @@ class PipelineBuilder:
         unified_tools = local_tools + mcp_function_schemas
         tools_schema = ToolsSchema(standard_tools=unified_tools)
         
-        # Store MCP manager reference for debugging/reference only
+        # Store MCP manager reference and WAIT for tool registration
         if hasattr(llm_service, 'set_mcp_tool_manager'):
             llm_service.set_mcp_tool_manager(mcp_tool_manager)
+            
+            # CRITICAL FIX: Wait for MCP tools to be registered before proceeding
+            logger.info("⏳ Waiting for MCP tool registration to complete...")
+            await llm_service._register_mcp_tools()  # Ensure tools are registered synchronously
+            logger.info("✅ MCP tool registration completed")
         
-        # 🚀 MCPO INTEGRATION: MCP tools are registered automatically in LLMWithToolsService
-        # when the MCP tool manager is set (bulletproof - no latency impact)
-        logger.info(f"🔧 MCP tool registration handled automatically by LLMWithToolsService")
+        # 🚀 MCPO INTEGRATION: MCP tools are now guaranteed to be registered
+        logger.info(f"🔧 MCP tool registration completed synchronously")
         
         logger.info(f"🔧 Unified tools schema created:")
         logger.info(f"   Local tools: {len(local_tools)} ({[t.name for t in local_tools]})")

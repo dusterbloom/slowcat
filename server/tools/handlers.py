@@ -467,25 +467,24 @@ class ToolHandlers:
                     logger.debug(f"Brave API returned {len(data.get('web', {}).get('results', []))} results")
                     results = []
                     
-                    # Extract web results
+                    # Extract web results with dual-context formatting
+                    from tools.text_formatter import create_dual_context_result
+                    
                     for result in data.get("web", {}).get("results", [])[:num_results]:
                         title = result.get("title", "")
                         snippet = result.get("description", "")
-                        
-                        # Clean up HTML from snippets
-                        if snippet:
-                            # Remove HTML tags
-                            snippet = re.sub(r'<[^>]+>', '', snippet)
-                            # Limit length for voice
-                            if len(snippet) > 150:
-                                snippet = snippet[:150] + "..."
+                        url = result.get("url", "")
                         
                         # Add all results regardless of language
                         if title and snippet:
-                            results.append({
-                                "title": title,
-                                "snippet": snippet
-                            })
+                            # Create optimized result for both voice and UI
+                            formatted_result = create_dual_context_result(
+                                title=title,
+                                snippet=snippet, 
+                                url=url,
+                                max_voice_length=120  # Shorter for web results
+                            )
+                            results.append(formatted_result)
                     
                     # Add answer box if available
                     if data.get("summarizer") and not results:
@@ -495,7 +494,13 @@ class ToolHandlers:
                             "source": "Brave AI Summary"
                         })
                     
-                    return results if results else [{"title": "No results found", "snippet": f"No results for: {query}", "source": "Brave Search"}]
+                    # Optimize final response for voice
+                    if results:
+                        from tools.text_formatter import create_search_response
+                        search_response = create_search_response(query, results)
+                        return search_response["results"]  # Return processed results
+                    else:
+                        return [{"title": "No results found", "snippet": f"No results for: {query}", "source": "Brave Search"}]
                     
         except Exception as e:
             logger.error(f"Brave Search error: {e}")

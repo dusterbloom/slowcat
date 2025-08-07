@@ -60,12 +60,8 @@ class LLMWithToolsService(OpenAILLMService):
         logger.info("🎵 Audio player reference set in LLM service")
     
     def set_mcp_tool_manager(self, mcp_tool_manager):
-        """Set the MCP tool manager and register MCP tools immediately"""
+        """Set the MCP tool manager - registration will be called explicitly"""
         self._mcp_tool_manager = mcp_tool_manager
-        
-        # Register MCP tools immediately (bulletproof - no latency impact)
-        asyncio.create_task(self._register_mcp_tools())
-        logger.info("🚀 MCP tool registration initiated")
         logger.info("🔧 MCP tool manager reference set in LLM service")
     
     async def _register_mcp_tools(self):

@@ -70,10 +70,11 @@ def _generate_simple_tool_docs(local_tools: List[FunctionSchema], mcp_tools: Lis
             docs += f"- ... and {len(tool_names) - 50} more\n"
         docs += "\n"
     
-    # Add simple examples
+    # Add simple examples using ACTUAL tool names from MCP discovery
     docs += "**Examples:**\n"
-    docs += "- Search memory: `memory_search_nodes(query='favorite number')`\n"
-    docs += "- Read file: `filesystem_read_file(path='~/Desktop/notes.txt')`\n"
+    docs += "- Search memory: `search_nodes(query='favorite number')`\n"
+    docs += "- Create memory: `create_entities(entities=[{\"name\":\"fact\"}])`\n"
+    docs += "- Read file: `read_file(path='~/Desktop/notes.txt')`\n"
     docs += "- Web search: `brave_web_search(query='latest news')`\n"
     docs += "- Calculate: `calculate(expression='2 + 2')`\n"
     docs += "- Run Javascript: `run_javascript({`JAVASCRIPT_CODE_HERE`})`\n"
