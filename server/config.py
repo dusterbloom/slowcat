@@ -62,7 +62,7 @@ class ModelConfig:
     tts_model: str = "prince-canuma/Kokoro-82M"
     
     # STT
-    stt_english_model: str = "DISTIL_LARGE_V3"  # Faster for English
+    stt_english_model: str = "LARGE_V3_TURBO_Q4"  # Faster for English
     stt_multilingual_model: str = "MEDIUM"      # For other languages
     
     # Smart Turn

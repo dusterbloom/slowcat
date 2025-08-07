@@ -520,11 +520,16 @@ class SimpleMCPToolManager:
                         result = await response.json()
                         logger.info(f"✅ {server_name}: {tool_name} executed successfully via MCPO")
                         
+                        # Ensure result is a dict before processing
+                        if not isinstance(result, dict):
+                            logger.warning(f"Unexpected response type from MCPO: {type(result)}")
+                            result = {"result": result}
+                        
                         # 🔥 SMART RESPONSE FILTERING - prevent huge responses from breaking voice
                         result = self._filter_large_response(tool_name, result)
                         
                         # 🎯 SEARCH RESULT FORMATTING - add clickable links for UI
-                        if tool_name == 'brave_web_search':
+                        if tool_name == 'brave_web_search' and isinstance(result, dict):
                             result = self._format_brave_search_response(result)
                         
                         return result
@@ -761,8 +766,23 @@ class SimpleMCPToolManager:
         try:
             from tools.text_formatter import create_search_response
             
-            # Handle different response formats
-            if isinstance(response, str):
+            # First check if response has 'result' field (MCPO format)
+            if isinstance(response, dict) and 'result' in response:
+                inner_result = response['result']
+                # Handle different inner result formats
+                if isinstance(inner_result, str):
+                    # Parse the raw text response format from brave-search MCP server
+                    search_results = self._parse_brave_text_response(inner_result)
+                elif isinstance(inner_result, list):
+                    # Already structured format
+                    search_results = inner_result
+                elif isinstance(inner_result, dict) and 'results' in inner_result:
+                    # Wrapped in results field
+                    search_results = inner_result['results']
+                else:
+                    search_results = inner_result
+            # Handle direct response formats
+            elif isinstance(response, str):
                 # Parse the raw text response format from brave-search MCP server
                 search_results = self._parse_brave_text_response(response)
             elif isinstance(response, list):
