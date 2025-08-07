@@ -91,6 +91,9 @@ def main():
     parser.add_argument("--language", default=config.default_language, 
                        choices=list(config.language_configs.keys()))
     parser.add_argument("--llm", dest="llm_model", default=None)
+    parser.add_argument("--stt", dest="stt_model", default=None, 
+                       choices=["TINY", "MEDIUM", "LARGE_V3", "LARGE_V3_TURBO", "LARGE_V3_TURBO_Q4", "DISTIL_LARGE_V3"],
+                       help="STT model to use")
     parser.add_argument("--mode", choices=["server", "standalone"], default="server",
                        help="Run as server (default) or standalone pipeline")
     args = parser.parse_args()
@@ -101,6 +104,8 @@ def main():
     
     if args.llm_model:
         logger.info(f"🤖 LLM Model: {args.llm_model}")
+    if args.stt_model:
+        logger.info(f"🎤 STT Model: {args.stt_model}")
     
     # MCP tools are handled natively by LM Studio via mcp.json
     if config.mcp.enabled:
@@ -113,7 +118,8 @@ def main():
             host=args.host,
             port=args.port,
             language=args.language,
-            llm_model=args.llm_model
+            llm_model=args.llm_model,
+            stt_model=args.stt_model
         )
     else:
         # Standalone mode for testing/development

@@ -18,7 +18,7 @@ from core.pipeline_builder import PipelineBuilder
 from .webrtc import WebRTCManager
 
 
-def create_app(language: str = None, llm_model: str = None) -> FastAPI:
+def create_app(language: str = None, llm_model: str = None, stt_model: str = None) -> FastAPI:
     """
     Create FastAPI application with proper configuration
     
@@ -34,6 +34,7 @@ def create_app(language: str = None, llm_model: str = None) -> FastAPI:
     # Store configuration in app state
     app.state.language = language or config.default_language
     app.state.llm_model = llm_model
+    app.state.stt_model = stt_model
     
     # Initialize managers
     webrtc_manager = WebRTCManager()
@@ -60,7 +61,8 @@ def create_app(language: str = None, llm_model: str = None) -> FastAPI:
                 pipeline_builder, 
                 connection, 
                 language, 
-                llm_model
+                llm_model,
+                getattr(app.state, 'stt_model', None)
             )
             
             return answer
@@ -76,6 +78,7 @@ def create_app(language: str = None, llm_model: str = None) -> FastAPI:
             "status": "healthy",
             "language": app.state.language,
             "llm_model": app.state.llm_model,
+            "stt_model": app.state.stt_model,
             "active_connections": len(webrtc_manager.get_active_connections())
         }
     
@@ -107,6 +110,39 @@ def create_app(language: str = None, llm_model: str = None) -> FastAPI:
         )
         mcp_discovery_thread.start()
         
+        # 🚀 NEW: Pre-warm LLM service
+        def prewarm_llm():
+            async def async_prewarm():
+                try:
+                    logger.info("🔄 Pre-warming LLM service...")
+                    
+                    # Wait for ML modules first
+                    await service_factory.wait_for_ml_modules()
+                    
+                    # Create LLM service to pre-warm it
+                    llm_service = await service_factory._create_llm_service_for_language(
+                        app.state.language, app.state.llm_model
+                    )
+                    
+                    # Make a tiny test request to warm up the connection
+                    from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+                    context = OpenAILLMContext([{"role": "user", "content": "Hi"}])
+                    
+                    # Just create the stream to warm up connection, don't consume it
+                    stream = llm_service._stream_chat_completions(context)
+                    async for chunk in stream:
+                        # Just get first chunk to warm up
+                        break
+                    
+                    logger.info("✅ LLM service pre-warmed")
+                except Exception as e:
+                    logger.warning(f"Failed to pre-warm LLM: {e}")
+            
+            asyncio.run(async_prewarm())
+        
+        llm_prewarm_thread = threading.Thread(target=prewarm_llm, daemon=True)
+        llm_prewarm_thread.start()
+        
         logger.info("✅ Background services started")
     
     @app.on_event("shutdown")
@@ -120,7 +156,7 @@ def create_app(language: str = None, llm_model: str = None) -> FastAPI:
 
 
 async def run_bot_pipeline(pipeline_builder: PipelineBuilder, webrtc_connection, 
-                          language: str = "en", llm_model: str = None):
+                          language: str = "en", llm_model: str = None, stt_model: str = None):
     """
     Run bot pipeline for a WebRTC connection
     
@@ -135,7 +171,7 @@ async def run_bot_pipeline(pipeline_builder: PipelineBuilder, webrtc_connection,
         
         # Build pipeline
         pipeline, task = await pipeline_builder.build_pipeline(
-            webrtc_connection, language, llm_model
+            webrtc_connection, language, llm_model, stt_model
         )
         
         # Run pipeline
@@ -176,7 +212,7 @@ def setup_signal_handlers(webrtc_manager: WebRTCManager):
 
 
 def run_server(host: str = None, port: int = None, language: str = None, 
-               llm_model: str = None):
+               llm_model: str = None, stt_model: str = None):
     """
     Run the Slowcat server
     
@@ -185,6 +221,7 @@ def run_server(host: str = None, port: int = None, language: str = None,
         port: Server port (default from config)  
         language: Default language (default from config)
         llm_model: Default LLM model
+        stt_model: STT model to use
     """
     # Use config defaults if not specified
     host = host or config.network.server_host
@@ -192,7 +229,7 @@ def run_server(host: str = None, port: int = None, language: str = None,
     language = language or config.default_language
     
     # Create application
-    app = create_app(language, llm_model)
+    app = create_app(language, llm_model, stt_model)
     
     # Setup signal handlers
     setup_signal_handlers(app.state.webrtc_manager)
@@ -201,6 +238,8 @@ def run_server(host: str = None, port: int = None, language: str = None,
     logger.info(f"🌍 Default language: {language}")
     if llm_model:
         logger.info(f"🤖 LLM model: {llm_model}")
+    if stt_model:
+        logger.info(f"🎤 STT model: {stt_model}")
     
     # Run server
     uvicorn.run(app, host=host, port=port)

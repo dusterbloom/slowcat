@@ -60,12 +60,29 @@ class WhisperSTTServiceMLX(BaseWhisperSTTServiceMLX):
                     cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
                     os.environ["HF_HOME"] = cache_dir
                     
-                    result = mlx_whisper.transcribe(
-                        audio_float,
-                        path_or_hf_repo=self.model_name,
-                        temperature=self._temperature,
-                        language=whisper_lang,
-                    )
+                    # Temporarily allow downloads for missing models
+                    original_offline = os.environ.get("HF_HUB_OFFLINE")
+                    original_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
+                    if "whisper-large-v3-turbo-q4" in self.model_name.lower():
+                        logger.info(f"🔄 Temporarily enabling downloads for model: {self.model_name}")
+                        os.environ.pop("HF_HUB_OFFLINE", None)
+                        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                    
+                    try:
+                        result = mlx_whisper.transcribe(
+                            audio_float,
+                            path_or_hf_repo=self.model_name,
+                            temperature=self._temperature,
+                            language=whisper_lang,
+                        )
+                    finally:
+                        # Restore offline mode
+                        if "whisper-large-v3-turbo-q4" in self.model_name.lower():
+                            if original_offline:
+                                os.environ["HF_HUB_OFFLINE"] = original_offline
+                            if original_transformers_offline:
+                                os.environ["TRANSFORMERS_OFFLINE"] = original_transformers_offline
+                            logger.info("🔒 Restored offline mode")
                     logger.debug("WhisperSTT: Released MLX lock")
                     return result
             

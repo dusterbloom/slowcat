@@ -24,7 +24,7 @@ class PipelineBuilder:
         self.service_factory = service_factory
     
     async def build_pipeline(self, webrtc_connection, language: str = "en", 
-                           llm_model: str = None) -> Tuple[Pipeline, Any]:
+                           llm_model: str = None, stt_model: str = None) -> Tuple[Pipeline, Any]:
         """
         Build complete processing pipeline with all components
         
@@ -32,6 +32,7 @@ class PipelineBuilder:
             webrtc_connection: WebRTC connection instance
             language: Language code for services
             llm_model: Optional specific LLM model
+            stt_model: Optional specific STT model
             
         Returns:
             Tuple of (pipeline, task) ready for execution
@@ -42,7 +43,7 @@ class PipelineBuilder:
         lang_config = self._get_language_config(language)
         
         # 2. Create core services
-        services = await self._create_core_services(language, llm_model)
+        services = await self._create_core_services(language, llm_model, stt_model)
         
         # 3. Setup processors
         processors = await self._setup_processors(language)
@@ -111,7 +112,7 @@ class PipelineBuilder:
         
         return final_config
     
-    async def _create_core_services(self, language: str, llm_model: str = None) -> Dict[str, Any]:
+    async def _create_core_services(self, language: str, llm_model: str = None, stt_model: str = None) -> Dict[str, Any]:
         """Create core services (STT, TTS, LLM)"""
         logger.info("🔧 Creating core services...")
         
@@ -119,7 +120,7 @@ class PipelineBuilder:
         await self.service_factory.wait_for_ml_modules()
         
         # Create services
-        services = await self.service_factory.create_services_for_language(language, llm_model)
+        services = await self.service_factory.create_services_for_language(language, llm_model, stt_model)
         
         logger.info("✅ Core services created")
         return services

@@ -252,11 +252,45 @@ class ServiceFactory:
         except Exception as e:
             logger.warning(f"Failed to pre-warm Kokoro TTS: {e}")
         
+        # Pre-warm STT model (just create instance to load model)
+        try:
+            logger.info("🔄 Pre-warming STT model...")
+            
+            MLXModel = ml_modules['MLXModel']
+            WhisperSTTServiceMLX = ml_modules['WhisperSTTServiceMLX']
+            
+            # Import here to avoid circular imports
+            from pipecat.transcriptions.language import Language
+            
+            # Temporarily allow downloads for turbo models
+            import os
+            original_offline = os.environ.get("HF_HUB_OFFLINE")
+            original_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
+            logger.info("🔄 Temporarily enabling downloads for STT model pre-warming")
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            
+            try:
+                # Create STT service instance - this loads the model
+                stt_model = MLXModel.LARGE_V3_TURBO_Q4
+                whisper_language = Language.EN
+                stt_service = WhisperSTTServiceMLX(model=stt_model, language=whisper_language)
+            finally:
+                # Restore offline mode
+                if original_offline:
+                    os.environ["HF_HUB_OFFLINE"] = original_offline
+                if original_transformers_offline:
+                    os.environ["TRANSFORMERS_OFFLINE"] = original_transformers_offline
+            
+            logger.info("✅ STT model pre-warmed")
+        except Exception as e:
+            logger.warning(f"Failed to pre-warm STT: {e}")
+        
         logger.info("✅ Global analyzers initialized")
         self._global_analyzers_ready.set()
         return analyzers
     
-    def _create_stt_service(self, ml_modules: Dict[str, Any], language: str = "en"):
+    def _create_stt_service(self, ml_modules: Dict[str, Any], language: str = "en", stt_model: str = None):
         """Create STT service"""
         MLXModel = ml_modules['MLXModel']
         WhisperSTTServiceMLX = ml_modules['WhisperSTTServiceMLX']
@@ -264,11 +298,18 @@ class ServiceFactory:
         # Import here to avoid circular imports
         from pipecat.transcriptions.language import Language
         
-        stt_model = MLXModel.DISTIL_LARGE_V3 if language == "en" else MLXModel.MEDIUM
-        whisper_language = getattr(Language, config.get_language_config(language).whisper_language)
+        # Determine STT model to use
+        if stt_model:
+            # Use specified model from CLI argument
+            selected_model = getattr(MLXModel, stt_model)
+            logger.info(f"Using CLI-specified STT model: {stt_model} for {language}")
+        else:
+            # Use default logic
+            selected_model = MLXModel.LARGE_V3_TURBO_Q4 if language == "en" else MLXModel.MEDIUM
+            logger.info(f"Using default STT model: {selected_model.name} for {language}")
         
-        logger.info(f"Using STT model: {stt_model.name} for {language}")
-        return WhisperSTTServiceMLX(model=stt_model, language=whisper_language)
+        whisper_language = getattr(Language, config.get_language_config(language).whisper_language)
+        return WhisperSTTServiceMLX(model=selected_model, language=whisper_language)
     
     def _create_tts_service(self, ml_modules: Dict[str, Any], language: str = "en"):
         """Create TTS service"""
@@ -334,23 +375,23 @@ class ServiceFactory:
             include_in_context=config.memory.include_in_context
         )
     
-    async def create_services_for_language(self, language: str, llm_model: str = None) -> Dict[str, Any]:
+    async def create_services_for_language(self, language: str, llm_model: str = None, stt_model: str = None) -> Dict[str, Any]:
         """Create core services for a specific language"""
         # Ensure ML modules are loaded
         await self.get_service("ml_loader")
         
         # Create language-specific services
         services = {}
-        services['stt'] = await self._create_stt_service_for_language(language)
+        services['stt'] = await self._create_stt_service_for_language(language, stt_model)
         services['tts'] = await self._create_tts_service_for_language(language) 
         services['llm'] = await self._create_llm_service_for_language(language, llm_model)
         
         return services
     
-    async def _create_stt_service_for_language(self, language: str):
+    async def _create_stt_service_for_language(self, language: str, stt_model: str = None):
         """Create STT service for specific language"""
         ml_modules = self.registry.get_instance("ml_loader")
-        return self._create_stt_service(ml_modules, language)
+        return self._create_stt_service(ml_modules, language, stt_model)
     
     async def _create_tts_service_for_language(self, language: str):
         """Create TTS service for specific language"""
