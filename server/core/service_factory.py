@@ -224,6 +224,10 @@ class ServiceFactory:
         """Create global analyzer instances"""
         logger.info("🔄 Initializing global analyzers...")
         
+        # Initialize audio buffer pool for latency optimization
+        from utils.audio_pool import initialize_audio_pool
+        initialize_audio_pool(pool_size=15)  # Larger pool for voice app
+        
         from pipecat.audio.vad.vad_analyzer import VADParams
         
         vad_analyzer = ml_modules['SileroVADAnalyzer'](params=VADParams(

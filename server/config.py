@@ -27,9 +27,9 @@ class AudioConfig:
     tts_sample_rate: int = 24000
     stt_sample_rate: int = 16000  # Fixed for Resemblyzer
     
-    # VAD parameters
-    vad_stop_secs: float = 0.15
-    vad_start_secs: float = 0.1
+    # VAD parameters - Optimized for ultra-low latency
+    vad_stop_secs: float = 0.08  # Reduced from 0.15s for 70ms faster STT trigger
+    vad_start_secs: float = 0.05  # Reduced from 0.1s for 50ms faster voice detection
     
     # Audio processing
     audio_normalization_factor: float = 32768.0
@@ -37,7 +37,7 @@ class AudioConfig:
     
     # TTS parameters
     tts_speed: float = 1.0
-    tts_streaming_delay: float = 0.001
+    tts_streaming_delay: float = 0.0001  # Reduced from 0.001 for 0.9ms faster chunk delivery
     tts_max_workers: int = 1  # Keep single worker for Metal safety
 
 
