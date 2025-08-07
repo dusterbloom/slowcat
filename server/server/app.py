@@ -99,6 +99,14 @@ def create_app(language: str = None, llm_model: str = None) -> FastAPI:
         )
         analyzer_thread.start()
         
+        # 🚀 NEW: Start background MCP tool discovery
+        from services.simple_mcp_tool_manager import discover_mcp_tools_background
+        mcp_discovery_thread = threading.Thread(
+            target=lambda: asyncio.run(discover_mcp_tools_background(app.state.language)),
+            daemon=True
+        )
+        mcp_discovery_thread.start()
+        
         logger.info("✅ Background services started")
     
     @app.on_event("shutdown")

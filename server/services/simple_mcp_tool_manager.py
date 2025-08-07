@@ -9,6 +9,7 @@ import subprocess
 import json
 import time
 import os
+import threading
 import aiohttp
 from pathlib import Path
 from loguru import logger
@@ -56,7 +57,6 @@ class SimpleMCPToolManager:
         
         # HTTP connection pool for ultra-low latency
         self._http_session = None
-        self._session_lock = asyncio.Lock()
         
         # 👑 Initialize the KING'S Pure Algorithmic Negotiator - ZERO MANUAL RULES!
         self.negotiator = PureAlgorithmicNegotiator()
@@ -72,31 +72,42 @@ class SimpleMCPToolManager:
     
     async def _get_http_session(self) -> aiohttp.ClientSession:
         """Get or create persistent HTTP session with connection pooling"""
-        async with self._session_lock:
-            if self._http_session is None or self._http_session.closed:
-                connector = aiohttp.TCPConnector(
-                    limit=20,              # Total connection pool size
-                    limit_per_host=10,     # Max connections per host (MCPO)
-                    ttl_dns_cache=300,     # DNS cache TTL
-                    use_dns_cache=True,
-                    keepalive_timeout=60,  # Keep connections alive 60s
-                    enable_cleanup_closed=True
-                )
-                
-                timeout = aiohttp.ClientTimeout(
-                    total=30.0,      # Total timeout
-                    connect=5.0,     # Connection timeout  
-                    sock_read=10.0   # Socket read timeout
-                )
-                
-                self._http_session = aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=timeout,
-                    headers={'User-Agent': 'Slowcat-MCP-Client/1.0'}
-                )
-                logger.debug(f"🔗 Created new HTTP session with connection pooling")
-            
-            return self._http_session
+        # CRITICAL FIX: Always create fresh session in current event loop
+        # This prevents "Event loop is closed" errors when crossing thread boundaries
+        try:
+            # Check if existing session is usable in current event loop
+            if (self._http_session is not None and 
+                not self._http_session.closed and
+                self._http_session._loop == asyncio.get_running_loop()):
+                return self._http_session
+        except RuntimeError:
+            # No running event loop or session from different loop
+            pass
+        
+        # Create new session in current event loop
+        connector = aiohttp.TCPConnector(
+            limit=20,              # Total connection pool size
+            limit_per_host=10,     # Max connections per host (MCPO)
+            ttl_dns_cache=300,     # DNS cache TTL
+            use_dns_cache=True,
+            keepalive_timeout=60,  # Keep connections alive 60s
+            enable_cleanup_closed=True
+        )
+        
+        timeout = aiohttp.ClientTimeout(
+            total=30.0,      # Total timeout
+            connect=5.0,     # Connection timeout  
+            sock_read=10.0   # Socket read timeout
+        )
+        
+        self._http_session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            headers={'User-Agent': 'Slowcat-MCP-Client/1.0'}
+        )
+        logger.debug(f"🔗 Created new HTTP session in current event loop")
+        
+        return self._http_session
     
     async def _close_session(self):
         """Close HTTP session gracefully"""
@@ -250,7 +261,7 @@ class SimpleMCPToolManager:
             }
             
             session = await self._get_http_session()
-            async with session.get(f"{endpoint}/openapi.json", headers=headers, timeout=10.0) as response:
+            async with session.get(f"{endpoint}/openapi.json", headers=headers, timeout=2.0) as response:
                     if response.status == 200:
                         openapi_spec = await response.json()
                         tools = self._extract_tools_from_openapi(openapi_spec)
@@ -362,13 +373,16 @@ class SimpleMCPToolManager:
             }
         }
     
-    async def get_tools_for_llm(self) -> List[Dict[str, Any]]:
+    async def get_tools_for_llm(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """
         🚀 MAIN METHOD: Get OpenAI-compatible tools array for LM Studio
         This is the key method that implements your friend's architecture!
         """
-        # Auto-refresh if TTL expired
-        await self.refresh_if_stale()
+        # Auto-refresh if TTL expired (unless using cached tools)
+        if force_refresh:
+            await self._refresh_manifest()
+        else:
+            await self.refresh_if_stale()
         
         # Convert internal manifest to OpenAI tools format
         tools = []
@@ -383,6 +397,28 @@ class SimpleMCPToolManager:
             })
         
         logger.info(f"🎯 Providing {len(tools)} tools to LM Studio")
+        logger.debug(f"   Tool names: {[t['function']['name'] for t in tools]}")
+        
+        return tools
+    
+    def get_cached_tools_for_llm(self) -> List[Dict[str, Any]]:
+        """
+        🚀 CACHED VERSION: Get tools without any HTTP calls or refreshing
+        Used during pipeline building for instant tool loading
+        """
+        # Convert internal manifest to OpenAI tools format (no refresh)
+        tools = []
+        for tool_name, tool_info in self._manifest.items():
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool_info["name"],
+                    "description": tool_info.get("description", ""),
+                    "parameters": tool_info.get("parameters", {"type": "object", "properties": {}})
+                }
+            })
+        
+        logger.info(f"🎯 Providing {len(tools)} CACHED tools to LM Studio (no HTTP calls)")
         logger.debug(f"   Tool names: {[t['function']['name'] for t in tools]}")
         
         return tools
@@ -883,4 +919,23 @@ class SimpleMCPToolManager:
         except Exception as e:
             logger.debug(f"Failed to get schema for {server_name}/{tool_name}: {e}")
             return None
+    
+
+# Global MCP tool manager cache
+_global_mcp_managers: Dict[str, "SimpleMCPToolManager"] = {}
+_mcp_managers_lock = threading.Lock()
+
+def get_global_mcp_manager(language: str = "en") -> "SimpleMCPToolManager":
+    """Get or create a global MCP tool manager for a language"""
+    with _mcp_managers_lock:
+        if language not in _global_mcp_managers:
+            _global_mcp_managers[language] = SimpleMCPToolManager(language=language)
+        return _global_mcp_managers[language]
+
+async def discover_mcp_tools_background(language: str = "en"):
+    """Background MCP tool discovery during startup"""
+    logger.info(f"🔍 Starting background MCP tool discovery for language: {language}")
+    manager = get_global_mcp_manager(language)
+    await manager.refresh_if_stale()
+    logger.info(f"✅ Background MCP tool discovery completed for language: {language}")
     

@@ -358,11 +358,12 @@ class PipelineBuilder:
         base_system_prompt = lang_config["system_instruction"]
         local_tools = list(ALL_FUNCTION_SCHEMAS)
 
-        # 🚀 DYNAMIC MCP DISCOVERY: Use new dynamic tool manager
-        mcp_tool_manager = SimpleMCPToolManager(language=language)
+        # 🚀 USE CACHED MCP TOOLS: Get pre-discovered tools from global cache
+        from services.simple_mcp_tool_manager import get_global_mcp_manager
+        mcp_tool_manager = get_global_mcp_manager(language)
         
-        # Get OpenAI-compatible tools for LM Studio (this triggers auto-refresh)
-        mcp_tools_array = await mcp_tool_manager.get_tools_for_llm()
+        # Get OpenAI-compatible tools (uses cached tools, no HTTP calls)
+        mcp_tools_array = mcp_tool_manager.get_cached_tools_for_llm()
         
         # Convert to FunctionSchema for Pipecat integration
         mcp_function_schemas = []
