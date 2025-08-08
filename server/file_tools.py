@@ -32,13 +32,13 @@ class FileTools:
             logger.info(f"Using system home path: {home}")
         
         if allowed_dirs is None:
-            # Default to user's home directory subdirs
+            # Default to safe directories (no repo root access)
             allowed_dirs = [
                 str(home / "Documents"),
-                str(home / "Downloads"),
+                str(home / "Downloads"), 
                 str(home / "Desktop"),
                 "./data",  # Slowcat data directory
-                ".",  # Current directory
+                # Note: "." (current directory) removed for security
             ]
         
         self.allowed_dirs = []
@@ -117,8 +117,10 @@ class FileTools:
             # Read file
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read(max_length)
-                    truncated = len(content) == max_length
+                    content = f.read(max_length + 1)  # Read one extra char to detect truncation
+                    truncated = len(content) > max_length
+                    if truncated:
+                        content = content[:max_length]  # Trim to requested length
                     
                 return {
                     "path": str(path),

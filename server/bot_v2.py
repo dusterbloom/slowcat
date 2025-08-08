@@ -15,6 +15,7 @@ import os
 import sys
 import multiprocessing
 import threading
+from loguru import logger
 
 # Set multiprocessing start method to 'spawn' for macOS Metal GPU safety
 if __name__ == "__main__":
@@ -28,21 +29,30 @@ from dotenv import load_dotenv
 # Load environment variables BEFORE importing config
 load_dotenv(override=True)
 
-# Enable offline mode for HuggingFace transformers
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# Enable offline mode for HuggingFace transformers (conditional)
+if os.getenv("HF_HUB_OFFLINE", "0") == "1":
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    logger.info("📱 HuggingFace Hub offline mode enabled")
+else:
+    logger.info("🌐 HuggingFace Hub online mode (can download models)")
+
+if os.getenv("TRANSFORMERS_OFFLINE", "0") == "1": 
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    logger.info("🤖 Transformers offline mode enabled")
+else:
+    logger.info("🌐 Transformers online mode (can download models)")
 
 from loguru import logger
 from config import config
 
-# 🧪 A/B TEST: Minimal vs Full system prompts
+# 🧪 A/B TEST: Minimal vs Full system prompts (NO GLOBAL SIDE EFFECTS)
+minimal_config = None
 if os.getenv("USE_MINIMAL_PROMPTS", "false").lower() == "true":
     logger.info("🧪 A/B TEST: Using MINIMAL system prompts")
     from config_minimal import MinimalConfig
-    minimal_config = MinimalConfig()
+    minimal_config = MinimalConfig().apply_to_config(config)
 else:
     logger.info("📝 Using FULL system prompts (default)")
-    minimal_config = None
 
 # Import the new modular components
 from core.service_factory import service_factory
@@ -154,7 +164,13 @@ async def run_standalone_bot(language: str, llm_model: str = None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Cleanup minimal config if applied
+        if minimal_config:
+            minimal_config.restore_original()
+            logger.info("✅ Minimal config restored on exit")
 
 
 # ================================

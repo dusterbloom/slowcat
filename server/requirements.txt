@@ -18,5 +18,5 @@ aiosqlite>=0.20.0
 mcpo>=0.0.17
 
 # browser tools
-trafiletto
+trafilatura
 tools

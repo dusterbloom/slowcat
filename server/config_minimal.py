@@ -72,27 +72,57 @@ MINIMAL_LANGUAGES = {
 }
 
 class MinimalConfig:
-    """Minimal config that overrides main config for A/B testing"""
+    """Context manager for A/B testing minimal system prompts - NO GLOBAL MUTATION"""
     
-    def __init__(self):
-        # Use all settings from main config
-        global config
-        self._main_config = config
+    def __init__(self, config_instance=None):
+        """Initialize minimal config mode with dependency injection"""
+        self._config_instance = config_instance
+        self._original_get_language_config = None
         
-        # Override language method
-        self._original_get_language_config = config.get_language_config
-        config.get_language_config = self.get_minimal_language_config
-    
     def get_minimal_language_config(self, language: str = "en"):
         """Return minimal language config for A/B testing"""
         return MINIMAL_LANGUAGES.get(language, MINIMAL_LANGUAGES["en"])
     
+    def apply_to_config(self, config_instance):
+        """Apply minimal config to a specific config instance (dependency injection)"""
+        if self._original_get_language_config is not None:
+            raise RuntimeError("MinimalConfig is already applied to a config instance")
+            
+        self._config_instance = config_instance
+        self._original_get_language_config = config_instance.get_language_config
+        config_instance.get_language_config = self.get_minimal_language_config
+        
+        return self  # Return self for chaining
+    
     def restore_original(self):
-        """Restore original config"""
-        global config
-        config.get_language_config = self._original_get_language_config
+        """Restore original config method"""
+        if self._config_instance and self._original_get_language_config:
+            self._config_instance.get_language_config = self._original_get_language_config
+            self._original_get_language_config = None
+            self._config_instance = None
+    
+    def __enter__(self):
+        """Context manager entry - requires explicit config instance"""
+        if not self._config_instance:
+            raise RuntimeError("Must call apply_to_config() before using as context manager")
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - auto restore"""
+        self.restore_original()
 
-# Usage: 
+# NEW USAGE (no global side effects):
 # from config_minimal import MinimalConfig
-# minimal = MinimalConfig()  # Activates minimal mode
-# minimal.restore_original()  # Restores full prompts
+# from config import config
+# 
+# # Option 1: Context manager (auto-restore)
+# with MinimalConfig().apply_to_config(config):
+#     # config.get_language_config now returns minimal prompts
+#     lang_config = config.get_language_config("en")
+# # config.get_language_config restored automatically
+#
+# # Option 2: Manual control
+# minimal = MinimalConfig()
+# minimal.apply_to_config(config)
+# # ... do work ...
+# minimal.restore_original()
