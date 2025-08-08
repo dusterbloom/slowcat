@@ -1,15 +1,13 @@
 "use client";
 
-import { useEffect } from 'react';
-import {
-  ConsoleTemplate,
-  FullScreenContainer,
-  ThemeProvider,
-} from "@pipecat-ai/voice-ui-kit";
+import { useState, useEffect } from 'react';
+import { ThemeProvider } from "@pipecat-ai/voice-ui-kit";
 import { setupLinkConversion } from '../utils/linkFormatter.js';
+import { LoadingScreen } from '../components/LoadingScreen';
+import { VoiceApp } from '../components/VoiceApp';
 
 export default function Home() {
-  // Use the same ENABLE_VIDEO env variable as server
+  const [isLoading, setIsLoading] = useState(true);
   const videoEnabled = process.env.NEXT_PUBLIC_ENABLE_VIDEO === "false" ? false : true;
   
   // Setup automatic markdown link conversion on mount
@@ -55,17 +53,13 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, []);
   
+  if (isLoading) {
+    return <LoadingScreen onComplete={() => setIsLoading(false)} />;
+  }
+  
   return (
     <ThemeProvider>
-      <FullScreenContainer>
-        <ConsoleTemplate
-          transportType="smallwebrtc"
-          connectParams={{
-            connectionUrl: "/api/offer",
-          }}
-          noUserVideo={!videoEnabled}
-        />
-      </FullScreenContainer>
+      <VoiceApp videoEnabled={videoEnabled} />
     </ThemeProvider>
   );
 }
