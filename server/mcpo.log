@@ -1,108 +1,40 @@
-2025-08-07 13:45:42,336 - INFO - Starting MCPO Server...
-2025-08-07 13:45:42,336 - INFO -   Name: mcpo-proxy
-2025-08-07 13:45:42,336 - INFO -   Version: 1.0
-2025-08-07 13:45:42,336 - INFO -   Description: Automatically generated API from MCP Tool Schemas
-2025-08-07 13:45:42,336 - INFO -   Hostname: MacBook.local
-2025-08-07 13:45:42,336 - INFO -   Port: 3001
-2025-08-07 13:45:42,336 - INFO -   API Key: Provided
-2025-08-07 13:45:42,336 - INFO -   CORS Allowed Origins: ['*']
-2025-08-07 13:45:42,336 - INFO -   Path Prefix: /
-2025-08-07 13:45:42,336 - INFO - Loading MCP server configurations from: mcp.json
-2025-08-07 13:45:42,336 - INFO - Configuring MCP Servers:
-2025-08-07 13:45:42,337 - INFO - Uvicorn server starting...
-INFO:     Started server process [48891]
+2025-08-08 21:22:04,035 - INFO - Starting MCPO Server...
+2025-08-08 21:22:04,035 - INFO -   Name: mcpo-proxy
+2025-08-08 21:22:04,036 - INFO -   Version: 1.0
+2025-08-08 21:22:04,036 - INFO -   Description: Automatically generated API from MCP Tool Schemas
+2025-08-08 21:22:04,036 - INFO -   Hostname: MacBook.local
+2025-08-08 21:22:04,036 - INFO -   Port: 3001
+2025-08-08 21:22:04,036 - INFO -   API Key: Provided
+2025-08-08 21:22:04,036 - INFO -   CORS Allowed Origins: ['*']
+2025-08-08 21:22:04,036 - INFO -   Path Prefix: /
+2025-08-08 21:22:04,036 - INFO - Loading MCP server configurations from: mcp.json
+2025-08-08 21:22:04,036 - INFO - Configuring MCP Servers:
+2025-08-08 21:22:04,036 - INFO - Uvicorn server starting...
+INFO:     Started server process [60998]
 INFO:     Waiting for application startup.
-2025-08-07 13:45:42,349 - INFO - Initiating connection for server: 'memory'...
+2025-08-08 21:22:04,050 - INFO - Initiating connection for server: 'memory'...
 Knowledge Graph MCP Server running on stdio
-2025-08-07 13:45:43,193 - INFO - Successfully connected to 'memory'.
-2025-08-07 13:45:43,193 - INFO - Initiating connection for server: 'javascript'...
-npm ERR! code E404
-npm ERR! 404 Not Found - GET https://registry.npmjs.org/@modelcontextprotocol%2fserver-javascript - Not found
-npm ERR! 404 
-npm ERR! 404  '@modelcontextprotocol/server-javascript@*' is not in this registry.
-npm ERR! 404 
-npm ERR! 404 Note that you can also install from a
-npm ERR! 404 tarball, folder, http url, or git url.
-
-npm ERR! A complete log of this run can be found in: /Users/peppi/.npm/_logs/2025-08-07T11_45_43_280Z-debug-0.log
-2025-08-07 13:45:44,924 - ERROR - Failed to connect to MCP server 'javascript': ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
-  + Exception Group Traceback (most recent call last):
-  |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcpo/main.py", line 422, in lifespan
-  |     async with client_context as (reader, writer, *_):
-  |                ^^^^^^^^^^^^^^
-  |   File "/opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versions/3.12/lib/python3.12/contextlib.py", line 231, in __aexit__
-  |     await self.gen.athrow(value)
-  |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcp/client/stdio/__init__.py", line 181, in stdio_client
-  |     anyio.create_task_group() as tg,
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
-  |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/anyio/_backends/_asyncio.py", line 772, in __aexit__
-  |     raise BaseExceptionGroup(
-  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
-  +-+---------------- 1 ----------------
-    | Exception Group Traceback (most recent call last):
-    |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcp/client/stdio/__init__.py", line 187, in stdio_client
-    |     yield read_stream, write_stream
-    |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcpo/main.py", line 423, in lifespan
-    |     async with ClientSession(reader, writer) as session:
-    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcp/shared/session.py", line 218, in __aexit__
-    |     return await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
-    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/anyio/_backends/_asyncio.py", line 772, in __aexit__
-    |     raise BaseExceptionGroup(
-    | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
-    +-+---------------- 1 ----------------
-      | Traceback (most recent call last):
-      |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcpo/main.py", line 425, in lifespan
-      |     await create_dynamic_endpoints(app, api_dependency=api_dependency)
-      |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcpo/main.py", line 258, in create_dynamic_endpoints
-      |     result = await session.initialize()
-      |              ^^^^^^^^^^^^^^^^^^^^^^^^^^
-      |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcp/client/session.py", line 151, in initialize
-      |     result = await self.send_request(
-      |              ^^^^^^^^^^^^^^^^^^^^^^^^
-      |   File "/Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-packages/mcp/shared/session.py", line 286, in send_request
-      |     raise McpError(response_or_error.error)
-      | mcp.shared.exceptions.McpError: Connection closed
-      +------------------------------------
-2025-08-07 13:45:44,929 - ERROR - Failed to establish connection for server: 'javascript' - Multiple errors occurred:
-2025-08-07 13:45:44,929 - ERROR -   Error 1: ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
-2025-08-07 13:45:44,930 - INFO - Initiating connection for server: 'brave-search'...
-Brave Search MCP Server running on stdio
-2025-08-07 13:45:45,828 - INFO - Successfully connected to 'brave-search'.
-2025-08-07 13:45:45,828 - INFO - Initiating connection for server: 'filesystem'...
+2025-08-08 21:22:05,041 - INFO - Successfully connected to 'memory'.
+2025-08-08 21:22:05,041 - INFO - Initiating connection for server: 'filesystem'...
 Secure MCP Filesystem Server running on stdio
 Client does not support MCP Roots, using allowed directories set from server args: [ '/Users/peppi/Documents' ]
-2025-08-07 13:45:47,372 - INFO - Successfully connected to 'filesystem'.
-2025-08-07 13:45:47,372 - INFO - 
+2025-08-08 21:22:05,875 - INFO - Successfully connected to 'filesystem'.
+2025-08-08 21:22:05,875 - INFO - Initiating connection for server: 'browser-text'...
+2025-08-08 21:22:06,882 - INFO - Successfully connected to 'browser-text'.
+2025-08-08 21:22:06,882 - INFO - 
 --- Server Startup Summary ---
-2025-08-07 13:45:47,372 - INFO - Successfully connected to:
-2025-08-07 13:45:47,372 - INFO -   - memory
-2025-08-07 13:45:47,372 - INFO -   - brave-search
-2025-08-07 13:45:47,372 - INFO -   - filesystem
-2025-08-07 13:45:47,372 - WARNING - Failed to connect to:
-2025-08-07 13:45:47,372 - WARNING -   - javascript
-2025-08-07 13:45:47,372 - INFO - --------------------------
+2025-08-08 21:22:06,882 - INFO - Successfully connected to:
+2025-08-08 21:22:06,882 - INFO -   - memory
+2025-08-08 21:22:06,882 - INFO -   - filesystem
+2025-08-08 21:22:06,882 - INFO -   - browser-text
+2025-08-08 21:22:06,882 - INFO - --------------------------
 
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:3001 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://127.0.0.1:3001 (Press CTRL+C to quit)
 Starting MCP OpenAPI Proxy with config file: mcp.json
-INFO:     127.0.0.1:64958 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64958 - "GET /javascript/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64958 - "GET /brave-search/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64958 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
-2025-08-07 13:48:13,185 - INFO - Calling endpoint: search_nodes, with args: {'query': 'favorite number'}
-INFO:     127.0.0.1:65022 - "POST /memory/search_nodes HTTP/1.1" 200 OK
-2025-08-07 13:48:35,111 - INFO - Calling endpoint: delete_entities, with args: {'entityNames': ['Favorite Number']}
-INFO:     127.0.0.1:65047 - "POST /memory/delete_observations HTTP/1.1" 422 Unprocessable Entity
-INFO:     127.0.0.1:65046 - "POST /memory/delete_entities HTTP/1.1" 200 OK
-2025-08-07 13:48:56,141 - INFO - Calling endpoint: search_nodes, with args: {'query': 'dog name'}
-INFO:     127.0.0.1:65072 - "POST /memory/search_nodes HTTP/1.1" 200 OK
-2025-08-07 13:49:43,388 - INFO - Calling endpoint: search_nodes, with args: {'query': 'favorite quote'}
-INFO:     127.0.0.1:65131 - "POST /memory/search_nodes HTTP/1.1" 200 OK
-2025-08-07 13:49:58,575 - INFO - Calling endpoint: search_nodes, with args: {'query': 'quote'}
-INFO:     127.0.0.1:65155 - "POST /memory/search_nodes HTTP/1.1" 200 OK
-2025-08-07 14:18:04,402 - INFO - 
-Received SIGINT, initiating graceful shutdown...
-2025-08-07 14:18:04,403 - INFO - Initiating server shutdown...
-2025-08-07 14:18:04,403 - INFO - Server shutdown complete
+INFO:     127.0.0.1:57148 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57148 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57148 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57474 - "GET /memory/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57474 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57474 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK

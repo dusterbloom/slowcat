@@ -23,6 +23,7 @@ export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactiv
   const [useReducedMotion, setUseReducedMotion] = useState(false);
   const [forceFallback, setForceFallback] = useState(false);
   const [cpuOverloaded, setCpuOverloaded] = useState(false);
+  const [qualityLevel, setQualityLevel] = useState<'high' | 'medium' | 'low'>('medium'); // Start with medium quality
 
   // Read env var to force disable WebGL
   useEffect(() => {
@@ -33,11 +34,14 @@ export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactiv
 
   // Note: Low power mode is now controlled by parent component
 
-  // Simple FPS/performance monitor
+  // Enhanced FPS monitor with adaptive quality
   useEffect(() => {
+    if (isLowPowerMode) return; // Skip monitoring in low power mode
+    
     let lastTime = performance.now();
     let frames = 0;
     let slowFrames = 0;
+    let goodFrames = 0;
     let monitoring = true;
 
     function monitor(now: number) {
@@ -47,14 +51,43 @@ export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactiv
         const fps = (frames * 1000) / delta;
         frames = 0;
         lastTime = now;
-        if (fps < 20) {
+        
+        // Adaptive quality based on FPS
+        if (fps < 15) {
           slowFrames++;
+          goodFrames = 0;
+          // Downgrade quality after 2 seconds of poor performance
+          if (slowFrames >= 2) {
+            if (qualityLevel === 'high') {
+              setQualityLevel('medium');
+              console.log('📉 Reducing WebGL quality to medium (FPS:', fps, ')');
+            } else if (qualityLevel === 'medium') {
+              setQualityLevel('low');
+              console.log('📉 Reducing WebGL quality to low (FPS:', fps, ')');
+            } else if (slowFrames >= 5) {
+              // If still struggling after 5 seconds on low, fallback
+              setCpuOverloaded(true);
+              console.log('🔌 Switching to fallback renderer (FPS:', fps, ')');
+            }
+            slowFrames = 0;
+          }
+        } else if (fps > 30) {
+          goodFrames++;
+          slowFrames = 0;
+          // Upgrade quality after 5 seconds of good performance
+          if (goodFrames >= 5) {
+            if (qualityLevel === 'low') {
+              setQualityLevel('medium');
+              console.log('📈 Increasing WebGL quality to medium (FPS:', fps, ')');
+            } else if (qualityLevel === 'medium' && fps > 50) {
+              setQualityLevel('high');
+              console.log('📈 Increasing WebGL quality to high (FPS:', fps, ')');
+            }
+            goodFrames = 0;
+          }
         } else {
           slowFrames = 0;
-        }
-        // If FPS stays too low for several seconds, switch
-        if (slowFrames >= 3) {
-          setCpuOverloaded(true);
+          goodFrames = 0;
         }
       }
       if (monitoring) requestAnimationFrame(monitor);
@@ -63,7 +96,7 @@ export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactiv
     return () => {
       monitoring = false;
     };
-  }, []);
+  }, [qualityLevel, isLowPowerMode]);
   const containerRef = useRef<HTMLDivElement>(null);
   const intersectionRef = useRef<IntersectionObserver | null>(null);
 
@@ -115,7 +148,8 @@ export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactiv
   const shouldShowFallback = !PlasmaVisualizer || useReducedMotion || forceFallback || cpuOverloaded || isLowPowerMode;
   // === Throttled render loop control for WebGL plasma ===
   const lastRenderTimeRef = useRef<number>(0);
-  const TARGET_FPS: number = 15; // desired frames per second
+  // Adaptive frame rate based on quality level
+  const TARGET_FPS: number = qualityLevel === 'high' ? 30 : qualityLevel === 'medium' ? 20 : 10;
   const FRAME_INTERVAL: number = 1000 / TARGET_FPS;
   useEffect(() => {
     if (!PlasmaVisualizer || shouldShowFallback) return;
@@ -149,17 +183,27 @@ export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactiv
     >
       {isVisible ? (
         PlasmaVisualizer ? (
-          <PlasmaVisualizer
-            state="connected"
-            style={{
-              backgroundColor: isDarkMode ? 'black' : 'white',
-              // Lower resolution rendering hint
-              width: '100%',
-              height: '100%',
-              imageRendering: 'pixelated',
-              filter: 'blur(0.5px)',
-            }}
-          />
+          <div style={{
+            width: '100%',
+            height: '100%',
+            transform: qualityLevel === 'low' ? 'scale(1.5)' : qualityLevel === 'medium' ? 'scale(1.2)' : 'none',
+            transformOrigin: 'center',
+          }}>
+            <PlasmaVisualizer
+              state="connected"
+              style={{
+                backgroundColor: isDarkMode ? 'black' : 'white',
+                width: qualityLevel === 'low' ? '66%' : qualityLevel === 'medium' ? '83%' : '100%',
+                height: qualityLevel === 'low' ? '66%' : qualityLevel === 'medium' ? '83%' : '100%',
+                // Performance optimizations
+                imageRendering: qualityLevel === 'low' ? 'pixelated' : 'auto',
+                filter: qualityLevel === 'low' ? 'blur(1px)' : qualityLevel === 'medium' ? 'blur(0.5px)' : 'none',
+                willChange: 'transform',
+                transform: 'translateZ(0)', // Force GPU acceleration
+                backfaceVisibility: 'hidden',
+              }}
+            />
+          </div>
         ) : (
           <FallbackPlasma isDarkMode={isDarkMode} />
         )

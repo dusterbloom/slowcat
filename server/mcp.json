@@ -10,25 +10,6 @@
         "MEMORY_FILE_PATH": "/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json"
       }
     },
-    "javascript": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-javascript"
-      ],
-      "env": {}
-    },
-    "brave-search": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-brave-search"
-      ],
-      "env": {
-        "BRAVE_API_KEY": "BSA_ub-QWNbtzxd8jv4_YL4S2q0Fap8"
-      }
-    },
-
     "filesystem": {
       "command": "npx",
       "args": [
@@ -37,6 +18,16 @@
         "/Users/peppi/Documents"
       ],
       "env": {}
+    },
+    "browser-text": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest",
+        "--caps",
+        "text",
+        "--browser",
+        "chrome"
+      ]
     }
   }
 }

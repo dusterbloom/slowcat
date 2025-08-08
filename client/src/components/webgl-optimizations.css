@@ -1,0 +1,53 @@
+/* WebGL Performance Optimizations for Mac */
+
+/* Force hardware acceleration */
+.plasma-dark,
+.plasma-light {
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  perspective: 1000px;
+  -webkit-perspective: 1000px;
+}
+
+/* Optimize canvas rendering */
+canvas {
+  image-rendering: optimizeSpeed;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: optimize-contrast;
+  -ms-interpolation-mode: nearest-neighbor;
+}
+
+/* Low quality mode optimizations */
+.quality-low canvas {
+  image-rendering: pixelated;
+  filter: blur(1px);
+}
+
+/* Medium quality mode */
+.quality-medium canvas {
+  filter: blur(0.5px);
+}
+
+/* Disable animations when not visible */
+.plasma-dark:not(:hover),
+.plasma-light:not(:hover) {
+  animation-play-state: paused;
+}
+
+/* Reduce render complexity on older Macs */
+@media (max-resolution: 1dppx) {
+  canvas {
+    filter: blur(0.5px);
+  }
+}
+
+/* Fallback for high CPU usage */
+@supports not (backdrop-filter: blur()) {
+  .plasma-dark,
+  .plasma-light {
+    background: linear-gradient(45deg, #000, #333);
+  }
+}

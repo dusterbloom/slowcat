@@ -22,7 +22,7 @@ type AppState = "idle" | "connecting" | "connected" | "disconnected";
 
 export function VoiceApp({ videoEnabled }: VoiceAppProps) {
   const [showDebugUI, setShowDebugUI] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [isLowPowerMode, setIsLowPowerMode] = useState(false);
   const [client, setClient] = useState<PipecatClient | null>(null);
   const [appState, setAppState] = useState<AppState>("idle");
@@ -34,6 +34,13 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
   const [conversationHistory, setConversationHistory] = useState<Array<{role: 'user' | 'assistant', text: string}>>([]);
   const [wasConnected, setWasConnected] = useState(false); // Track if we were ever connected
   const [autoReconnectAttempts, setAutoReconnectAttempts] = useState(0);
+  const [showPerformanceMonitor, setShowPerformanceMonitor] = useState(false);
+  const [performanceStats, setPerformanceStats] = useState({
+    fps: 0,
+    memoryUsage: 0,
+    cpuTemp: 0,
+    isWebGLActive: false
+  });
 
   useEffect(() => {
     // Initialize PipecatClient
@@ -116,6 +123,53 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
       return () => clearTimeout(reconnectTimeout);
     }
   }, [appState, wasConnected, autoReconnectAttempts]);
+
+  // Performance monitoring
+  useEffect(() => {
+    if (!showPerformanceMonitor) return;
+
+    let frameCount = 0;
+    let lastTime = performance.now();
+    let monitoring = true;
+
+    const updatePerformance = () => {
+      frameCount++;
+      const now = performance.now();
+      
+      // Update FPS every second
+      if (now - lastTime >= 1000) {
+        const fps = Math.round((frameCount * 1000) / (now - lastTime));
+        
+        // Get memory usage (if available)
+        const memoryInfo = (performance as any).memory;
+        const memoryUsage = memoryInfo ? Math.round(memoryInfo.usedJSHeapSize / 1048576) : 0; // MB
+        
+        // Simply check if we're NOT in low power mode to determine if WebGL should be active
+        // Don't try to access canvas context as it causes conflicts with THREE.js
+        const isWebGLActive = !isLowPowerMode && !!document.querySelector('canvas');
+
+        setPerformanceStats({
+          fps,
+          memoryUsage,
+          cpuTemp: 0, // Browser can't access CPU temp directly
+          isWebGLActive
+        });
+
+        frameCount = 0;
+        lastTime = now;
+      }
+
+      if (monitoring) {
+        requestAnimationFrame(updatePerformance);
+      }
+    };
+
+    requestAnimationFrame(updatePerformance);
+
+    return () => {
+      monitoring = false;
+    };
+  }, [showPerformanceMonitor]);
 
   const handleConnect = async () => {
     if (!client || (appState !== "idle" && appState !== "disconnected")) return;
@@ -298,6 +352,22 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                 <span className="text-sm">{isDarkMode ? '☀' : '☽'}</span>
               </button>
               <button
+                onClick={() => setShowPerformanceMonitor(!showPerformanceMonitor)}
+                className={`
+                  px-4 py-2 rounded-full transition-all duration-500 flex items-center gap-2
+                  ${isDarkMode 
+                    ? (showPerformanceMonitor ? 'bg-white text-black' : 'bg-white/90 hover:bg-white text-black')
+                    : (showPerformanceMonitor ? 'bg-black text-white' : 'bg-black/90 hover:bg-black text-white')}
+                  hover:scale-[1.02] active:scale-[0.98] transform
+                `}
+                title="Toggle performance monitor"
+              >
+                <span className="text-sm">📊</span>
+                <span className="font-light text-xs tracking-[0.15em] uppercase">
+                  Perf
+                </span>
+              </button>
+              <button
                 onClick={() => setIsLowPowerMode(!isLowPowerMode)}
                 className={`
                   px-4 py-2 rounded-full transition-all duration-500 flex items-center gap-2
@@ -429,6 +499,56 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
 
           {/* Voice-reactive PlasmaVisualizer background - PURE, NO OVERLAYS */}
           <VoiceReactivePlasma isDarkMode={isDarkMode} isLowPowerMode={isLowPowerMode} />
+
+          {/* Performance Monitor Overlay */}
+          {showPerformanceMonitor && (
+            <div className="absolute top-20 left-6 z-50">
+              <div className={`
+                px-4 py-3 rounded-lg backdrop-blur-sm transition-all duration-500 text-xs
+                ${isDarkMode 
+                  ? 'bg-black/80 border border-white/20 text-white' 
+                  : 'bg-white/80 border border-black/20 text-black'}
+              `}>
+                <div className="font-bold tracking-wide uppercase mb-2">⚡ Performance Monitor</div>
+                <div className="space-y-1 font-mono">
+                  <div className="flex justify-between gap-4">
+                    <span>FPS:</span>
+                    <span className={`font-bold ${
+                      performanceStats.fps >= 30 ? 'text-green-500' : 
+                      performanceStats.fps >= 15 ? 'text-yellow-500' : 'text-red-500'
+                    }`}>
+                      {performanceStats.fps}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span>Memory:</span>
+                    <span className={`font-bold ${
+                      performanceStats.memoryUsage < 100 ? 'text-green-500' : 
+                      performanceStats.memoryUsage < 200 ? 'text-yellow-500' : 'text-red-500'
+                    }`}>
+                      {performanceStats.memoryUsage}MB
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span>WebGL:</span>
+                    <span className={`font-bold ${performanceStats.isWebGLActive ? 'text-blue-500' : 'text-gray-500'}`}>
+                      {performanceStats.isWebGLActive ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+                  <div className="border-t border-opacity-20 pt-2 mt-2">
+                    <div className="text-xs opacity-70">
+                      {performanceStats.fps < 15 && performanceStats.isWebGLActive && 
+                        '⚠️ Low FPS detected - consider Low Power mode'}
+                      {performanceStats.memoryUsage > 200 && 
+                        '⚠️ High memory usage detected'}
+                      {!performanceStats.isWebGLActive && 
+                        '✅ Using fallback renderer'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
 

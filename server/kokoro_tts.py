@@ -232,11 +232,25 @@ class KokoroTTSService(TTSService):
         Yields:
             Frame: Audio frames containing the synthesized speech and status frames.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
+        # Sanitize text for TTS to remove emojis and special characters
+        try:
+            from tools.text_formatter import sanitize_for_voice
+            sanitized_text = sanitize_for_voice(text)
+            
+            # Log sanitization if text was changed
+            if sanitized_text != text:
+                logger.warning(f"🧹 TTS SANITIZATION: '{text[:50]}...' -> '{sanitized_text[:50]}...'")
+            else:
+                logger.info(f"✅ TTS text already clean: '{text[:50]}...'")
+        except Exception as e:
+            logger.error(f"❌ TTS sanitization failed: {e}")
+            sanitized_text = text
+        
+        logger.debug(f"{self}: Generating TTS [{sanitized_text}]")
 
         try:
             await self.start_ttfb_metrics()
-            await self.start_tts_usage_metrics(text)
+            await self.start_tts_usage_metrics(sanitized_text)
 
             yield TTSStartedFrame()
 
@@ -246,7 +260,7 @@ class KokoroTTSService(TTSService):
             # Start generation in background thread
             loop = asyncio.get_event_loop()
             generation_task = loop.run_in_executor(
-                self._executor, self._generate_audio_streaming, text, chunk_queue
+                self._executor, self._generate_audio_streaming, sanitized_text, chunk_queue
             )
 
             # Stream chunks as they become available
@@ -294,7 +308,7 @@ class KokoroTTSService(TTSService):
             logger.error(f"Error in run_tts: {e}")
             yield ErrorFrame(error=str(e))
         finally:
-            logger.debug(f"{self}: Finished TTS [{text}]")
+            logger.debug(f"{self}: Finished TTS [{sanitized_text}]")
             await self.stop_processing_metrics()
             yield TTSStoppedFrame()
 
