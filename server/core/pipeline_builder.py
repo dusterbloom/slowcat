@@ -273,8 +273,8 @@ class PipelineBuilder:
         audio_tee.register_audio_consumer(voice_recognition.process_audio_frame)
         processors['audio_tee'] = audio_tee
         
-        # VAD bridge
-        vad_bridge = VADEventBridge()
+        # VAD bridge with smart turn management
+        vad_bridge = VADEventBridge(enable_smart_turn_management=config.audio.enable_smart_turn_management)
         vad_bridge.set_callbacks(
             voice_recognition.on_user_started_speaking,
             voice_recognition.on_user_stopped_speaking

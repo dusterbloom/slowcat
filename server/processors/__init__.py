@@ -9,6 +9,7 @@ from .memory_context_injector import MemoryContextInjector
 from .greeting_filter import GreetingFilterProcessor
 from .message_deduplicator import MessageDeduplicator 
 from .dj_mode_config_handler import DJModeConfigHandler
+from .smart_turn_manager import SmartTurnManager
 
 
-__all__ = ["AudioTeeProcessor", "VADEventBridge", "SpeakerContextProcessor", "VideoSamplerProcessor", "SpeakerNameManager", "LocalMemoryProcessor", "MemoryContextInjector", "GreetingFilterProcessor", "MessageDeduplicator", "DJModeConfigHandler"]
+__all__ = ["AudioTeeProcessor", "VADEventBridge", "SpeakerContextProcessor", "VideoSamplerProcessor", "SpeakerNameManager", "LocalMemoryProcessor", "MemoryContextInjector", "GreetingFilterProcessor", "MessageDeduplicator", "DJModeConfigHandler", "SmartTurnManager"]

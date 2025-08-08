@@ -27,9 +27,12 @@ class AudioConfig:
     tts_sample_rate: int = 24000
     stt_sample_rate: int = 16000  # Fixed for Resemblyzer
     
-    # VAD parameters - Optimized for ultra-low latency
-    vad_stop_secs: float = 0.08  # Reduced from 0.15s for 70ms faster STT trigger
-    vad_start_secs: float = 0.05  # Reduced from 0.1s for 50ms faster voice detection
+    # VAD parameters - Balanced for natural conversation flow
+    vad_stop_secs: float = 0.4   # Increased to allow natural pauses (was 0.08s)
+    vad_start_secs: float = 0.05  # Keep responsive speech detection
+    
+    # Smart turn management
+    enable_smart_turn_management: bool = field(default_factory=lambda: os.getenv("ENABLE_SMART_TURN_MANAGEMENT", "true").lower() == "true")
     
     # Audio processing
     audio_normalization_factor: float = 32768.0
