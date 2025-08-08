@@ -1,0 +1,78 @@
+name: Security & Quality Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'server/**'
+  push:
+    branches: [ main ]
+    paths:
+      - 'server/**'
+
+jobs:
+  security-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        cd server
+        pip install -r requirements.txt
+        pip install bandit semgrep
+        
+    - name: Syntax Check
+      run: |
+        cd server
+        python -m py_compile bot_v2.py config_minimal.py file_tools.py services/simple_mcp_tool_manager.py
+        
+    - name: Security Scan - Hardcoded Secrets
+      run: |
+        cd server
+        # Should find NO hardcoded secrets after our fixes
+        ! grep -r "slowcat-secret" . || (echo "❌ Hardcoded secrets found!" && exit 1)
+        echo "✅ No hardcoded secrets detected"
+        
+    - name: Security Scan - File Access
+      run: |
+        cd server
+        # Should find NO "." in default allowed_dirs after our fixes
+        ! grep -A5 -B5 'allowed_dirs.*\"\.\\"' . || (echo "❌ Repo root access detected!" && exit 1)
+        echo "✅ File access properly restricted"
+        
+    - name: Test Component Isolation
+      run: |
+        cd server
+        export MCPO_API_KEY="test-key"
+        python -c "
+        from config import config
+        from config_minimal import MinimalConfig
+        original = config.get_language_config
+        minimal = MinimalConfig().apply_to_config(config)
+        assert config.get_language_config != original, 'Config not applied'
+        minimal.restore_original()
+        assert config.get_language_config == original, 'Config not restored'
+        print('✅ No global side effects detected')
+        "
+        
+    - name: Test Environment Variables
+      run: |
+        cd server
+        export MCPO_API_KEY=""
+        python -c "
+        import asyncio
+        from services.simple_mcp_tool_manager import SimpleMCPToolManager
+        async def test():
+            manager = SimpleMCPToolManager()
+            result = await manager._probe_mcpo_server('test', 'http://test')
+            assert 'error' in result, 'Should fail without API key'
+            print('✅ API key requirement working')
+        asyncio.run(test())
+        "
