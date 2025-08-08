@@ -108,15 +108,15 @@ class LLMWithToolsService(OpenAILLMService):
         """
         Determine if a tool should be routed to MCP or handled locally
         
-        Local tools: calculate, music_*, *_timed_task, get_current_time
-        MCP tools: memory_*, filesystem_*, brave_*, browser_*, run_javascript, etc.
+        Local tools: calculate, extract_url_text, music_*, *_timed_task, get_current_time
+        MCP tools: memory_*, filesystem_*, browser_*, run_javascript, etc.
         """
         if not self._mcp_tool_manager:
             return False
             
         # Local-only tools (as specified by user)
         local_tools = {
-            "calculate", "get_current_time",
+            "calculate", "get_current_time", "extract_url_text",
             "play_music", "pause_music", "skip_song", "stop_music", 
             "queue_music", "search_music", "get_now_playing", 
             "set_volume", "create_playlist", "get_music_stats",
@@ -370,75 +370,12 @@ class LLMWithToolsService(OpenAILLMService):
                 logger.info(f"👤 Last user message: {msg.get('content', '')[:100]}...")
                 break
         
+        # Get stream from parent
         stream = await super()._stream_chat_completions(context)
-
-        async def feedback_stream():
-            tool_call_detected = False
-            content_buffer = ""
-            response_chunks = []
-            
-            import datetime
-            import openai
-            try:
-                async for chunk in stream:
-                    # 🔍 DEBUG: Log each chunk timestamp for gap analysis
-                    # logger.debug(f"📅 Chunk received at {datetime.datetime.utcnow().isoformat()}Z")
-                    if hasattr(chunk, 'choices') and chunk.choices:
-                        choice = chunk.choices[0]
-                    chunk_info = {}
-                    
-                    if hasattr(choice, 'delta'):
-                        delta = choice.delta
-                        if hasattr(delta, 'content') and delta.content:
-                            chunk_info['content'] = delta.content
-                        if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                            tool_calls_info = []
-                            for tc in delta.tool_calls:
-                                tc_info = {'id': getattr(tc, 'id', None)}
-                                if hasattr(tc, 'function'):
-                                    tc_info['function'] = {
-                                        'name': getattr(tc.function, 'name', None),
-                                        'arguments': getattr(tc.function, 'arguments', None)
-                                    }
-                                tool_calls_info.append(tc_info)
-                            chunk_info['tool_calls'] = tool_calls_info
-                    
-                    if chunk_info:
-                        response_chunks.append(chunk_info)
-                        # logger.debug(f"📥 LM Studio Chunk: {chunk_info}")
-                        
-                        # Handle tool call feedback
-                        if 'tool_calls' in chunk_info and not tool_call_detected:
-                            tool_call_detected = True
-                            try:
-                                # Get the first function name to create a generic response
-                                first_tool = chunk_info['tool_calls'][0]
-                                function_name = first_tool['function']['name']
-                                if function_name:
-                                    logger.info(f"🔧 Tool call detected: {function_name}")
-                                    feedback_text = "Just a moment."
-                                    if "search" in function_name or "browse" in function_name:
-                                        feedback_text = "Searching for that."
-                                    elif "weather" in function_name:
-                                        feedback_text = "Tic tac ... tic tac ... tic ... tac "
-                                    elif "calculate" in function_name:
-                                        feedback_text = "Calculating that for you."
-                                    
-                                    logger.info(f"🎤 Pushing immediate TTS feedback for tool call: '{feedback_text}'")
-                                    await self.push_frame(TextFrame(feedback_text))
-                            except (KeyError, IndexError, AttributeError) as e:
-                                logger.warning(f"Could not extract function name for immediate feedback: {e}")
-                        
-                        # Accumulate content
-                        if 'content' in chunk_info:
-                            content_buffer += chunk_info['content']
-                    yield chunk
-            except openai.APIError as api_err:
-                logger.error(f"❌ Streaming APIError caught in feedback_stream: {api_err}")
-            except Exception as e:
-                logger.exception(f"❌ Unexpected error during feedback_stream: {e}")
-
-        return feedback_stream()
+        
+        # For now, just return the parent stream to fix the async bug
+        # TODO: Re-add tool call feedback functionality later
+        return stream
     
     async def process_frame(self, frame: Frame, direction=None):
         """Override to intercept and parse custom tool call formats"""

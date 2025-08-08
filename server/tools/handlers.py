@@ -674,7 +674,7 @@ class ToolHandlers:
             logger.error(f"Error in calculate: {e}")
             return {"error": str(e)}
     
-    async def trafiletto(self, url: str, max_chars: int = 2000) -> Dict[str, Any]:
+    async def extract_url_text(self, url: str, max_chars: int = 2000) -> Dict[str, Any]:
         """
         Extract clean, readable text from web pages using trafilatura
         Perfect for voice responses - returns clean text without markup
@@ -733,7 +733,7 @@ class ToolHandlers:
         except ImportError:
             return {"error": "trafilatura package not installed. Please install with: pip install trafilatura"}
         except Exception as e:
-            logger.error(f"Error in trafiletto: {e}")
+            logger.error(f"Error in extract_url_text: {e}")
             return {"error": str(e)}
     
     def _sanitize_text_for_voice(self, text: str) -> str:
@@ -958,8 +958,8 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await tool_handlers.get_current_time(**arguments)
     elif function_name == "calculate":
         return await tool_handlers.calculate(**arguments)
-    elif function_name == "trafiletto":
-        return await tool_handlers.trafiletto(**arguments)
+    elif function_name == "extract_url_text":
+        return await tool_handlers.extract_url_text(**arguments)
     # Timed task tools (app state management)
     elif function_name == "start_timed_task":
         from .time_tools import start_timed_task

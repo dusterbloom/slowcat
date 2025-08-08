@@ -32,8 +32,8 @@ GET_CURRENT_TIME = FunctionSchema(
 # - search_web -> handled by brave_web_search MCP server  
 
 # Clean web text extraction tool (local)
-TRAFILETTO = FunctionSchema(
-    name="trafiletto",
+EXTRACT_URL_TEXT = FunctionSchema(
+    name="extract_url_text",
     description="Extract clean, readable text from web pages - perfect for voice responses",
     properties={
         "url": {
@@ -260,7 +260,7 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     CALCULATE,
     
     # Clean web text extraction (voice-optimized)
-    TRAFILETTO,
+    EXTRACT_URL_TEXT,
     
     # Timed task execution (app state)
     START_TIMED_TASK,

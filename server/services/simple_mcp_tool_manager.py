@@ -165,8 +165,7 @@ class SimpleMCPToolManager:
         
         # Check for required environment variables based on mcp.json
         required_env = {
-            "BRAVE_API_KEY": "brave-search server",  # Use BRAVE_API_KEY to match mcp.json
-            # Add other env vars as needed
+            # Add other env vars as needed if MCP servers require them
         }
         
         for env_var, description in required_env.items():
@@ -332,18 +331,6 @@ class SimpleMCPToolManager:
         """Minimal static fallback tools based on expected MCP servers"""
         return {
             # Based on mcp.json servers - these are minimal placeholders
-            "brave_web_search": {
-                "name": "brave_web_search",
-                "description": "Search the web using Brave Search API",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query"}
-                    },
-                    "required": ["query"]
-                },
-                "mcp_server": "brave-search"
-            },
             "memory_create_entities": {
                 "name": "memory_create_entities",
                 "description": "Create and store entities in memory", 
@@ -478,9 +465,7 @@ class SimpleMCPToolManager:
     
     async def _call_static_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Call our working static tool implementations"""
-        if tool_name == "brave_web_search":
-            return await self._call_brave_search(params)
-        elif tool_name == "memory_create_entities":
+        if tool_name == "memory_create_entities":
             return await self._call_memory_create_entities(params)
         elif tool_name.startswith("memory_"):
             return await self._call_memory_tool(tool_name, params)
@@ -516,7 +501,6 @@ class SimpleMCPToolManager:
             # Map server name to correct endpoint path
             server_path_map = {
                 "memory": "memory",
-                "brave-search": "brave-search", 
                 "filesystem": "filesystem"
             }
             server_path = server_path_map.get(server_name, server_name)
@@ -538,10 +522,6 @@ class SimpleMCPToolManager:
                         
                         # 🔥 SMART RESPONSE FILTERING - prevent huge responses from breaking voice
                         result = self._filter_large_response(tool_name, result)
-                        
-                        # 🎯 SEARCH RESULT FORMATTING - add clickable links for UI
-                        if tool_name == 'brave_web_search' and isinstance(result, dict):
-                            result = self._format_brave_search_response(result)
                         
                         return result
                     else:
@@ -651,64 +631,6 @@ class SimpleMCPToolManager:
                 
         return clean_text[:2000] + "\n\n[Content filtered for readability]"
     
-    async def _call_brave_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Call Brave Search directly with API"""
-        try:
-            import aiohttp
-            api_key = os.getenv('BRAVE_API_KEY')
-            from loguru import logger
-            logger.warning(f"[DEBUG] Environment BRAVE_API_KEY value: {repr(api_key)}")
-            if api_key:
-                logger.debug(f"BRAVE_API_KEY loaded with prefix: {api_key[:4]}... (length {len(api_key)})")
-            else:
-                logger.warning("BRAVE_API_KEY not found in environment variables")
-            if not api_key:
-                return {"error": "Brave API key not found"}
-            
-            query = params.get('query', '')
-            if not query:
-                return {"error": "No search query provided"}
-            
-            logger.info(f"🔍 Brave Search: {query}")
-            
-            session = await self._get_http_session()
-            url = "https://api.search.brave.com/res/v1/web/search"
-            headers = {
-                "X-Subscription-Token": api_key,
-                "Accept": "application/json"
-            }
-            search_params = {"q": query, "count": 3}
-            
-            async with session.get(url, headers=headers, params=search_params) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        results = []
-                        
-                        for result in data.get("web", {}).get("results", [])[:3]:
-                            results.append({
-                                "title": result.get("title", ""),
-                                "snippet": result.get("description", ""),
-                                "url": result.get("url", "")
-                            })
-                        
-                        # Format with dual-context response immediately
-                        from tools.text_formatter import create_search_response
-                        formatted_response = create_search_response(query, results)
-                        
-                        return {
-                            "ui_formatted": formatted_response["ui_formatted"],  # HTML links for UI
-                            "voice_summary": formatted_response["voice_summary"],  # Clean text for TTS
-                            "result_count": len(results),
-                            "query": query,
-                            "raw_results": results  # Original data for compatibility
-                        }
-                    else:
-                        error_text = await resp.text()
-                        return {"error": f"Brave Search API error: {error_text}"}
-                        
-        except Exception as e:
-            logger.error(f"Brave Search error: {e}")
-            return {"error": str(e)}
     
     async def _call_memory_create_entities(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create memory entities in JSONL format"""
@@ -778,101 +700,6 @@ class SimpleMCPToolManager:
         logger.info(f"📁 Filesystem tool {tool_name} called")
         return {"success": f"Filesystem operation {tool_name} completed", "params": params}
     
-    def _format_brave_search_response(self, response) -> dict:
-        """Parse and format brave search response from MCPO server"""
-        try:
-            from tools.text_formatter import create_search_response
-            
-            # First check if response has 'result' field (MCPO format)
-            if isinstance(response, dict) and 'result' in response:
-                inner_result = response['result']
-                # Handle different inner result formats
-                if isinstance(inner_result, str):
-                    # Parse the raw text response format from brave-search MCP server
-                    search_results = self._parse_brave_text_response(inner_result)
-                elif isinstance(inner_result, list):
-                    # Already structured format
-                    search_results = inner_result
-                elif isinstance(inner_result, dict) and 'results' in inner_result:
-                    # Wrapped in results field
-                    search_results = inner_result['results']
-                else:
-                    search_results = inner_result
-            # Handle direct response formats
-            elif isinstance(response, str):
-                # Parse the raw text response format from brave-search MCP server
-                search_results = self._parse_brave_text_response(response)
-            elif isinstance(response, list):
-                # Already structured format
-                search_results = response
-            elif isinstance(response, dict) and 'results' in response:
-                # Wrapped in results field
-                search_results = response['results']
-            else:
-                logger.warning(f"Unknown brave search response format: {type(response)}")
-                return response
-            
-            if not search_results:
-                return response
-            
-            # Use our dual-context formatter
-            formatted_response = create_search_response("search query", search_results)
-            
-            return {
-                "ui_formatted": formatted_response["ui_formatted"],  # Clean HTML links
-                "voice_summary": formatted_response["voice_summary"],  # Clean TTS text  
-                "result_count": len(search_results),
-                "raw_results": search_results  # Keep original for compatibility
-            }
-            
-        except Exception as e:
-            logger.warning(f"Failed to format brave search response: {e}")
-            return response  # Return original on error
-    
-    def _parse_brave_text_response(self, text_response: str) -> list:
-        """Parse brave search text response into structured format"""
-        results = []
-        
-        # Split by double newlines to separate results
-        sections = text_response.split('\n\n')
-        
-        for section in sections:
-            if not section.strip():
-                continue
-                
-            lines = [line.strip() for line in section.split('\n') if line.strip()]
-            
-            # Look for Title:, Description:, URL: pattern
-            title = ""
-            description = ""
-            url = ""
-            
-            for line in lines:
-                if line.startswith('Title: '):
-                    title = line[7:].strip()
-                elif line.startswith('Description: '):
-                    description = line[13:].strip()
-                elif line.startswith('URL: '):
-                    url = line[5:].strip()
-                elif '://' in line and not title and not description:
-                    # Might be a URL-only line
-                    url = line.strip()
-                elif not title and line and not line.startswith(('http', 'URL:')):
-                    # First non-URL line might be title
-                    title = line
-                elif not description and line != title and not line.startswith(('http', 'URL:')):
-                    # Second line might be description
-                    description = line
-            
-            # Add result if we have at least a URL or title
-            if url or title:
-                results.append({
-                    'title': title or 'Search Result',
-                    'snippet': description or 'No description available',
-                    'url': url or ''
-                })
-        
-        return results
     
     async def _call_browser_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle browser operations"""
@@ -915,7 +742,6 @@ class SimpleMCPToolManager:
             # Use MCPO proxy URL instead of raw server URL
             server_path_map = {
                 "memory": "memory",
-                "brave-search": "brave-search", 
                 "filesystem": "filesystem",
                 "javascript": "javascript"
             }
