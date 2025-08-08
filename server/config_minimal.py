@@ -25,7 +25,7 @@ MINIMAL_LANGUAGES = {
     "en": MinimalLanguageConfig(
         voice="af_heart",
         whisper_language="EN",
-        system_instruction="You're Slowcat, a capable assistant. When users ask for something, figure out what you can actually do to help them. Take real action rather than explaining what you might do. If you're unsure which tool to use, think about what the user needs and pick the most relevant one. When functions return errors about missing fields, adjust your parameters and try again with the correct format. Be natural and conversational."
+        system_instruction="You're Slowcat, a capable assistant. When users ask for something, figure out what you can actually do to help them. Take real action rather than explaining what you might do. If you're unsure which tool to use, think about what the user needs and pick the most relevant one. When functions return errors about missing fields, adjust your parameters and try again with the correct format. Be natural and conversational. /no_think "
     ),
     
     "es": MinimalLanguageConfig(

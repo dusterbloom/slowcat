@@ -23,6 +23,7 @@ type AppState = "idle" | "connecting" | "connected" | "disconnected";
 export function VoiceApp({ videoEnabled }: VoiceAppProps) {
   const [showDebugUI, setShowDebugUI] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isLowPowerMode, setIsLowPowerMode] = useState(false);
   const [client, setClient] = useState<PipecatClient | null>(null);
   const [appState, setAppState] = useState<AppState>("idle");
   const [isMicEnabled, setIsMicEnabled] = useState(true);
@@ -31,7 +32,8 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
   const [fontSize, setFontSize] = useState('normal'); // 'small', 'normal', 'large'
   const [conversationHistory, setConversationHistory] = useState<Array<{role: 'user' | 'assistant', text: string}>>([]);
-  const [showControls, setShowControls] = useState(true);
+  const [wasConnected, setWasConnected] = useState(false); // Track if we were ever connected
+  const [autoReconnectAttempts, setAutoReconnectAttempts] = useState(0);
 
   useEffect(() => {
     // Initialize PipecatClient
@@ -51,9 +53,14 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
               case "ready":
               case "connected":
                 setAppState("connected");
+                setWasConnected(true);
+                setAutoReconnectAttempts(0); // Reset attempts on successful connection
                 break;
               case "disconnected":
               case "disconnecting":
+                // If we were connected before, show disconnected state, otherwise idle
+                setAppState(wasConnected ? "disconnected" : "idle");
+                break;
               default:
                 setAppState("idle");
                 break;
@@ -83,8 +90,35 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
     initClient();
   }, []);
 
+  // Auto-reconnection logic for kings 👑
+  useEffect(() => {
+    if (appState === "disconnected" && wasConnected && autoReconnectAttempts < 5) {
+      const delay = Math.min(1000 * Math.pow(2, autoReconnectAttempts), 10000); // Exponential backoff, max 10s
+      console.log(`🔄 Auto-reconnecting in ${delay}ms (attempt ${autoReconnectAttempts + 1}/5)...`);
+      
+      const reconnectTimeout = setTimeout(async () => {
+        if (appState === "disconnected") { // Still disconnected
+          setAutoReconnectAttempts(prev => prev + 1);
+          try {
+            // Ensure clean disconnect before reconnecting
+            if (client) {
+              client.disconnect();
+              // Small delay to ensure cleanup
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            await handleConnect();
+          } catch (error) {
+            console.error("Auto-reconnect failed:", error);
+          }
+        }
+      }, delay);
+
+      return () => clearTimeout(reconnectTimeout);
+    }
+  }, [appState, wasConnected, autoReconnectAttempts]);
+
   const handleConnect = async () => {
-    if (!client || appState !== "idle") return;
+    if (!client || (appState !== "idle" && appState !== "disconnected")) return;
     
     try {
       await client.connect({
@@ -181,8 +215,6 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
       <FullScreenContainer className={isDarkMode ? 'bg-black' : 'bg-white'}>
         <div 
           className={`relative w-full h-full group ${isDarkMode ? 'bg-black' : 'bg-white'}`}
-          onMouseEnter={() => setShowControls(true)}
-          onMouseLeave={() => setShowControls(false)}
         >
           {/* Invisible interaction areas for controls */}
           <div className="absolute inset-0 z-50">
@@ -235,15 +267,17 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
               <div className={`
                 px-4 py-2 rounded-full backdrop-blur-sm transition-all duration-500
                 ${isDarkMode 
-                  ? 'bg-transparent border border-white/30' 
-                  : 'bg-transparent border border-black/30'}
+                  ? 'bg-transparent border border-black/30' 
+                  : 'bg-transparent border border-white/30'}
               `}>
                 <span className={`
                   font-light text-xs tracking-[0.15em] uppercase
-                  ${isDarkMode ? 'text-white' : 'text-black'}
+                  ${isDarkMode ? 'text-black' : 'text-white'}
                 `}>
                   {appState === 'connected' ? '● Connected' : 
                    appState === 'connecting' ? '◐ Connecting' : 
+                   appState === 'disconnected' && autoReconnectAttempts > 0 ? `🔄 Reconnecting ${autoReconnectAttempts}/5` :
+                   appState === 'disconnected' ? '⚡ Disconnected' :
                    '○ Offline'}
                 </span>
               </div>
@@ -264,6 +298,24 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                 <span className="text-sm">{isDarkMode ? '☀' : '☽'}</span>
               </button>
               <button
+                onClick={() => setIsLowPowerMode(!isLowPowerMode)}
+                className={`
+                  px-4 py-2 rounded-full transition-all duration-500 flex items-center gap-2
+                  ${isDarkMode 
+                    ? (isLowPowerMode ? 'bg-white text-black' : 'bg-white/90 hover:bg-white text-black')
+                    : (isLowPowerMode ? 'bg-black text-white' : 'bg-black/90 hover:bg-black text-white')}
+                  hover:scale-[1.02] active:scale-[0.98] transform
+                `}
+                title={isLowPowerMode ? 'Disable low power mode' : 'Enable low power mode'}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-3 h-3">
+                  <path d="M16 4h-1V2h-6v2H8C6.9 4 6 4.9 6 6v14c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2z"/>
+                </svg>
+                <span className="font-light text-xs tracking-[0.15em] uppercase">
+                  {isLowPowerMode ? 'Low Power' : 'Normal'}
+                </span>
+              </button>
+              <button
                 onClick={() => setShowDebugUI(true)}
                 className={`
                   px-4 py-2 rounded-full transition-all duration-500
@@ -277,62 +329,78 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
               </button>
             </div>
 
-            {/* Bottom-left: Audio/Video controls - ALWAYS VISIBLE when connected */}
-            {appState === "connected" && (
+            {/* Bottom-left: Audio/Video controls - ALWAYS VISIBLE (even when disconnected) */}
+            {(appState === "connected" || appState === "disconnected") && (
               <div className="absolute bottom-6 left-6 flex gap-3">
                 <button
                   onClick={toggleMicrophone}
+                  disabled={appState !== "connected"}
                   className={`
                     px-4 py-2 rounded-full transition-all duration-300 flex items-center gap-2
+                    ${appState !== "connected" ? 'opacity-50 cursor-not-allowed' : ''}
                     ${isDarkMode 
                       ? (isMicEnabled ? 'bg-white/90 text-black' : 'bg-white/50 text-black/50') 
                       : (isMicEnabled ? 'bg-black/90 text-white' : 'bg-black/50 text-white/50')}
-                    hover:scale-[1.02] active:scale-[0.98] transform
+                    ${appState === "connected" ? 'hover:scale-[1.02] active:scale-[0.98] transform' : ''}
                   `}
                 >
                   <span className="text-sm">
-                    {isMicEnabled ? '🎤' : '🔇'}
+                    {appState !== "connected" ? '🔌' : (isMicEnabled ? '🎤' : '🔇')}
                   </span>
                   <span className="font-light text-xs tracking-[0.15em] uppercase">
-                    {isMicEnabled ? 'Mic On' : 'Mic Off'}
+                    {appState !== "connected" ? 'Disconnected' : (isMicEnabled ? 'Mic On' : 'Mic Off')}
                   </span>
                 </button>
                 
                 <button
                   onClick={toggleCamera}
+                  disabled={appState !== "connected"}
                   className={`
                     px-4 py-2 rounded-full transition-all duration-300 flex items-center gap-2
+                    ${appState !== "connected" ? 'opacity-50 cursor-not-allowed' : ''}
                     ${isDarkMode 
                       ? (isCameraEnabled ? 'bg-white/90 text-black' : 'bg-white/50 text-black/50') 
                       : (isCameraEnabled ? 'bg-black/90 text-white' : 'bg-black/50 text-white/50')}
-                    hover:scale-[1.02] active:scale-[0.98] transform
+                    ${appState === "connected" ? 'hover:scale-[1.02] active:scale-[0.98] transform' : ''}
                   `}
                 >
                   <span className="text-sm">
-                    {isCameraEnabled ? '📹' : '📷'}
+                    {appState !== "connected" ? '🔌' : (isCameraEnabled ? '📹' : '📷')}
                   </span>
                   <span className="font-light text-xs tracking-[0.15em] uppercase">
-                    {isCameraEnabled ? 'Camera On' : 'Camera Off'}
+                    {appState !== "connected" ? 'Disconnected' : (isCameraEnabled ? 'Camera On' : 'Camera Off')}
                   </span>
                 </button>
               </div>
             )}
 
-            {/* Bottom-center: Disconnect button when connected */}
-            {appState === "connected" && (
+            {/* Bottom-center: Disconnect/Reconnect button */}
+            {(appState === "connected" || appState === "disconnected") && (
               <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2">
                 <button
-                  onClick={handleDisconnect}
+                  onClick={appState === "connected" ? handleDisconnect : async () => {
+                    try {
+                      // Manual reconnect - ensure clean state first
+                      if (client) {
+                        client.disconnect();
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                      }
+                      setAutoReconnectAttempts(0); // Reset auto attempts when manually connecting
+                      await handleConnect();
+                    } catch (error) {
+                      console.error("Manual reconnect failed:", error);
+                    }
+                  }}
                   className={`
                     px-4 py-2 rounded-full transition-all duration-300
                     ${isDarkMode 
-                      ? 'bg-white/90 text-black' 
-                      : 'bg-black/90 text-white'}
+                      ? 'bg-white/90 text-black hover:bg-white' 
+                      : 'bg-black/90 text-white hover:bg-black'}
                     hover:scale-[1.02] active:scale-[0.98] transform
                   `}
                 >
                   <span className="font-light text-xs tracking-[0.15em] uppercase">
-                    Disconnect
+                    {appState === "connected" ? 'Disconnect' : 'Reconnect'}
                   </span>
                 </button>
               </div>
@@ -360,7 +428,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
           </div>
 
           {/* Voice-reactive PlasmaVisualizer background - PURE, NO OVERLAYS */}
-          <VoiceReactivePlasma isDarkMode={isDarkMode} />
+          <VoiceReactivePlasma isDarkMode={isDarkMode} isLowPowerMode={isLowPowerMode} />
         </div>
 
 

@@ -8,13 +8,55 @@ from typing import Dict, Any, Optional
 
 
 def sanitize_for_voice(text: str) -> str:
-    """Clean text specifically for TTS output - removes voice-unfriendly formatting"""
+    """Clean text specifically for TTS output - removes voice-unfriendly formatting, emojis, and special characters"""
     if not text:
         return ""
     
     # HTML decode and remove tags
     text = html.unescape(text)
     text = re.sub(r'<[^>]*?>', '', text)
+    
+    # Remove emojis and emoticons (comprehensive Unicode ranges)
+    # Basic emojis (U+1F600-U+1F64F)
+    text = re.sub(r'[\U0001F600-\U0001F64F]', '', text)
+    # Miscellaneous symbols and pictographs (U+1F300-U+1F5FF)
+    text = re.sub(r'[\U0001F300-\U0001F5FF]', '', text)
+    # Transport and map symbols (U+1F680-U+1F6FF)
+    text = re.sub(r'[\U0001F680-\U0001F6FF]', '', text)
+    # Supplemental symbols (U+1F700-U+1F77F)
+    text = re.sub(r'[\U0001F700-\U0001F77F]', '', text)
+    # Geometric shapes extended (U+1F780-U+1F7FF)
+    text = re.sub(r'[\U0001F780-\U0001F7FF]', '', text)
+    # Supplemental arrows (U+1F800-U+1F8FF)
+    text = re.sub(r'[\U0001F800-\U0001F8FF]', '', text)
+    # Symbols and pictographs extended (U+1F900-U+1F9FF)
+    text = re.sub(r'[\U0001F900-\U0001F9FF]', '', text)
+    # Additional emojis (U+1FA00-U+1FA6F, U+1FA70-U+1FAFF)
+    text = re.sub(r'[\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF]', '', text)
+    # Enclosed alphanumeric supplement (U+1F100-U+1F1FF)
+    text = re.sub(r'[\U0001F100-\U0001F1FF]', '', text)
+    # Regional indicator symbols (flags) (U+1F1E0-U+1F1FF)
+    text = re.sub(r'[\U0001F1E0-\U0001F1FF]', '', text)
+    # Miscellaneous symbols (U+2600-U+26FF)
+    text = re.sub(r'[\U00002600-\U000026FF]', '', text)
+    # Dingbats (U+2700-U+27BF)
+    text = re.sub(r'[\U00002700-\U000027BF]', '', text)
+    # Variation selectors (U+FE00-U+FE0F)
+    text = re.sub(r'[\U0000FE00-\U0000FE0F]', '', text)
+    # Zero-width joiner and non-joiner
+    text = re.sub(r'[\u200D\u200C]', '', text)
+    
+    # Remove traditional emoticons
+    text = re.sub(r'[:;=8][-~]?[)\]}>DPp(/\\|*+]', '', text)  # :) ;-) =D etc.
+    text = re.sub(r'[)\]}>DPp(/\\|*+][-~]?[:;=8]', '', text)  # Reverse emoticons
+    text = re.sub(r'<3', '', text)  # Heart
+    text = re.sub(r'[¯°º][\\/_][¯°º]', '', text)  # Shrug variations
+    
+    # Remove special symbols that might confuse TTS
+    text = re.sub(r'[★☆♪♫♯♭♮⚡⭐🔥💯]', '', text)  # Common special symbols
+    text = re.sub(r'[→←↑↓↔↕]', '', text)  # Arrows
+    text = re.sub(r'[™®©°±÷×§¶†‡•]', '', text)  # Trademark, copyright, etc.
+    text = re.sub(r'[…‰‱]', '...', text)  # Convert ellipsis and permille to dots
     
     # Remove voice-unfriendly formatting
     text = re.sub(r'\*+', '', text)  # Remove asterisks
@@ -23,6 +65,20 @@ def sanitize_for_voice(text: str) -> str:
     text = re.sub(r'[#]+\s*', '', text)  # Remove markdown headers
     text = re.sub(r'[-_]{3,}', '', text)  # Remove separator lines
     text = re.sub(r'&[a-zA-Z0-9]+;', '', text)  # Remove HTML entities
+    
+    # Convert problematic characters to TTS-friendly alternatives
+    text = re.sub(r'&', 'and', text)  # Ampersand to "and"
+    text = re.sub(r'@', 'at', text)    # At symbol to "at"
+    text = re.sub(r'#', 'number', text)  # Hash to "number"
+    text = re.sub(r'\$', 'dollar', text)  # Dollar sign
+    text = re.sub(r'%', 'percent', text)  # Percent sign
+    text = re.sub(r'\+', 'plus', text)  # Plus sign
+    
+    # Remove other problematic characters
+    text = re.sub(r'[`~^¨´]', '', text)  # Accent marks and tildes
+    text = re.sub(r'[¡¿]', '', text)  # Inverted punctuation
+    text = re.sub(r'[‚„""''‛]', '"', text)  # Convert fancy quotes to regular quotes
+    text = re.sub(r'[–—]', '-', text)  # Convert em/en dashes to hyphens
     
     # Normalize whitespace
     text = re.sub(r'\s+', ' ', text).strip()
