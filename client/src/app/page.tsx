@@ -1,13 +1,10 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import {
-  ConsoleTemplate,
-  FullScreenContainer,
-  ThemeProvider,
-} from "@pipecat-ai/voice-ui-kit";
+import { ThemeProvider } from "@pipecat-ai/voice-ui-kit";
 import { setupLinkConversion } from '../utils/linkFormatter.js';
 import { LoadingScreen } from '../components/LoadingScreen';
+import { VoiceApp } from '../components/VoiceApp';
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
@@ -62,15 +59,7 @@ export default function Home() {
   
   return (
     <ThemeProvider>
-      <FullScreenContainer>
-        <ConsoleTemplate
-          transportType="smallwebrtc"
-          connectParams={{
-            connectionUrl: "/api/offer",
-          }}
-          noUserVideo={!videoEnabled}
-        />
-      </FullScreenContainer>
+      <VoiceApp videoEnabled={videoEnabled} />
     </ThemeProvider>
   );
 }
