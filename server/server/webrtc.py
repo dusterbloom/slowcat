@@ -13,7 +13,16 @@ class WebRTCManager:
     
     def __init__(self):
         self.connections: Dict[str, SmallWebRTCConnection] = {}
-        self.ice_servers = [IceServer(urls=config.network.stun_server)]
+        # Support multiple ICE servers and optional TURN from config/env
+        ice_urls = []
+        if hasattr(config.network, "stun_servers") and config.network.stun_servers:
+            ice_urls.extend(config.network.stun_servers)
+        elif hasattr(config.network, "stun_server"):
+            ice_urls.append(config.network.stun_server)
+        turn_url = getattr(config.network, "turn_server", None)
+        if turn_url:
+            ice_urls.append(turn_url)
+        self.ice_servers = [IceServer(urls=url) for url in ice_urls]
     
     async def handle_offer(self, request: dict) -> dict:
         """
@@ -71,13 +80,17 @@ class WebRTCManager:
     async def cleanup_all_connections(self):
         """Cleanup all active connections"""
         logger.info(f"Cleaning up {len(self.connections)} active connections...")
+        import inspect
         for pc_id, connection in list(self.connections.items()):
             try:
                 logger.info(f"Closing connection {pc_id}")
-                # Note: Actual connection cleanup depends on pipecat implementation
-                # This will be handled by the connection's event handlers
+                if hasattr(connection, "close"):
+                    res = connection.close()
+                    if inspect.isawaitable(res):
+                        await res
             except Exception as e:
                 logger.error(f"Error closing connection {pc_id}: {e}")
+            finally:
+                self.connections.pop(pc_id, None)
         
-        self.connections.clear()
         logger.info("✅ All connections cleaned up")

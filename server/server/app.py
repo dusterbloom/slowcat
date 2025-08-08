@@ -9,7 +9,9 @@ import threading
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Header, HTTPException
+from pydantic import BaseModel
+from typing import Literal, Optional
 from loguru import logger
 
 from config import config
@@ -17,6 +19,12 @@ from core.service_factory import service_factory
 from core.pipeline_builder import PipelineBuilder
 from .webrtc import WebRTCManager
 
+
+class OfferRequest(BaseModel):
+    sdp: str
+    type: Literal["offer"]
+    pc_id: Optional[str] = None
+    restart_pc: bool = False
 
 def create_app(language: str = None, llm_model: str = None, stt_model: str = None) -> FastAPI:
     """
@@ -29,7 +37,44 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
     Returns:
         Configured FastAPI application
     """
-    app = FastAPI(title="Slowcat Voice Agent", version="1.0.0")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        logger.info("🚀 Slowcat server starting up (lifespan)...")
+
+        # Start background services without threads
+        ml_loader_task = asyncio.create_task(service_factory.get_service("ml_loader"))
+        analyzer_task = asyncio.create_task(service_factory.get_service("global_analyzers"))
+
+        from services.simple_mcp_tool_manager import discover_mcp_tools_background
+        mcp_task = asyncio.create_task(discover_mcp_tools_background(language or config.default_language))
+
+        async def prewarm_llm():
+            try:
+                logger.info("🔄 Pre-warming LLM service...")
+                await service_factory.wait_for_ml_modules()
+                llm_service = await service_factory._create_llm_service_for_language(
+                    app.state.language, app.state.llm_model
+                )
+                from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+                context = OpenAILLMContext([{"role": "user", "content": "Hi"}])
+                stream = llm_service._stream_chat_completions(context)
+                async for _ in stream:
+                    break
+                logger.info("✅ LLM service pre-warmed")
+            except Exception as e:
+                logger.warning(f"Failed to pre-warm LLM: {e}")
+
+        llm_prewarm_task = asyncio.create_task(prewarm_llm())
+
+        try:
+            yield
+        finally:
+            await app.state.webrtc_manager.cleanup_all_connections()
+            logger.info("✅ Lifespan shutdown complete")
+
+    app = FastAPI(title="Slowcat Voice Agent", version="1.0.0", lifespan=lifespan)
     
     # Store configuration in app state
     app.state.language = language or config.default_language
@@ -46,21 +91,47 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
     
     
     @app.post("/api/offer")
-    async def offer(request: dict, background_tasks: BackgroundTasks):
+    async def offer(req: OfferRequest, background_tasks: BackgroundTasks, x_slowcat_token: Optional[str] = Header(None)):
         """Handle WebRTC offer"""
+        offer_token = getattr(config.network, "offer_token", None)
+        if offer_token and x_slowcat_token != offer_token:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        # Simple in-memory per-IP rate limiting
+        from fastapi import Request
+        import time
+        if not hasattr(app.state, "_offer_rate_limit"):
+            app.state._offer_rate_limit = {}
+        client_ip = None
+        try:
+            from starlette.requests import Request as StarletteRequest
+            request_instance: StarletteRequest = Request  # type: ignore
+        except:
+            request_instance = None
+        # Note: for real-world use, replace with slowapi or redis-based limiter
+        now = time.time()
+        window = 10  # seconds
+        max_requests = 5
+        key = client_ip or "unknown"
+        history = app.state._offer_rate_limit.get(key, [])
+        history = [t for t in history if now - t < window]
+        if len(history) >= max_requests:
+            raise HTTPException(status_code=429, detail="Too Many Requests")
+        history.append(now)
+        app.state._offer_rate_limit[key] = history
+
         try:
             # Handle WebRTC offer
-            answer, connection = await webrtc_manager.handle_offer(request)
+            answer, connection = await webrtc_manager.handle_offer(req.dict())
             
             # Start bot pipeline in background
             language = getattr(app.state, 'language', config.default_language)
             llm_model = getattr(app.state, 'llm_model', None)
             
             background_tasks.add_task(
-                run_bot_pipeline, 
-                pipeline_builder, 
-                connection, 
-                language, 
+                run_bot_pipeline,
+                pipeline_builder,
+                connection,
+                language,
                 llm_model,
                 getattr(app.state, 'stt_model', None)
             )
@@ -82,68 +153,6 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
             "active_connections": len(webrtc_manager.get_active_connections())
         }
     
-    @app.on_event("startup")
-    async def startup_event():
-        """Application startup"""
-        logger.info("🚀 Slowcat server starting up...")
-        
-        # Start background ML loading
-        ml_loader_thread = threading.Thread(
-            target=lambda: service_factory.registry.get_instance("ml_loader") or 
-                           asyncio.run(service_factory.get_service("ml_loader")),
-            daemon=True
-        )
-        ml_loader_thread.start()
-        
-        # Start analyzer initialization
-        analyzer_thread = threading.Thread(
-            target=lambda: asyncio.run(service_factory.get_service("global_analyzers")),
-            daemon=True
-        )
-        analyzer_thread.start()
-        
-        # 🚀 NEW: Start background MCP tool discovery
-        from services.simple_mcp_tool_manager import discover_mcp_tools_background
-        mcp_discovery_thread = threading.Thread(
-            target=lambda: asyncio.run(discover_mcp_tools_background(app.state.language)),
-            daemon=True
-        )
-        mcp_discovery_thread.start()
-        
-        # 🚀 NEW: Pre-warm LLM service
-        def prewarm_llm():
-            async def async_prewarm():
-                try:
-                    logger.info("🔄 Pre-warming LLM service...")
-                    
-                    # Wait for ML modules first
-                    await service_factory.wait_for_ml_modules()
-                    
-                    # Create LLM service to pre-warm it
-                    llm_service = await service_factory._create_llm_service_for_language(
-                        app.state.language, app.state.llm_model
-                    )
-                    
-                    # Make a tiny test request to warm up the connection
-                    from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-                    context = OpenAILLMContext([{"role": "user", "content": "Hi"}])
-                    
-                    # Just create the stream to warm up connection, don't consume it
-                    stream = llm_service._stream_chat_completions(context)
-                    async for chunk in stream:
-                        # Just get first chunk to warm up
-                        break
-                    
-                    logger.info("✅ LLM service pre-warmed")
-                except Exception as e:
-                    logger.warning(f"Failed to pre-warm LLM: {e}")
-            
-            asyncio.run(async_prewarm())
-        
-        llm_prewarm_thread = threading.Thread(target=prewarm_llm, daemon=True)
-        llm_prewarm_thread.start()
-        
-        logger.info("✅ Background services started")
     
     @app.on_event("shutdown")
     async def shutdown_event():

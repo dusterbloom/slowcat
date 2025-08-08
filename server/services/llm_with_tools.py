@@ -377,10 +377,14 @@ class LLMWithToolsService(OpenAILLMService):
             content_buffer = ""
             response_chunks = []
             
-            async for chunk in stream:
-                # 🔍 DEBUG: Log each chunk from LM Studio
-                if hasattr(chunk, 'choices') and chunk.choices:
-                    choice = chunk.choices[0]
+            import datetime
+            import openai
+            try:
+                async for chunk in stream:
+                    # 🔍 DEBUG: Log each chunk timestamp for gap analysis
+                    # logger.debug(f"📅 Chunk received at {datetime.datetime.utcnow().isoformat()}Z")
+                    if hasattr(chunk, 'choices') and chunk.choices:
+                        choice = chunk.choices[0]
                     chunk_info = {}
                     
                     if hasattr(choice, 'delta'):
@@ -428,8 +432,11 @@ class LLMWithToolsService(OpenAILLMService):
                         # Accumulate content
                         if 'content' in chunk_info:
                             content_buffer += chunk_info['content']
-                
-                yield chunk
+                    yield chunk
+            except openai.APIError as api_err:
+                logger.error(f"❌ Streaming APIError caught in feedback_stream: {api_err}")
+            except Exception as e:
+                logger.exception(f"❌ Unexpected error during feedback_stream: {e}")
 
         return feedback_stream()
     

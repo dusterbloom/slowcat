@@ -11,12 +11,12 @@ on_exit() {
     # Kill MCPO server if running
     if [ ! -z "$MCPO_PID" ]; then
         echo "🔥 Stopping MCPO server (PID: $MCPO_PID)"
-        kill $MCPO_PID 2>/dev/null
-        wait $MCPO_PID 2>/dev/null
+        kill "$MCPO_PID" 2>/dev/null
+        wait "$MCPO_PID" 2>/dev/null
     fi
     
-    # Kill any remaining mcpo processes
-    pkill -f "mcpo" 2>/dev/null
+    # Kill any remaining mcpo processes started by this user
+    pkill -u "$(whoami)" -f "mcpo --port ${MCPO_PORT:-3001}" 2>/dev/null
     
     echo "✅ Cleanup complete"
     exit
@@ -36,7 +36,7 @@ fi
 
 # Set environment variables to help with multiprocessing on macOS
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-export no_proxy=*
+export no_proxy="${NO_PROXY:-localhost,127.0.0.1}"
 
 # Check if MCP integration is enabled (default: true)
 ENABLE_MCP=${ENABLE_MCP:-true}
@@ -56,8 +56,8 @@ if [ "$ENABLE_MCP" = "true" ]; then
         sleep 1
         
         # Start MCPO server in background
-        MEMORY_FILE_PATH="/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json" \
-        mcpo --port 3001 --api-key slowcat-secret --config mcp.json --name mcpo-proxy > mcpo.log 2>&1 &
+        MEMORY_FILE_PATH="${MCPO_MEMORY_FILE_PATH:-$PWD/data/tool_memory/memory.json}" \
+        mcpo --host 127.0.0.1 --port "${MCPO_PORT:-3001}" --api-key "${MCPO_API_KEY:-$(openssl rand -hex 16)}" --config mcp.json --name mcpo-proxy > mcpo.log 2>&1 &
         
         # Store the PID for cleanup
         MCPO_PID=$!

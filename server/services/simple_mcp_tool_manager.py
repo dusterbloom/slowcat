@@ -645,6 +645,12 @@ class SimpleMCPToolManager:
         try:
             import aiohttp
             api_key = os.getenv('BRAVE_API_KEY')
+            from loguru import logger
+            logger.warning(f"[DEBUG] Environment BRAVE_API_KEY value: {repr(api_key)}")
+            if api_key:
+                logger.debug(f"BRAVE_API_KEY loaded with prefix: {api_key[:4]}... (length {len(api_key)})")
+            else:
+                logger.warning("BRAVE_API_KEY not found in environment variables")
             if not api_key:
                 return {"error": "Brave API key not found"}
             
