@@ -255,8 +255,14 @@ class SimpleMCPToolManager:
         try:
             logger.info(f"🔍 Probing {server_name} via MCPO: {endpoint}/openapi.json")
             
+            # Get API key from environment - fail fast if missing
+            api_key = os.getenv("MCPO_API_KEY")
+            if not api_key:
+                logger.error("MCPO_API_KEY environment variable not set - MCP tool discovery disabled")
+                return {}
+                
             headers = {
-                "Authorization": "Bearer slowcat-secret",
+                "Authorization": f"Bearer {api_key}",
                 "Accept": "application/json"
             }
             
@@ -496,8 +502,13 @@ class SimpleMCPToolManager:
         # 👑 THE KING'S APPROACH: Let the API teach us through negotiation!
         async def api_caller(negotiated_params):
             """Internal API caller for the negotiation protocol"""
+            # Get API key from environment - fail fast if missing
+            api_key = os.getenv("MCPO_API_KEY")
+            if not api_key:
+                return {"error": "MCPO_API_KEY environment variable not set"}
+                
             headers = {
-                "Authorization": "Bearer slowcat-secret",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
