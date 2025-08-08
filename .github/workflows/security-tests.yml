@@ -72,7 +72,8 @@ jobs:
         async def test():
             manager = SimpleMCPToolManager()
             result = await manager._probe_mcpo_server('test', 'http://test')
-            assert 'error' in result, 'Should fail without API key'
-            print('✅ API key requirement working')
+            # Our security fix returns {} when API key is missing (correct behavior)
+            assert result == {}, f'Should return empty dict without API key, got: {result}'
+            print('✅ API key requirement working - returns empty dict when missing')
         asyncio.run(test())
         "
