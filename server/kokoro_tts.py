@@ -16,6 +16,7 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
+    TTSTextFrame,
 )
 from pipecat.services.tts_service import TTSService
 from pipecat.utils.tracing.service_decorators import traced_tts
@@ -241,9 +242,7 @@ class KokoroTTSService(TTSService):
             # Check if sanitization resulted in empty or near-empty text - skip TTS silently
             if not sanitized_text or len(sanitized_text.strip()) <= 2:
                 logger.info(f"🔇 Skipping TTS for empty/emoji-only text: '{text[:50]}...' -> '{sanitized_text}'")
-                # Skip TTS entirely for empty content - return early
-                yield TTSStartedFrame()
-                yield TTSStoppedFrame()
+                # Skip TTS entirely for empty content - don't send any frames
                 return
             
             # Log sanitization if text was changed
@@ -290,6 +289,12 @@ class KokoroTTSService(TTSService):
             first_chunk = True
             CHUNK_SIZE = self.chunk_size
             
+            # Text streaming setup - split text into chunks for progressive display
+            words = sanitized_text.split()
+            text_chunks_sent = 0
+            total_text_chunks = len(words)
+            audio_chunks_processed = 0
+            
             while True:
                 try:
                     # Non-blocking check for chunk with small timeout
@@ -312,6 +317,21 @@ class KokoroTTSService(TTSService):
                         sub_chunk = chunk[i : i + CHUNK_SIZE]
                         if len(sub_chunk) > 0:
                             yield TTSAudioRawFrame(sub_chunk, self.sample_rate, 1)
+                            
+                            # Emit text progressively synchronized with audio chunks
+                            audio_chunks_processed += 1
+                            if total_text_chunks > 0:
+                                # Calculate how many text chunks should be sent based on audio progress
+                                # More conservative approach - only send text every few audio chunks
+                                target_text_chunks = min(total_text_chunks, 
+                                    max(1, int((audio_chunks_processed / 15) * total_text_chunks)))
+                                
+                                # Send more text chunks if needed, but only if we have meaningful progress
+                                while text_chunks_sent < target_text_chunks and text_chunks_sent < total_text_chunks:
+                                    text_chunks_sent += 1
+                                    partial_text = ' '.join(words[:text_chunks_sent])
+                                    yield TTSTextFrame(text=partial_text)
+                            
                             # Small delay to prevent overwhelming the pipeline
                             await asyncio.sleep(0.001)
                             
@@ -326,6 +346,12 @@ class KokoroTTSService(TTSService):
 
             # Ensure generation task completes
             await generation_task
+            
+            # Send any remaining text chunks when TTS is complete
+            while text_chunks_sent < total_text_chunks:
+                partial_text = ' '.join(words[:text_chunks_sent + 1])
+                yield TTSTextFrame(text=partial_text)
+                text_chunks_sent += 1
 
         except Exception as e:
             logger.error(f"Error in run_tts: {e}")

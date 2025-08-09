@@ -13,12 +13,57 @@ import {
 import { PipecatClient } from '@pipecat-ai/client-js';
 import { SmallWebRTCTransport } from '@pipecat-ai/small-webrtc-transport';
 import { VoiceReactivePlasma } from './VoiceReactivePlasma';
+import { StreamingText } from './StreamingText';
 
 interface VoiceAppProps {
   videoEnabled: boolean;
 }
 
 type AppState = "idle" | "connecting" | "connected" | "disconnected";
+
+// Type guard for checking if transcript has final property
+const hasFinPropertyString = (obj: unknown): obj is { final: boolean } => {
+  return typeof obj === 'object' && obj !== null && 'final' in obj;
+};
+
+// Text formatting functions
+const formatUserText = (text: string): string => {
+  // Fix capitalization and add basic punctuation
+  if (!text) return text;
+  
+  // Convert to proper case (first letter of each sentence capitalized)
+  let formatted = text.toLowerCase();
+  
+  // Capitalize first letter
+  formatted = formatted.charAt(0).toUpperCase() + formatted.slice(1);
+  
+  // Capitalize after periods, exclamation marks, question marks
+  formatted = formatted.replace(/[.!?]\s+\w/g, match => match.toUpperCase());
+  
+  // Add period at end if no punctuation exists
+  if (!/[.!?]$/.test(formatted.trim())) {
+    formatted += '.';
+  }
+  
+  return formatted;
+};
+
+const formatBotText = (text: string): string => {
+  // Remove markdown asterisks and other formatting
+  if (!text) return text;
+  
+  // Remove **bold** formatting
+  let formatted = text.replace(/\*\*(.*?)\*\*/g, '$1');
+  
+  // Remove *italic* formatting
+  formatted = formatted.replace(/\*(.*?)\*/g, '$1');
+  
+  // Remove other common markdown
+  formatted = formatted.replace(/`([^`]+)`/g, '$1'); // inline code
+  formatted = formatted.replace(/^\s*[-*+]\s+/gm, '• '); // bullet points
+  
+  return formatted;
+};
 
 export function VoiceApp({ videoEnabled }: VoiceAppProps) {
   const [showDebugUI, setShowDebugUI] = useState(false);
@@ -31,7 +76,9 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
   const [fontSize, setFontSize] = useState('normal'); // 'small', 'normal', 'large'
-  const [conversationHistory, setConversationHistory] = useState<Array<{role: 'user' | 'assistant', text: string}>>([]);
+  const [conversationHistory, setConversationHistory] = useState<Array<{role: 'user' | 'assistant', text: string, isStreaming?: boolean, id: string}>>([]);
+  const [currentUserTranscript, setCurrentUserTranscript] = useState('');
+  const [currentAssistantTranscript, setCurrentAssistantTranscript] = useState('');
   const [wasConnected, setWasConnected] = useState(false); // Track if we were ever connected
   const [autoReconnectAttempts, setAutoReconnectAttempts] = useState(0);
   const [showPerformanceMonitor, setShowPerformanceMonitor] = useState(false);
@@ -53,6 +100,9 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
         enableMic: true,  // Mic enabled by default
         transport: transport,
         callbacks: {
+          // Debug: Log all bot events to see what we're getting
+          onBotStartedSpeaking: () => console.log('🎙️ Bot started speaking'),
+          onBotStoppedSpeaking: () => console.log('🎙️ Bot stopped speaking'),
           onTransportStateChanged: (state) => {
             switch (state) {
               case "connecting":
@@ -81,13 +131,113 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
           },
           onUserTranscript: (transcript) => {
             if (transcript && transcript.text) {
-              setConversationHistory(prev => [...prev, { role: 'user', text: transcript.text }]);
+              // Handle both streaming (partial) and final transcripts
+              // Check if transcript has 'final' property, otherwise assume final
+              const isFinal = !hasFinPropertyString(transcript) || transcript.final !== false;
+              
+              if (!isFinal) {
+                // Streaming/partial transcript - show in streaming bubble
+                setCurrentUserTranscript(formatUserText(transcript.text));
+              } else {
+                // Final transcript - add to conversation history and clear streaming
+                const messageId = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                setConversationHistory(prev => [
+                  ...prev, 
+                  { 
+                    role: 'user', 
+                    text: formatUserText(transcript.text), 
+                    id: messageId 
+                  }
+                ]);
+                setCurrentUserTranscript('');
+              }
             }
           },
           onBotTranscript: (transcript) => {
-            if (transcript && transcript.text) {
-              setConversationHistory(prev => [...prev, { role: 'assistant', text: transcript.text }]);
+            // IGNORE LLM transcript - we only want to show text when TTS actually speaks it
+            console.log('LLM transcript received (ignoring):', transcript?.text?.substring(0, 50) + '...');
+          },
+          // Try different possible TTS text event names
+          onBotTtsText: (ttsData) => {
+            console.log('🎵 onBotTtsText:', ttsData);
+            if (ttsData && ttsData.text && ttsData.text.trim().length > 0) {
+              const newText = formatBotText(ttsData.text);
+              // Only update if the new text is longer (accumulating) 
+              setCurrentAssistantTranscript(prevText => {
+                // If new text is longer or we have no previous text, update
+                if (!prevText || newText.length > prevText.length) {
+                  console.log('📈 TTS text growing:', prevText?.length || 0, '→', newText.length);
+                  
+                  // Check if this text ends with sentence-ending punctuation
+                  const endsWithPunctuation = /[.!?]$/.test(newText.trim());
+                  if (endsWithPunctuation) {
+                    console.log('🎯 Complete sentence detected:', newText);
+                    // Check if this sentence was already saved (check ALL assistant messages)
+                    setConversationHistory(prev => {
+                      // Check ALL previous assistant messages, not just last 3
+                      const allAssistantMessages = prev.filter(msg => msg.role === 'assistant');
+                      
+                      // Check if this exact text or a variation already exists
+                      for (const msg of allAssistantMessages) {
+                        if (msg.text === newText || 
+                            msg.text.includes(newText) || 
+                            newText.includes(msg.text)) {
+                          console.log('🚫 Duplicate/partial sentence found, skipping:', newText);
+                          return prev;
+                        }
+                      }
+                      
+                      // It's a genuinely new sentence, save it
+                      const messageId = `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+                      console.log('💾 Saving new sentence:', newText);
+                      return [
+                        ...prev, 
+                        { role: 'assistant', text: newText, id: messageId }
+                      ];
+                    });
+                    // Return empty string to start fresh for next sentence
+                    return '';
+                  }
+                  
+                  return newText;
+                }
+                // Otherwise keep the longer existing text
+                console.log('🚫 TTS text shrinking, keeping existing:', prevText.length, 'vs', newText.length);
+                return prevText;
+              });
             }
+          },
+          onBotTtsStarted: () => {
+            console.log('Bot TTS started - keep accumulating text');
+            // Don't clear! Let text accumulate across TTS sessions
+          },
+          onBotTtsStopped: () => {
+            console.log('Bot TTS stopped - check for any remaining text');
+            // Fallback: save any remaining text that didn't end with punctuation
+            setCurrentAssistantTranscript(prevText => {
+              if (prevText.trim()) {
+                console.log('💾 Checking to save remaining text without punctuation:', prevText);
+                setConversationHistory(prev => {
+                  // Check ALL assistant messages for duplicates, not just last 3
+                  const allAssistantMessages = prev.filter(msg => msg.role === 'assistant');
+                  
+                  for (const msg of allAssistantMessages) {
+                    if (msg.text === prevText || 
+                        msg.text.includes(prevText) || 
+                        prevText.includes(msg.text)) {
+                      console.log('🚫 Duplicate remaining text found, skipping:', prevText);
+                      return prev;
+                    }
+                  }
+                  
+                  // Save the remaining text
+                  const messageId = `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+                  console.log('✅ Saving remaining text:', prevText);
+                  return [...prev, { role: 'assistant', text: prevText, id: messageId }];
+                });
+              }
+              return ''; // Clear for next response
+            });
           },
         },
       });
@@ -665,22 +815,34 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
               {conversationHistory.length > 0 ? (
                 <div className="space-y-3">
                   {conversationHistory.map((message, idx) => (
-                    <div key={idx} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} mb-3`}>
+                    <div key={message.id || idx} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} mb-3`}>
                       <div className={`max-w-[80%] rounded-lg p-3 ${
                         message.role === 'user' 
-                          ? 'bg-blue-600 text-white' 
+                          ? 'bg-black text-white' 
                           : (isDarkMode ? 'bg-gray-700 text-gray-100 border border-gray-600' : 'bg-gray-200 text-gray-900 border border-gray-300')
                       }`}>
-                        <div 
-                          className={`leading-relaxed break-words ${
+{message.role === 'assistant' && message.isStreaming ? (
+                          <div className={`leading-relaxed break-words ${
                             fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
-                          }`}
-                          dangerouslySetInnerHTML={{ 
-                            __html: message.text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="underline hover:no-underline">$1</a>') 
-                          }}
-                        />
+                          }`}>
+                            <StreamingText 
+                              text={message.text}
+                              speed={30}
+                              className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}
+                            />
+                          </div>
+                        ) : (
+                          <div 
+                            className={`leading-relaxed break-words ${
+                              fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
+                            }`}
+                            dangerouslySetInnerHTML={{ 
+                              __html: message.text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="underline hover:no-underline">$1</a>') 
+                            }}
+                          />
+                        )}
                         <div className={`text-xs mt-1 opacity-70 ${
-                          message.role === 'user' ? 'text-blue-200' : (isDarkMode ? 'text-gray-400' : 'text-gray-500')
+                          message.role === 'user' ? 'text-white' : (isDarkMode ? 'text-gray-400' : 'text-gray-500')
                         }`}>
                           {new Date().toLocaleTimeString([], { 
                             hour: '2-digit', 
@@ -690,6 +852,67 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                       </div>
                     </div>
                   ))}
+                  
+                  {/* Streaming user transcript */}
+                  {currentUserTranscript && (
+                    <div className="flex justify-end mb-3">
+                      <div className="max-w-[80%] rounded-lg p-3 bg-black text-white opacity-90">
+                        <div className={`leading-relaxed break-words ${
+                          fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
+                        }`}>
+                          <StreamingText 
+                            text={currentUserTranscript}
+                            speed={30} // Faster for real-time speech
+                            className="text-white"
+                          />
+                        </div>
+                        <div className="text-xs mt-1 opacity-70 text-white flex items-center gap-1">
+                          <span>Speaking...</span>
+                          <div className="flex gap-1">
+                            <div className="w-1 h-1 bg-white rounded-full animate-pulse"></div>
+                            <div className="w-1 h-1 bg-white rounded-full animate-pulse" style={{ animationDelay: '0.1s' }}></div>
+                            <div className="w-1 h-1 bg-white rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Streaming assistant transcript */}
+                  {currentAssistantTranscript && (
+                    <div className="flex justify-start mb-3">
+                      <div className={`max-w-[80%] rounded-lg p-3 ${
+                        isDarkMode ? 'bg-gray-700 text-gray-100 border border-gray-600' : 'bg-gray-200 text-gray-900 border border-gray-300'
+                      } opacity-90`}>
+                        <div className={`leading-relaxed break-words ${
+                          fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
+                        }`}>
+                          <StreamingText 
+                            text={currentAssistantTranscript}
+                            speed={30} // Same speed as user side
+                            className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}
+                          />
+                        </div>
+                        <div className={`text-xs mt-1 opacity-70 flex items-center gap-1 ${
+                          isDarkMode ? 'text-gray-400' : 'text-gray-500'
+                        }`}>
+                          <span>Assistant...</span>
+                          <div className="flex gap-1">
+                            <div className={`w-1 h-1 rounded-full animate-pulse ${
+                              isDarkMode ? 'bg-gray-400' : 'bg-gray-500'
+                            }`}></div>
+                            <div className={`w-1 h-1 rounded-full animate-pulse ${
+                              isDarkMode ? 'bg-gray-400' : 'bg-gray-500'
+                            }`} style={{ animationDelay: '0.1s' }}></div>
+                            <div className={`w-1 h-1 rounded-full animate-pulse ${
+                              isDarkMode ? 'bg-gray-400' : 'bg-gray-500'
+                            }`} style={{ animationDelay: '0.2s' }}></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
                 </div>
               ) : (
                 <TranscriptOverlay

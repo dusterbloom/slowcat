@@ -266,7 +266,7 @@ class SherpaOnlineSTTService(STTService):
                 if result.strip():
                     logger.debug(f"🎯 Sherpa FINAL: '{result}' (endpoint detected)")
                 self._recognizer.reset(self._stream)
-                logger.debug("🔄 Stream reset after endpoint")
+                # logger.debug("🔄 Stream reset after endpoint")
             elif result:
                 logger.debug(f"🔄 Sherpa interim: '{result}'")
             

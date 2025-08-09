@@ -422,12 +422,20 @@ class ServiceFactory:
         selected_model = llm_model or config.models.default_llm_model
         logger.info(f"🤖 Using LLM model: {selected_model}")
         
+        # Check if streaming is enabled
+        streaming_enabled = os.getenv("LLM_STREAMING", "true").lower() == "true"
+        
         llm_params = {
             "api_key": None,
             "model": selected_model,
             "base_url": config.network.llm_base_url,
             "max_tokens": config.models.llm_max_tokens
         }
+        
+        if streaming_enabled:
+            logger.info("🌊 LLM streaming mode ENABLED")
+        else:
+            logger.info("🔒 LLM streaming mode DISABLED")
         
         # MCP tools are handled natively by LM Studio via mcp.json
         if config.mcp.enabled:
