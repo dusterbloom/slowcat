@@ -193,6 +193,7 @@ class KokoroTTSService(TTSService):
                     logger.debug(f"Generated audio chunk {chunk_count}")
                 
                 if chunk_count == 0:
+                    logger.warning(f"No audio chunks generated for text: '{text}' (len={len(text)})")
                     raise ValueError("No audio generated")
             
             # Signal end of stream
@@ -237,6 +238,11 @@ class KokoroTTSService(TTSService):
             from tools.text_formatter import sanitize_for_voice
             sanitized_text = sanitize_for_voice(text)
             
+            # Check if sanitization resulted in empty or near-empty text
+            if not sanitized_text or len(sanitized_text.strip()) <= 2:
+                logger.warning(f"🚫 TTS text too short after sanitization: '{text[:50]}...' -> '{sanitized_text}' - using fallback")
+                sanitized_text = "Sorry, I couldn't process that message properly."
+            
             # Log sanitization if text was changed
             if sanitized_text != text:
                 logger.warning(f"🧹 TTS SANITIZATION: '{text[:50]}...' -> '{sanitized_text[:50]}...'")
@@ -262,6 +268,20 @@ class KokoroTTSService(TTSService):
             generation_task = loop.run_in_executor(
                 self._executor, self._generate_audio_streaming, sanitized_text, chunk_queue
             )
+            
+            # Add error callback to handle unhandled exceptions
+            def _handle_generation_exception(future):
+                try:
+                    future.result()  # This will raise if there was an exception
+                except Exception as e:
+                    logger.error(f"Background TTS generation failed: {e}")
+                    # Put the exception in the queue so it can be handled by the main loop
+                    try:
+                        chunk_queue.put(e)
+                    except:
+                        pass  # Queue might be full or closed
+            
+            generation_task.add_done_callback(_handle_generation_exception)
 
             # Stream chunks as they become available
             first_chunk = True
@@ -306,7 +326,12 @@ class KokoroTTSService(TTSService):
 
         except Exception as e:
             logger.error(f"Error in run_tts: {e}")
-            yield ErrorFrame(error=str(e))
+            # For empty text errors, provide a gentler response
+            if "No audio generated" in str(e):
+                logger.info("Gracefully handling empty TTS content")
+                yield TTSStoppedFrame()
+            else:
+                yield ErrorFrame(error=str(e))
         finally:
             logger.debug(f"{self}: Finished TTS [{sanitized_text}]")
             await self.stop_processing_metrics()

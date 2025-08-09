@@ -309,6 +309,17 @@ class ServiceFactory:
             provider = os.getenv("SHERPA_PROVIDER", "cpu")
             hotwords_file = os.getenv("SHERPA_HOTWORDS_FILE", "").strip() or None
             hotwords_score = float(os.getenv("SHERPA_HOTWORDS_SCORE", "1.5"))
+            
+            # Language locking parameters
+            # Auto-enable language lock when specific language is requested (not 'auto')
+            language_lock = os.getenv("SHERPA_LANGUAGE_LOCK", "").strip() or None
+            language_lock_mode = os.getenv("SHERPA_LANGUAGE_LOCK_MODE", "strict")
+            
+            # Auto-set language lock if language is specified and not 'auto'
+            if not language_lock and language != "auto" and language in ['be', 'de', 'en', 'es', 'fr', 'hr', 'it', 'pl', 'ru', 'uk']:
+                language_lock = language
+                logger.info(f"🔐 Auto-enabling language lock for --language {language}")
+            
             return SherpaSTT(
                 model_dir=model_dir,
                 language=language,
@@ -316,6 +327,8 @@ class ServiceFactory:
                 provider=provider,
                 hotwords_file=hotwords_file,
                 hotwords_score=hotwords_score,
+                language_lock=language_lock,
+                language_lock_mode=language_lock_mode,
             )
         
         # default: Whisper MLX

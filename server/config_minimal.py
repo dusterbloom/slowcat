@@ -55,7 +55,7 @@ MINIMAL_LANGUAGES = {
     "it": MinimalLanguageConfig(
         voice="im_nicola",
         whisper_language="IT", 
-        system_instruction="Sei Slowcat, un assistente vocale utile. Puoi cercare sul web e aiutare con i compiti."
+        system_instruction="Sei Slowcat, un assistente vocale utile. Puoi usare tanti strumenti, se l'utente chiede qualcosa di specifico, prova ad usarli e vedrai. IMPORTANTE: Rispondi sempre e solo in italiano. Non usare mai altre lingue. /no_think "
     ),
     
     "zh": MinimalLanguageConfig(

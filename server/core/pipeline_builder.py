@@ -3,6 +3,7 @@ Pipeline builder for creating and configuring processing pipelines with dependen
 """
 
 import asyncio
+import os
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 from loguru import logger
@@ -107,7 +108,22 @@ class PipelineBuilder:
             "dj_system_prompt": lang_config.dj_system_prompt
         }
         
-        if language in language_consistency_note:
+        # Check if language lock is enabled for dynamic language matching
+        language_lock_enabled = os.getenv("SHERPA_LANGUAGE_LOCK", "").strip()
+        if language_lock_enabled:
+            # Map language codes to names for clearer instructions
+            language_names = {
+                'be': 'Belarusian', 'de': 'German', 'en': 'English', 'es': 'Spanish',
+                'fr': 'French', 'hr': 'Croatian', 'it': 'Italian', 'pl': 'Polish', 
+                'ru': 'Russian', 'uk': 'Ukrainian'
+            }
+            language_name = language_names.get(language_lock_enabled, language_lock_enabled)
+            
+            # Dynamic instruction for language lock mode
+            dynamic_language_instruction = f"\n\nIMPORTANT: Language lock mode is enabled for {language_name} ({language_lock_enabled}). Always respond in {language_name} only, even if you detect the user attempting to speak other languages. Stay consistent with {language_name} throughout the entire conversation."
+            final_config["system_instruction"] += dynamic_language_instruction
+            logger.info(f"🔐 Language lock mode: forcing {language_name} responses")
+        elif language in language_consistency_note:
             final_config["system_instruction"] += language_consistency_note[language]
         
         return final_config

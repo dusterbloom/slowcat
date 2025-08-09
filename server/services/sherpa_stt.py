@@ -39,6 +39,8 @@ class SherpaONNXSTTService(SegmentedSTTService):
         hotwords_file: Optional[str] = None,
         hotwords_score: float = 1.5,
         pool_size: int = 3,  # Number of recognizers to pre-create
+        language_lock: Optional[str] = None,  # Force specific language: 'it', 'en', 'es', etc.
+        language_lock_mode: str = "strict",  # 'strict' = drop non-matching, 'warn' = log only
     ):
         super().__init__(sample_rate=sample_rate)
         self.model_dir = Path(model_dir)
@@ -48,10 +50,17 @@ class SherpaONNXSTTService(SegmentedSTTService):
         self.hotwords_file = hotwords_file
         self.hotwords_score = hotwords_score
         self.pool_size = pool_size
+        self.language_lock = language_lock
+        self.language_lock_mode = language_lock_mode
 
         # Recognizer pool for performance
         self._recognizer_pool = Queue()
         self._pool_lock = threading.Lock()
+        
+        # Language detection for strict mode
+        if self.language_lock:
+            logger.info(f"🔒 Language lock enabled: {self.language_lock} (mode: {self.language_lock_mode})")
+            self._init_language_detector()
 
         if not self.model_dir.exists():
             raise FileNotFoundError(
@@ -115,6 +124,64 @@ class SherpaONNXSTTService(SegmentedSTTService):
         
         return recognizer
 
+    def _init_language_detector(self):
+        """Initialize simple text-based language detection for language locking"""
+        try:
+            # Simple language patterns for the 10 supported languages
+            self.language_patterns = {
+                'be': ['ў', 'ё', 'ць', 'дзе', 'што', 'гэта'],  # Belarusian
+                'de': ['der', 'die', 'das', 'und', 'ich', 'ist', 'sch', 'ung'],  # German
+                'en': ['the', 'and', 'of', 'to', 'in', 'you', 'is', 'it'],  # English
+                'es': ['la', 'de', 'que', 'el', 'en', 'y', 'es', 'se'],  # Spanish
+                'fr': ['le', 'de', 'et', 'à', 'un', 'ce', 'que', 'se'],  # French
+                'hr': ['je', 'se', 'na', 'za', 'da', 'su', 'od', 'ne'],  # Croatian
+                'it': ['di', 'che', 'è', 'la', 'il', 'un', 'se', 'per'],  # Italian
+                'pl': ['się', 'że', 'na', 'do', 'nie', 'jest', 'za', 'od'],  # Polish
+                'ru': ['и', 'в', 'не', 'на', 'я', 'с', 'что', 'это'],  # Russian
+                'uk': ['і', 'в', 'на', 'не', 'що', 'з', 'як', 'до']  # Ukrainian
+            }
+            logger.info("✅ Language detection patterns loaded")
+        except Exception as e:
+            logger.warning(f"Failed to init language detector: {e}")
+            self.language_patterns = {}
+
+    def _detect_text_language(self, text: str) -> str:
+        """Simple pattern-based language detection"""
+        if not self.language_patterns:
+            return "unknown"
+        
+        text_lower = text.lower()
+        scores = {}
+        
+        for lang, patterns in self.language_patterns.items():
+            score = sum(1 for pattern in patterns if pattern in text_lower)
+            if score > 0:
+                scores[lang] = score
+        
+        if not scores:
+            return "unknown"
+        
+        # Return language with highest pattern match score
+        detected = max(scores.items(), key=lambda x: x[1])[0]
+        logger.debug(f"Language detection: '{text[:50]}...' -> {detected} (scores: {scores})")
+        return detected
+
+    def _should_filter_result(self, text: str) -> bool:
+        """Check if result should be filtered based on language lock"""
+        if not self.language_lock:
+            return False
+        
+        detected_lang = self._detect_text_language(text)
+        
+        if detected_lang != self.language_lock and detected_lang != "unknown":
+            if self.language_lock_mode == "strict":
+                logger.info(f"🚫 Filtering non-{self.language_lock} text: '{text}' (detected: {detected_lang})")
+                return True
+            elif self.language_lock_mode == "warn":
+                logger.warning(f"⚠️ Non-{self.language_lock} detected: '{text}' (detected: {detected_lang})")
+        
+        return False
+
     def _get_recognizer(self):
         """Get a recognizer from the pool (blocking)"""
         try:
@@ -150,6 +217,9 @@ class SherpaONNXSTTService(SegmentedSTTService):
             logger.debug(f"Sherpa: Transcription result: '{text}'")
             
             if text.strip():
+                # Language filtering disabled - too many false positives
+                # The system prompt will handle language consistency instead
+                
                 from pipecat.utils.time import time_now_iso8601
                 logger.info(f"Sherpa: Transcribed: '{text.strip()}'")
                 
