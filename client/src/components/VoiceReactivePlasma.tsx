@@ -16,9 +16,10 @@ try {
 interface VoiceReactivePlasmaProps {
   isDarkMode: boolean;
   isLowPowerMode: boolean;
+  showControls?: boolean;
 }
 
-export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactivePlasmaProps) {
+export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode, showControls = false }: VoiceReactivePlasmaProps) {
   const [isVisible, setIsVisible] = useState(true);
   const [useReducedMotion, setUseReducedMotion] = useState(false);
   const [forceFallback, setForceFallback] = useState(false);
@@ -171,7 +172,7 @@ export function VoiceReactivePlasma({ isDarkMode, isLowPowerMode }: VoiceReactiv
   if (shouldShowFallback) {
     return (
       <div className="absolute inset-0">
-        <FallbackPlasma isDarkMode={isDarkMode} />
+        <FallbackPlasma isDarkMode={isDarkMode} showControls={showControls} />
       </div>
     );
   }

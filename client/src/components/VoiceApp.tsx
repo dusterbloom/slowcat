@@ -41,6 +41,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
     cpuTemp: 0,
     isWebGLActive: false
   });
+  const [showVisualizerControls, setShowVisualizerControls] = useState(false);
 
   useEffect(() => {
     // Initialize PipecatClient
@@ -316,7 +317,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
 
 
             {/* Always visible controls - no hover required */}
-            {/* Top-left: Connection Status */}
+            {/* Top-left: Connection Status
             <div className="absolute top-6 left-6">
               <div className={`
                 px-4 py-2 rounded-full backdrop-blur-sm transition-all duration-500
@@ -335,7 +336,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                    '○ Offline'}
                 </span>
               </div>
-            </div>
+            </div> */}
 
             {/* Top-right: Control buttons - always visible */}
             <div className="absolute top-6 right-6 flex gap-3">
@@ -367,6 +368,21 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                   Perf
                 </span>
               </button>
+              {isLowPowerMode && (
+                <button
+                  onClick={() => setShowVisualizerControls(!showVisualizerControls)}
+                  className={`
+                    w-10 h-10 rounded-full transition-all duration-500 flex items-center justify-center
+                    ${isDarkMode 
+                      ? (showVisualizerControls ? 'bg-white text-black' : 'bg-white/90 hover:bg-white text-black')
+                      : (showVisualizerControls ? 'bg-black text-white' : 'bg-black/90 hover:bg-black text-white')}
+                    hover:scale-[1.05] active:scale-[0.95] transform
+                  `}
+                  title="Visualizer settings"
+                >
+                  <span className="text-sm">⚙️</span>
+                </button>
+              )}
               <button
                 onClick={() => setIsLowPowerMode(!isLowPowerMode)}
                 className={`
@@ -498,7 +514,11 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
           </div>
 
           {/* Voice-reactive PlasmaVisualizer background - PURE, NO OVERLAYS */}
-          <VoiceReactivePlasma isDarkMode={isDarkMode} isLowPowerMode={isLowPowerMode} />
+          <VoiceReactivePlasma 
+            isDarkMode={isDarkMode} 
+            isLowPowerMode={isLowPowerMode} 
+            showControls={showVisualizerControls}
+          />
 
           {/* Performance Monitor Overlay */}
           {showPerformanceMonitor && (

@@ -1,17 +1,57 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
+import dynamic from 'next/dynamic';
+
+const VoiceReactiveVisualizer = dynamic(
+  () => import('./VoiceReactiveVisualizer'),
+  { ssr: false }
+);
 
 interface FallbackPlasmaProps {
   isDarkMode: boolean;
+  showControls?: boolean;
 }
 
 /**
  * FallbackPlasma
- * A lightweight, pure CSS "plasma-like" background using animated gradients.
+ * A lightweight "plasma-like" background with two modes:
+ * 1. Simple CSS animated gradients (default)
+ * 2. Voice-reactive DOM-based visualization
  * This is used when WebGL is disabled or performance degradation is detected.
  */
-export function FallbackPlasma({ isDarkMode }: FallbackPlasmaProps) {
+export function FallbackPlasma({ isDarkMode, showControls = false }: FallbackPlasmaProps) {
+  const [useVoiceReactive, setUseVoiceReactive] = useState(true); // Default to voice-reactive mode
+
+  if (useVoiceReactive) {
+    return (
+      <div className="absolute inset-0">
+        <VoiceReactiveVisualizer 
+          isDarkMode={isDarkMode} 
+          autoStart={true} 
+          audioSource="output"
+          skipMicrophoneRequest={true}
+          externalShowControls={showControls}
+        />
+        <button
+          onClick={() => setUseVoiceReactive(false)}
+          className={`
+            absolute top-6 left-6 z-40
+            px-4 py-2 rounded-full transition-all duration-300
+            ${isDarkMode 
+              ? 'bg-white/90 text-black hover:bg-white' 
+              : 'bg-black/90 text-white hover:bg-black'}
+            hover:scale-[1.02] active:scale-[0.98] transform
+          `}
+        >
+          <span className="font-light text-xs tracking-[0.15em] uppercase">
+            Simple Mode
+          </span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`absolute inset-0 overflow-hidden ${
@@ -28,6 +68,21 @@ export function FallbackPlasma({ isDarkMode }: FallbackPlasmaProps) {
           animation: "gradientMove 12s ease infinite",
         }}
       />
+      <button
+        onClick={() => setUseVoiceReactive(true)}
+        className={`
+          absolute top-6 left-6 z-40
+          px-4 py-2 rounded-full transition-all duration-300
+          ${isDarkMode 
+            ? 'bg-white/90 text-black hover:bg-white' 
+            : 'bg-black/90 text-white hover:bg-black'}
+          hover:scale-[1.02] active:scale-[0.98] transform
+        `}
+      >
+        <span className="font-light text-xs tracking-[0.15em] uppercase">
+          Voice Mode
+        </span>
+      </button>
       <style jsx>{`
         @keyframes gradientMove {
           0% {
