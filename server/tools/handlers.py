@@ -958,6 +958,9 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
         return await tool_handlers.get_current_time(**arguments)
     elif function_name == "calculate":
         return await tool_handlers.calculate(**arguments)
+    elif function_name == "search_web_free":
+        from .web_search_free import search_web_free
+        return await search_web_free(**arguments)
     elif function_name == "extract_url_text":
         return await tool_handlers.extract_url_text(**arguments)
     # Timed task tools (app state management)

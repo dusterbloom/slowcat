@@ -27,9 +27,23 @@ GET_CURRENT_TIME = FunctionSchema(
     required=[]
 )
 
-# ❌ REMOVED: Weather, Web Search tools - now handled by MCP servers
-# - get_weather -> handled by MCP or external API
-# - search_web -> handled by brave_web_search MCP server  
+# Free Web Search Tool (no API key required)
+SEARCH_WEB_FREE = FunctionSchema(
+    name="search_web_free",
+    description="Search the web using free search engines (DuckDuckGo, SearXNG) without API keys",
+    properties={
+        "query": {
+            "type": "string",
+            "description": "Search query"
+        },
+        "num_results": {
+            "type": "integer",
+            "description": "Number of results to return (default: 5)",
+            "default": 5
+        }
+    },
+    required=["query"]
+)
 
 # Clean web text extraction tool (local)
 EXTRACT_URL_TEXT = FunctionSchema(
@@ -258,6 +272,9 @@ ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
     
     # Math/calculation (as requested)
     CALCULATE,
+    
+    # Free web search (no API key required)
+    SEARCH_WEB_FREE,
     
     # Clean web text extraction (voice-optimized)
     EXTRACT_URL_TEXT,

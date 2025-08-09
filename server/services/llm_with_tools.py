@@ -116,7 +116,7 @@ class LLMWithToolsService(OpenAILLMService):
             
         # Local-only tools (as specified by user)
         local_tools = {
-            "calculate", "get_current_time", "extract_url_text",
+            "calculate", "get_current_time", "extract_url_text", "search_web_free",
             "play_music", "pause_music", "skip_song", "stop_music", 
             "queue_music", "search_music", "get_now_playing", 
             "set_volume", "create_playlist", "get_music_stats",
