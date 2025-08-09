@@ -22,3 +22,8 @@ server/data/
 
 server/mcp.json
 server/mcp*.json
+
+# Sherpa models and related files
+server/models/sherpa-*
+*.onnx
+*.tar.bz2

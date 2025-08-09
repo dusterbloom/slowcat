@@ -55,3 +55,6 @@ docs/api/_build/
 docs/api/api
 
 server/mcp.json
+
+*.log
+server/models/
