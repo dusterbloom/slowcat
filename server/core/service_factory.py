@@ -191,6 +191,14 @@ class ServiceFactory:
             sherpa_module = importlib.import_module("services.sherpa_stt")
             modules['SherpaONNXSTTService'] = sherpa_module.SherpaONNXSTTService
             
+            # 🔥 NEW: Load streaming Sherpa service
+            sherpa_streaming_module = importlib.import_module("services.sherpa_streaming_stt")
+            modules['SherpaStreamingSTTService'] = sherpa_streaming_module.SherpaStreamingSTTService
+            
+            # 🚀 REAL: Load PROPER OnlineRecognizer streaming service
+            sherpa_online_module = importlib.import_module("services.sherpa_streaming_stt_v2")
+            modules['SherpaOnlineSTTService'] = sherpa_online_module.SherpaOnlineSTTService
+            
             stt_module = importlib.import_module("pipecat.services.whisper.stt")
             modules['MLXModel'] = stt_module.MLXModel
             
@@ -299,7 +307,22 @@ class ServiceFactory:
         backend = os.getenv("STT_BACKEND", "whisper-mlx").lower()
         
         if backend == "sherpa-onnx":
-            SherpaSTT = ml_modules["SherpaONNXSTTService"]
+            # 🔥 CHECK FOR STREAMING MODE
+            streaming_mode = os.getenv("SHERPA_STREAMING", "true").lower() == "true"
+            
+            # 🔥 CHECK FOR ONLINE STREAMING MODE (NEW!)
+            online_streaming = os.getenv("SHERPA_ONLINE_STREAMING", "true").lower() == "true"
+            
+            if online_streaming:
+                logger.info("🚀 Using ONLINE Sherpa-ONNX STT Service (OnlineRecognizer)!")
+                SherpaSTT = ml_modules["SherpaOnlineSTTService"]
+            elif streaming_mode:
+                logger.info("🔄 Using STREAMING Sherpa-ONNX STT Service (OfflineRecognizer hack)")
+                SherpaSTT = ml_modules["SherpaStreamingSTTService"]
+            else:
+                logger.info("📦 Using SEGMENTED Sherpa-ONNX STT Service")
+                SherpaSTT = ml_modules["SherpaONNXSTTService"]
+            
             model_dir = os.getenv("SHERPA_ONNX_MODEL_DIR", "").strip()
             if not model_dir:
                 raise RuntimeError(
@@ -307,29 +330,55 @@ class ServiceFactory:
                 )
             decoding_method = os.getenv("SHERPA_DECODING_METHOD", "greedy_search")
             provider = os.getenv("SHERPA_PROVIDER", "cpu")
-            hotwords_file = os.getenv("SHERPA_HOTWORDS_FILE", "").strip() or None
-            hotwords_score = float(os.getenv("SHERPA_HOTWORDS_SCORE", "1.5"))
             
-            # Language locking parameters
-            # Auto-enable language lock when specific language is requested (not 'auto')
-            language_lock = os.getenv("SHERPA_LANGUAGE_LOCK", "").strip() or None
-            language_lock_mode = os.getenv("SHERPA_LANGUAGE_LOCK_MODE", "strict")
+            # Base configuration
+            sherpa_config = {
+                "model_dir": model_dir,
+                "language": language,
+                "decoding_method": decoding_method,
+                "provider": provider,
+            }
             
-            # Auto-set language lock if language is specified and not 'auto'
-            if not language_lock and language != "auto" and language in ['be', 'de', 'en', 'es', 'fr', 'hr', 'it', 'pl', 'ru', 'uk']:
-                language_lock = language
-                logger.info(f"🔐 Auto-enabling language lock for --language {language}")
+            if online_streaming:
+                # 🚀 ONLINE STREAMING CONFIG (OnlineRecognizer)
+                hotwords_file = os.getenv("SHERPA_HOTWORDS_FILE", "").strip() or ""
+                sherpa_config.update({
+                    "enable_endpoint_detection": os.getenv("SHERPA_ENDPOINT_DETECTION", "true").lower() == "true",
+                    "chunk_size_ms": int(os.getenv("SHERPA_CHUNK_MS", "200")),
+                    "emit_partial_results": os.getenv("SHERPA_PARTIAL_RESULTS", "false").lower() == "true",
+                    "max_active_paths": int(os.getenv("SHERPA_MAX_PATHS", "8")),
+                    "num_threads": int(os.getenv("SHERPA_THREADS", "1")),
+                    "hotwords_file": hotwords_file,
+                    "hotwords_score": float(os.getenv("SHERPA_HOTWORDS_SCORE", "1.5")),
+                })
+                logger.info(f"🚀 Online streaming config: chunk={sherpa_config['chunk_size_ms']}ms, endpoint_detection={sherpa_config['enable_endpoint_detection']}")
+            elif streaming_mode:
+                # 🔥 STREAMING CONFIG (OfflineRecognizer hack)
+                sherpa_config.update({
+                    "chunk_duration_ms": int(os.getenv("SHERPA_CHUNK_MS", "500")),
+                    "overlap_duration_ms": int(os.getenv("SHERPA_OVERLAP_MS", "200")),
+                    "min_confidence": float(os.getenv("SHERPA_MIN_CONFIDENCE", "0.3")),
+                })
+                logger.info(f"🔥 Streaming config: chunk={sherpa_config['chunk_duration_ms']}ms, overlap={sherpa_config['overlap_duration_ms']}ms")
+            else:
+                # Legacy segmented config
+                hotwords_file = os.getenv("SHERPA_HOTWORDS_FILE", "").strip() or None
+                hotwords_score = float(os.getenv("SHERPA_HOTWORDS_SCORE", "1.5"))
+                language_lock = os.getenv("SHERPA_LANGUAGE_LOCK", "").strip() or None
+                language_lock_mode = os.getenv("SHERPA_LANGUAGE_LOCK_MODE", "strict")
+                
+                if not language_lock and language != "auto" and language in ['be', 'de', 'en', 'es', 'fr', 'hr', 'it', 'pl', 'ru', 'uk']:
+                    language_lock = language
+                    logger.info(f"🔐 Auto-enabling language lock for --language {language}")
+                
+                sherpa_config.update({
+                    "hotwords_file": hotwords_file,
+                    "hotwords_score": hotwords_score,
+                    "language_lock": language_lock,
+                    "language_lock_mode": language_lock_mode,
+                })
             
-            return SherpaSTT(
-                model_dir=model_dir,
-                language=language,
-                decoding_method=decoding_method,
-                provider=provider,
-                hotwords_file=hotwords_file,
-                hotwords_score=hotwords_score,
-                language_lock=language_lock,
-                language_lock_mode=language_lock_mode,
-            )
+            return SherpaSTT(**sherpa_config)
         
         # default: Whisper MLX
         MLXModel = ml_modules['MLXModel']
