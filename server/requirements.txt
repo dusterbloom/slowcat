@@ -20,3 +20,9 @@ mcpo>=0.0.17
 # browser tools
 trafilatura
 tools
+
+# --- Sherpa-ONNX (new) ---
+numpy>=1.26
+sherpa-onnx>=1.12.8
+onnxruntime>=1.22.1
+huggingface_hub>=0.23.0

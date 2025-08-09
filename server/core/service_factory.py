@@ -3,6 +3,7 @@ Service factory for creating and managing service instances with dependency inje
 """
 
 import asyncio
+import os
 import threading
 import importlib
 from typing import Dict, Any, Optional, Type, TypeVar, Generic, Callable
@@ -187,6 +188,9 @@ class ServiceFactory:
             whisper_module = importlib.import_module("services.whisper_stt_with_lock")
             modules['WhisperSTTServiceMLX'] = whisper_module.WhisperSTTServiceMLX
             
+            sherpa_module = importlib.import_module("services.sherpa_stt")
+            modules['SherpaONNXSTTService'] = sherpa_module.SherpaONNXSTTService
+            
             stt_module = importlib.import_module("pipecat.services.whisper.stt")
             modules['MLXModel'] = stt_module.MLXModel
             
@@ -292,6 +296,29 @@ class ServiceFactory:
     
     def _create_stt_service(self, ml_modules: Dict[str, Any], language: str = "en", stt_model: str = None):
         """Create STT service"""
+        backend = os.getenv("STT_BACKEND", "whisper-mlx").lower()
+        
+        if backend == "sherpa-onnx":
+            SherpaSTT = ml_modules["SherpaONNXSTTService"]
+            model_dir = os.getenv("SHERPA_ONNX_MODEL_DIR", "").strip()
+            if not model_dir:
+                raise RuntimeError(
+                    "STT_BACKEND is 'sherpa-onnx' but SHERPA_ONNX_MODEL_DIR is not set"
+                )
+            decoding_method = os.getenv("SHERPA_DECODING_METHOD", "greedy_search")
+            provider = os.getenv("SHERPA_PROVIDER", "cpu")
+            hotwords_file = os.getenv("SHERPA_HOTWORDS_FILE", "").strip() or None
+            hotwords_score = float(os.getenv("SHERPA_HOTWORDS_SCORE", "1.5"))
+            return SherpaSTT(
+                model_dir=model_dir,
+                language=language,
+                decoding_method=decoding_method,
+                provider=provider,
+                hotwords_file=hotwords_file,
+                hotwords_score=hotwords_score,
+            )
+        
+        # default: Whisper MLX
         MLXModel = ml_modules['MLXModel']
         WhisperSTTServiceMLX = ml_modules['WhisperSTTServiceMLX']
         
