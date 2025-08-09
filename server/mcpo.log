@@ -1,52 +1,33 @@
-2025-08-09 09:17:58,221 - INFO - Starting MCPO Server...
-2025-08-09 09:17:58,221 - INFO -   Name: mcpo-proxy
-2025-08-09 09:17:58,221 - INFO -   Version: 1.0
-2025-08-09 09:17:58,221 - INFO -   Description: Automatically generated API from MCP Tool Schemas
-2025-08-09 09:17:58,221 - INFO -   Hostname: MacBook.local
-2025-08-09 09:17:58,221 - INFO -   Port: 3001
-2025-08-09 09:17:58,221 - INFO -   API Key: Provided
-2025-08-09 09:17:58,221 - INFO -   CORS Allowed Origins: ['*']
-2025-08-09 09:17:58,221 - INFO -   Path Prefix: /
-2025-08-09 09:17:58,221 - INFO - Loading MCP server configurations from: mcp.json
-2025-08-09 09:17:58,221 - INFO - Configuring MCP Servers:
-2025-08-09 09:17:58,221 - INFO - Uvicorn server starting...
-INFO:     Started server process [41012]
+2025-08-09 13:49:11,265 - INFO - Starting MCPO Server...
+2025-08-09 13:49:11,265 - INFO -   Name: mcpo-proxy
+2025-08-09 13:49:11,265 - INFO -   Version: 1.0
+2025-08-09 13:49:11,265 - INFO -   Description: Automatically generated API from MCP Tool Schemas
+2025-08-09 13:49:11,265 - INFO -   Hostname: MacBook.local
+2025-08-09 13:49:11,265 - INFO -   Port: 3001
+2025-08-09 13:49:11,265 - INFO -   API Key: Provided
+2025-08-09 13:49:11,265 - INFO -   CORS Allowed Origins: ['*']
+2025-08-09 13:49:11,265 - INFO -   Path Prefix: /
+2025-08-09 13:49:11,265 - INFO - Loading MCP server configurations from: mcp.json
+2025-08-09 13:49:11,265 - INFO - Configuring MCP Servers:
+2025-08-09 13:49:11,266 - INFO - Uvicorn server starting...
+INFO:     Started server process [98200]
 INFO:     Waiting for application startup.
-2025-08-09 09:17:58,234 - INFO - Initiating connection for server: 'memory'...
+2025-08-09 13:49:11,277 - INFO - Initiating connection for server: 'memory'...
 Knowledge Graph MCP Server running on stdio
-2025-08-09 09:17:59,046 - INFO - Successfully connected to 'memory'.
-2025-08-09 09:17:59,046 - INFO - Initiating connection for server: 'filesystem'...
+2025-08-09 13:49:12,257 - INFO - Successfully connected to 'memory'.
+2025-08-09 13:49:12,258 - INFO - Initiating connection for server: 'filesystem'...
 Secure MCP Filesystem Server running on stdio
 Client does not support MCP Roots, using allowed directories set from server args: [ '/Users/peppi/Documents' ]
-2025-08-09 09:17:59,801 - INFO - Successfully connected to 'filesystem'.
-2025-08-09 09:17:59,801 - INFO - Initiating connection for server: 'browser-text'...
-2025-08-09 09:18:00,715 - INFO - Successfully connected to 'browser-text'.
-2025-08-09 09:18:00,715 - INFO - 
+2025-08-09 13:49:13,106 - INFO - Successfully connected to 'filesystem'.
+2025-08-09 13:49:13,106 - INFO - Initiating connection for server: 'browser-text'...
+2025-08-09 13:49:14,098 - INFO - Successfully connected to 'browser-text'.
+2025-08-09 13:49:14,098 - INFO - 
 --- Server Startup Summary ---
-2025-08-09 09:18:00,715 - INFO - Successfully connected to:
-2025-08-09 09:18:00,715 - INFO -   - memory
-2025-08-09 09:18:00,715 - INFO -   - filesystem
-2025-08-09 09:18:00,715 - INFO -   - browser-text
-2025-08-09 09:18:00,715 - INFO - --------------------------
+2025-08-09 13:49:14,098 - INFO - Successfully connected to:
+2025-08-09 13:49:14,098 - INFO -   - memory
+2025-08-09 13:49:14,098 - INFO -   - filesystem
+2025-08-09 13:49:14,098 - INFO -   - browser-text
+2025-08-09 13:49:14,098 - INFO - --------------------------
 
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:3001 (Press CTRL+C to quit)
-Starting MCP OpenAPI Proxy with config file: mcp.json
-INFO:     127.0.0.1:49468 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49468 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49468 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49577 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49577 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49577 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49830 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49830 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49830 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49989 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49989 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49989 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50680 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50680 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50680 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51190 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51190 - "GET /filesystem/openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51190 - "GET /browser-text/openapi.json HTTP/1.1" 200 OK

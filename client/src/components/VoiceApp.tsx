@@ -142,7 +142,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
         const fps = Math.round((frameCount * 1000) / (now - lastTime));
         
         // Get memory usage (if available)
-        const memoryInfo = (performance as any).memory;
+        const memoryInfo = (performance as typeof performance & { memory?: { usedJSHeapSize: number } }).memory;
         const memoryUsage = memoryInfo ? Math.round(memoryInfo.usedJSHeapSize / 1048576) : 0; // MB
         
         // Simply check if we're NOT in low power mode to determine if WebGL should be active

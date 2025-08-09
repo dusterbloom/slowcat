@@ -108,7 +108,7 @@ const VoiceReactiveVisualizer: React.FC<VoiceReactiveVisualizerProps> = ({ isDar
       sum += amplitude * amplitude;
     }
     const rms = Math.sqrt(sum / dataArrayRef.current.length);
-    let normalizedRms = Math.min(rms / 128, 1.0) * sensitivity;
+    const normalizedRms = Math.min(rms / 128, 1.0) * sensitivity;
     
     // Log audio levels occasionally for debugging
     if (Math.random() < 0.01) { // 1% chance to log
