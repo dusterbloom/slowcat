@@ -83,10 +83,32 @@ def sanitize_for_voice(text: str) -> str:
     # Normalize whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # Clean up common web artifacts
+    # Clean up common web artifacts and search result formatting
     text = re.sub(r'Read more\.\.\.', '', text)
     text = re.sub(r'Continue reading', '', text)
     text = re.sub(r'Click here', '', text)
+    text = re.sub(r'Learn more', '', text)
+    
+    # Remove URLs and markdown links that sound bad when spoken
+    # Remove markdown links like [text](url) and keep just the text
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    
+    # Remove standalone URLs (http/https)
+    text = re.sub(r'https?://[^\s\]]+', '', text)
+    
+    # Remove common search result artifacts
+    text = re.sub(r'via\s+[A-Za-z]+\s*(Library|Search)', '', text)  # "via DuckDuckGo Library"
+    text = re.sub(r'Result\s+\d+:', '', text)  # "Result 1:"
+    text = re.sub(r'Search results for:?', '', text)  # "Search results for:"
+    
+    # Clean up multiple periods from URL removal
+    text = re.sub(r'\.{3,}', '...', text)
+    
+    # Remove domain names that might leak through
+    text = re.sub(r'\b\w+\.(com|org|net|io|co|gov|edu)\b', '', text)
+    
+    # Final whitespace cleanup
+    text = re.sub(r'\s+', ' ', text).strip()
     
     return text
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   ConsoleTemplate,
   FullScreenContainer,
@@ -42,6 +42,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
     isWebGLActive: false
   });
   const [showVisualizerControls, setShowVisualizerControls] = useState(false);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Initialize PipecatClient
@@ -97,6 +98,14 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
 
     initClient();
   }, []);
+
+  // Auto-scroll transcript to bottom when new messages arrive
+  useEffect(() => {
+    if (transcriptScrollRef.current && showTranscript && conversationHistory.length > 0) {
+      const scrollElement = transcriptScrollRef.current;
+      scrollElement.scrollTop = scrollElement.scrollHeight;
+    }
+  }, [conversationHistory, showTranscript]);
 
   // Auto-reconnection logic for kings 👑
   useEffect(() => {
@@ -644,32 +653,41 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
             </div>
             
             {/* Transcript Content */}
-            <div className={`
-              px-6 pb-3 overflow-y-auto
-              ${transcriptExpanded ? 'max-h-[calc(100vh-12rem)]' : 'max-h-24'}
-            `}>
+            <div 
+              ref={transcriptScrollRef}
+              className={`
+                px-6 pb-3 overflow-y-auto
+                ${transcriptExpanded ? 'max-h-[calc(100vh-12rem)]' : 'max-h-24'}
+              `}
+              style={{ scrollBehavior: 'smooth' }}
+            >
               {/* Show conversation history if available */}
               {conversationHistory.length > 0 ? (
                 <div className="space-y-3">
                   {conversationHistory.map((message, idx) => (
-                    <div key={idx} className="flex gap-3 mb-3">
-                      <span className={`
-                        font-bold uppercase tracking-wider min-w-[3rem]
-                        ${isDarkMode ? 'text-black' : 'text-white'}
-                        ${fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-sm' : 'text-xs'}
-                      `}>
-                        {message.role === 'user' ? 'USER' : 'AI'}
-                      </span>
-                      <p className={`
-                        flex-1
-                        ${message.role === 'user'
-                          ? (isDarkMode ? 'text-black/70' : 'text-white/70')
-                          : (isDarkMode ? 'text-black/90' : 'text-white/90')
-                        }
-                        ${fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'}
-                      `}>
-                        {message.text}
-                      </p>
+                    <div key={idx} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} mb-3`}>
+                      <div className={`max-w-[80%] rounded-lg p-3 ${
+                        message.role === 'user' 
+                          ? 'bg-blue-600 text-white' 
+                          : (isDarkMode ? 'bg-gray-700 text-gray-100 border border-gray-600' : 'bg-gray-200 text-gray-900 border border-gray-300')
+                      }`}>
+                        <div 
+                          className={`leading-relaxed break-words ${
+                            fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
+                          }`}
+                          dangerouslySetInnerHTML={{ 
+                            __html: message.text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="underline hover:no-underline">$1</a>') 
+                          }}
+                        />
+                        <div className={`text-xs mt-1 opacity-70 ${
+                          message.role === 'user' ? 'text-blue-200' : (isDarkMode ? 'text-gray-400' : 'text-gray-500')
+                        }`}>
+                          {new Date().toLocaleTimeString([], { 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                          })}
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>

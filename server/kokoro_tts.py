@@ -238,10 +238,13 @@ class KokoroTTSService(TTSService):
             from tools.text_formatter import sanitize_for_voice
             sanitized_text = sanitize_for_voice(text)
             
-            # Check if sanitization resulted in empty or near-empty text
+            # Check if sanitization resulted in empty or near-empty text - skip TTS silently
             if not sanitized_text or len(sanitized_text.strip()) <= 2:
-                logger.warning(f"🚫 TTS text too short after sanitization: '{text[:50]}...' -> '{sanitized_text}' - using fallback")
-                sanitized_text = "Sorry, I couldn't process that message properly."
+                logger.info(f"🔇 Skipping TTS for empty/emoji-only text: '{text[:50]}...' -> '{sanitized_text}'")
+                # Skip TTS entirely for empty content - return early
+                yield TTSStartedFrame()
+                yield TTSStoppedFrame()
+                return
             
             # Log sanitization if text was changed
             if sanitized_text != text:

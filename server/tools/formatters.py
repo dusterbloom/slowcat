@@ -64,6 +64,37 @@ def format_tool_response_for_voice(function_name: str, result: Union[Dict, str, 
             else:
                 return "I couldn't find any relevant search results."
                 
+        elif function_name == "search_web_free":
+            # Handle free web search results with voice_summary
+            if isinstance(result, dict):
+                # Check if there's a voice_summary field (our preferred voice output)
+                if "voice_summary" in result:
+                    voice_summary = result["voice_summary"]
+                    if voice_summary and voice_summary != "I couldn't search the web right now. Please try again.":
+                        return voice_summary
+                
+                # Fallback: format from results array
+                if "results" in result and result["results"]:
+                    response = "Here's what I found: "
+                    for i, item in enumerate(result["results"][:3]):  # Limit to 3 results
+                        if isinstance(item, dict):
+                            title = item.get("title", "").replace("…", "").strip()
+                            snippet = item.get("snippet", "").replace("…", "").strip()
+                            
+                            # Skip results with non-English titles or obvious irrelevant content
+                            if title and snippet:
+                                # Clean up title and snippet for voice
+                                title = title[:50]  # Limit title length
+                                snippet = snippet[:100]  # Limit snippet length
+                                response += f"{title}: {snippet}. "
+                    return response.strip()
+                    
+                # Handle error cases
+                elif "error" in result:
+                    return f"I had trouble searching: {result['error']}"
+                
+            return "I couldn't find any relevant search results."
+                
         elif function_name == "remember_information":
             if isinstance(result, dict) and result.get("status") == "saved":
                 key = result.get("key", "that")

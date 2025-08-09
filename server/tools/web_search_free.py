@@ -71,33 +71,125 @@ class FreeWebSearch:
             "voice_summary": "I couldn't search the web right now. Please try again."
         }
     
+    def _detect_query_language(self, query: str) -> str:
+        """Detect query language to improve search results"""
+        query_lower = query.lower()
+        
+        # Simple language detection based on keywords
+        italian_indicators = ['film', 'cinema', 'più', 'italia', 'streaming', 'scarica']
+        spanish_indicators = ['películas', 'cine', 'más', 'españa', 'descargar']
+        french_indicators = ['films', 'cinéma', 'plus', 'france', 'télécharger']
+        
+        if any(word in query_lower for word in italian_indicators):
+            return 'it'
+        elif any(word in query_lower for word in spanish_indicators):
+            return 'es'  
+        elif any(word in query_lower for word in french_indicators):
+            return 'fr'
+        else:
+            return 'en'  # Default to English
+
     async def _search_duckduckgo_library(self, query: str, num_results: int) -> List[Dict]:
         """
-        Search using duckduckgo-search Python library (most reliable)
+        Search using duckduckgo-search Python library with language detection
         """
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
             
             # Use sync version in async context
             ddgs = DDGS()
             results = []
             
-            # Get text search results
-            search_results = ddgs.text(query, max_results=num_results)
+            # Detect query language
+            query_lang = self._detect_query_language(query)
+            
+            # Set region based on detected language
+            region_map = {
+                'en': 'us-en',
+                'it': 'it-it', 
+                'es': 'es-es',
+                'fr': 'fr-fr'
+            }
+            region = region_map.get(query_lang, 'us-en')
+            
+            # Try with language-specific settings first
+            search_attempts = [
+                # Force English language results with UK/US region
+                lambda: ddgs.text(query, max_results=num_results * 3, region='uk-en', safesearch='off'),
+                lambda: ddgs.text(query, max_results=num_results * 3, region='us-en', safesearch='off'), 
+                lambda: ddgs.text(query, max_results=num_results * 2, region=region),
+                lambda: ddgs.text(query, max_results=num_results * 2)  # Fallback without region
+            ]
+            
+            search_results = None
+            for attempt in search_attempts:
+                try:
+                    search_results = attempt()
+                    if search_results:
+                        break
+                except:
+                    continue
+            
+            if not search_results:
+                raise Exception("All search attempts failed")
             
             for r in search_results:
-                results.append({
-                    'title': r.get('title', ''),
-                    'url': r.get('href', ''),
-                    'snippet': r.get('body', 'No description available')
-                })
-                if len(results) >= num_results:
-                    break
+                title = r.get('title', '')
+                url = r.get('href', '')
+                snippet = r.get('body', 'No description available')
+                
+                # Filter out obviously irrelevant results (Chinese, etc.)
+                if self._is_relevant_result(title, snippet, url, query):
+                    results.append({
+                        'title': title,
+                        'url': url,
+                        'snippet': snippet
+                    })
+                    if len(results) >= num_results:
+                        break
             
             return results
         except Exception as e:
             logger.debug(f"DuckDuckGo library error: {e}")
             raise
+    
+    def _is_relevant_result(self, title: str, snippet: str, url: str, query: str = "") -> bool:
+        """
+        Filter out irrelevant search results
+        """
+        # Check for non-Latin characters (likely non-English content)
+        combined_text = f"{title} {snippet}".lower()
+        
+        # Count non-ASCII characters
+        non_ascii_count = sum(1 for char in combined_text if ord(char) > 127)
+        total_chars = len(combined_text)
+        
+        if total_chars > 0:
+            non_ascii_ratio = non_ascii_count / total_chars
+            # Skip if more than 30% non-ASCII characters (likely not English)
+            if non_ascii_ratio > 0.3:
+                return False
+        
+        # Skip domains known for non-English content or irrelevant Asian news
+        irrelevant_domains = [
+            'scmp.com',  # South China Morning Post - shows up for London searches!
+            'zhihu.com', 'baidu.com', 'weibo.com', 'qq.com', 'douban.com',
+            '.cn', '.jp', '.kr', '.ru', '.br', '.hk'
+        ]
+        for domain in irrelevant_domains:
+            if domain in url.lower():
+                return False
+        
+        # Block content that's clearly about China/Asia when searching for other locations
+        combined_text = f"{title} {snippet}".lower()
+        asian_keywords = ['china', 'chinese', 'hong kong', 'beijing', 'xi jinping', 'asia']
+        if any(keyword in combined_text for keyword in asian_keywords):
+            # Only allow if the search query is also about Asia
+            query_lower = query.lower()
+            if not any(asian_word in query_lower for asian_word in ['china', 'chinese', 'hong kong', 'beijing', 'asia']):
+                return False
+        
+        return True
     
     async def _search_duckduckgo_html(self, query: str, num_results: int) -> List[Dict]:
         """
@@ -310,12 +402,24 @@ class FreeWebSearch:
         
         ui_formatted = "\n".join(ui_parts)
         
-        # Format for voice (clean text)
-        voice_parts = [f"Here are the search results for {query}:"]
+        # Format for voice (clean text, optimized for TTS)
+        voice_parts = [f"I found these results for {query}:"]
         for i, result in enumerate(results[:3], 1):  # Only first 3 for voice
             title = result.get('title', 'Untitled')
-            snippet = result.get('snippet', '')[:100]
-            voice_parts.append(f"Result {i}: {title}. {snippet}")
+            snippet = result.get('snippet', '')
+            
+            # Clean title for voice (remove special characters that sound bad)
+            title_clean = title.replace('…', '').replace('|', '').replace('–', '-').replace('—', '-')
+            title_clean = title_clean[:60]  # Limit length for voice
+            
+            # Clean snippet for voice
+            snippet_clean = snippet.replace('…', '').replace('\n', ' ').replace('  ', ' ')
+            snippet_clean = snippet_clean[:80]  # Shorter for voice
+            
+            if snippet_clean:
+                voice_parts.append(f"{title_clean}: {snippet_clean}.")
+            else:
+                voice_parts.append(f"{title_clean}.")
         
         voice_summary = " ".join(voice_parts)
         
