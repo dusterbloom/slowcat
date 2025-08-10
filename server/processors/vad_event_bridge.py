@@ -85,3 +85,7 @@ class VADEventBridge(FrameProcessor):
         
         # ALWAYS pass through ALL frames
         await self.push_frame(frame, direction)
+    
+    async def cleanup(self):
+        """Clean up VAD event bridge resources"""
+        logger.debug("VADEventBridge cleanup completed")

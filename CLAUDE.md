@@ -4,94 +4,123 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Slowcat is a local voice agent for macOS achieving sub-800ms voice-to-voice latency using Apple Silicon. It uses Pipecat framework with MLX for optimal performance on M-series chips.
-
-## Development Commands
-
-### Server (Python)
-
-**Setup and Run**:
-```bash
-cd server/
-./run_bot.sh  # Automated setup and run
-
-# Manual setup:
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python bot.py
-```
-
-**Multi-language Support**:
-```bash
-python bot.py --language es  # Spanish, French (fr), Japanese (ja), etc.
-```
-
-**Environment Variables**:
-- `ENABLE_VOICE_RECOGNITION`: Enable/disable speaker recognition (default: true)
-- `ENABLE_MEMORY`: Enable/disable local conversation memory (default: true)
-- `OPENAI_BASE_URL`: LLM endpoint (default: http://localhost:1234/v1)
-
-### Client (Next.js)
-
-**Development**:
-```bash
-cd client/
-npm install
-npm run dev    # Development server on http://localhost:3000
-npm run build  # Production build
-npm run lint   # Run ESLint
-```
+Slowcat is a local voice agent for macOS achieving sub-800ms voice-to-voice latency using Apple Silicon. It uses Pipecat framework with MLX for optimal performance on M-series chips. Features include multi-language support, voice recognition, music control, dictation mode, and 100% offline operation.
 
 ## Architecture
 
-### Core Pipeline (server/bot.py)
-1. **WebRTC Transport** → Audio/Video streams
-2. **Silero VAD** → Voice activity detection
-3. **MLX Whisper** → Speech-to-text
-4. **LLM Service** → Response generation
-5. **Kokoro TTS** → Text-to-speech
+### Core Pipeline Flow
+```
+WebRTC Input → VAD → Audio Tee → STT → Memory/Context → LLM → TTS → WebRTC Output
+                ↓
+        Voice Recognition → Speaker Context
+                ↓
+        Music Player (with ducking)
+                ↓
+        Tool Execution (MCP/Local)
+```
 
-### Custom Processors (server/processors/)
-- `vad_event_bridge.py`: Bridges VAD events to speaker recognition
-- `audio_tee.py`: Multi-consumer audio processing
-- `speaker_context_manager.py`: Manages speaker identification
-- `video_sampler.py`: Webcam frame sampling
-- `speaker_name_manager.py`: Speaker name persistence
+### Server Architecture (Python)
 
-### Voice Recognition (server/voice_recognition/)
-- Automatic speaker enrollment
-- Real-time identification using Resemblyzer
-- Profiles stored in `server/data/speaker_profiles/`
-- Adjusted thresholds for single-speaker scenarios
+**Entry Points:**
+- `server/bot_v2.py` - Main entry using modular service factory pattern
+- `server/bot.py` - Legacy monolithic entry point
+- `server/app.py` - FastAPI server with WebRTC endpoints
+- `server/run_bot.sh` - Automated setup and launch script
 
-### Local Memory (server/processors/)
-- Persistent conversation history without cloud services
-- Per-speaker memory when voice recognition is enabled
-- Stores last 200 conversations, includes last 10 in context
-- Memory files in `server/data/memory/`
+**Key Components:**
+- **Service Factory** (`core/service_factory.py`) - Dependency injection with lazy loading
+- **Pipeline Builder** (`core/pipeline_builder.py`) - Modular pipeline construction
+- **Config** (`config.py`) - Centralized configuration with dataclasses
+
+**Services:**
+- **STT**: Sherpa-ONNX streaming (`services/sherpa_streaming_stt_v2.py`), MLX Whisper (`services/whisper_stt_with_lock.py`)
+- **TTS**: Kokoro MLX-based (`kokoro_tts.py`) with multi-language voices
+- **LLM**: OpenAI-compatible with MCP tools (`services/llm_with_tools.py`)
+- **VAD**: Silero through Pipecat framework
+
+**Processors** (`processors/`):
+- Audio tee for multi-consumer processing
+- Speaker context and name management
+- Voice recognition with automatic enrollment
+- Local memory persistence
+- Video sampling for webcam
+
+### Client Architecture (Next.js)
+
+- Main UI: `client/src/app/page.tsx`
+- Components: `client/src/components/VoiceApp.tsx`, `StreamingText.tsx`
+- Uses Pipecat client libraries for WebRTC transport
+
+## Development Commands
+
+### Server
+
+```bash
+# Quick start
+cd server/
+./run_bot.sh
+
+# Manual setup
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Run server
+python bot_v2.py                    # New modular architecture
+python bot.py                        # Legacy monolithic
+python bot.py --language es          # Multi-language (es, fr, ja, it, zh, pt, de)
+
+# Testing
+python -m pytest tests/              # Unit tests
+python test_integration.py           # Integration tests
+python test_voice_recognition.py     # Voice recognition tests
+```
+
+### Client
+
+```bash
+cd client/
+npm install
+npm run dev      # Development server on http://localhost:3000
+npm run build    # Production build
+npm run lint     # ESLint validation
+```
 
 ## Important Constraints
 
-1. **Python 3.12 or earlier required** - MLX dependency
-2. **macOS with Apple Silicon required** - Optimized for M-series chips
-3. **LM Studio or OpenAI-compatible server required** - For LLM responses
-4. **Port 7860** - Server default port
+1. **Python 3.12 or earlier** - MLX dependency requirement
+2. **macOS with Apple Silicon** - Optimized for M-series chips
+3. **LM Studio or OpenAI-compatible server** - For LLM responses (default: http://localhost:1234/v1)
+4. **Port 7860** - Default server port
+5. **Multiprocessing spawn method** - Required for Metal GPU safety
 
-## Testing
+## Environment Variables
 
-```bash
-cd server/
-python test_integration.py      # Integration tests
-python test_voice_recognition.py # Voice recognition tests
-```
+- `ENABLE_VOICE_RECOGNITION` - Enable speaker recognition (default: true)
+- `ENABLE_MEMORY` - Enable conversation memory (default: true)
+- `OPENAI_BASE_URL` - LLM endpoint URL
+- `USE_MINIMAL_PROMPTS` - A/B test for system prompts
+- `HF_HUB_OFFLINE` - Offline mode for HuggingFace
+- `TRANSFORMERS_OFFLINE` - Offline mode for transformers
 
 ## Key Files
 
-- `server/bot.py`: Main pipeline implementation
-- `server/processors/`: Custom processor implementations
-- `client/src/app/page.tsx`: Main UI component
-- `server/voice_recognition/voice_identifier.py`: Speaker recognition logic
+### Server
+- `server/bot_v2.py` - Modular architecture entry point
+- `server/core/service_factory.py` - Service dependency injection
+- `server/core/pipeline_builder.py` - Pipeline construction
+- `server/config.py` - Configuration management
+- `server/mcp.json` - MCP tool configurations
+
+### Client
+- `client/src/app/page.tsx` - Main UI component
+- `client/src/components/VoiceApp.tsx` - Voice interaction component
+
+## Data Storage
+
+- Speaker profiles: `server/data/speaker_profiles/`
+- Conversation memory: `server/data/memory/`
+- Sherpa models: `server/models/`
 
 ## Language/Voice Mapping
 
@@ -102,3 +131,10 @@ python test_voice_recognition.py # Voice recognition tests
 - Italian (it): im_nicola
 - Chinese (zh): zf_xiaobei
 - Portuguese (pt): pf_dora
+- German (de): am_kristina
+
+## Special Modes
+
+- **Music Mode**: Voice-controlled music playback with ducking
+- **Dictation Mode**: Silent transcription to file
+- **Video Processing**: Webcam frame sampling for visual context

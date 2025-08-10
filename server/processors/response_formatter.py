@@ -43,3 +43,7 @@ class ResponseFormatterProcessor(FrameProcessor):
         else:
             # Pass through non-text frames unchanged
             yield frame
+    
+    async def cleanup(self):
+        """Clean up response formatter resources"""
+        logger.debug("ResponseFormatterProcessor cleanup completed")

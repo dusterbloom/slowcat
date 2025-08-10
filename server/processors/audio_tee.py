@@ -104,3 +104,15 @@ class AudioTeeProcessor(FrameProcessor):
             await consumer(frame, sample_rate)
         except Exception as e:
             logger.error(f"Error in audio consumer {consumer}: {e}")
+    
+    async def cleanup(self):
+        """Clean up any pending consumer tasks"""
+        if self._consumer_tasks:
+            logger.debug(f"Cancelling {len(self._consumer_tasks)} pending consumer tasks")
+            for task in self._consumer_tasks:
+                if not task.done():
+                    task.cancel()
+            # Wait for tasks to complete cancellation
+            await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
+            self._consumer_tasks.clear()
+        logger.debug("AudioTeeProcessor cleanup completed")

@@ -137,3 +137,7 @@ class MemoryContextInjector(FrameProcessor):
                 # Graceful fallback - continue with original frame
                 
         await self.push_frame(frame, direction)
+    
+    async def cleanup(self):
+        """Clean up memory context injector resources"""
+        logger.debug("MemoryContextInjectorProcessor cleanup completed")

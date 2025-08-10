@@ -133,3 +133,7 @@ class SpeakerContextProcessor(FrameProcessor):
             return f"Speaking with {speakers[0]}."
         else:
             return f"Speaking with {len(speakers)} people: {', '.join(speakers)}."
+    
+    async def cleanup(self):
+        """Clean up speaker context manager resources"""
+        logger.debug("SpeakerContextManagerProcessor cleanup completed")
