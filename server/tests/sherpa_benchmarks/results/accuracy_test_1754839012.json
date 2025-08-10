@@ -1,0 +1,217 @@
+{
+  "test_results": [
+    {
+      "original_text": "Hello my name is john smith and I work at goggle",
+      "corrected_text": "Hello my name is Join smith and I Work at goggle",
+      "confidence_score": 1.0,
+      "corrections_applied": [
+        {
+          "original": "Hello",
+          "corrected": "Hello",
+          "method": "phonetic_general",
+          "confidence": 1.0
+        },
+        {
+          "original": "john",
+          "corrected": "Join",
+          "method": "phonetic_general",
+          "confidence": 0.9249999999999999
+        },
+        {
+          "original": "work",
+          "corrected": "Work",
+          "method": "phonetic_general",
+          "confidence": 1.0
+        }
+      ],
+      "processing_time_ms": 19.086837768554688,
+      "method_used": "phonetic+ner"
+    },
+    {
+      "original_text": "I need to call marry johnson about the meeting with micro soft",
+      "corrected_text": "I need to call marry johnson about the meeting with micro soft",
+      "confidence_score": 0.75,
+      "corrections_applied": [],
+      "processing_time_ms": 26.879072189331055,
+      "method_used": "none"
+    },
+    {
+      "original_text": "Please visit bbb dot com slash news for more information",
+      "corrected_text": "Please visit bbb dot com slash news for more information",
+      "confidence_score": 0.6,
+      "corrections_applied": [],
+      "processing_time_ms": 10.55288314819336,
+      "method_used": "none"
+    },
+    {
+      "original_text": "The article is at tech crunch dot com",
+      "corrected_text": "The article is at tech crunch dot com",
+      "confidence_score": 0.7,
+      "corrections_applied": [],
+      "processing_time_ms": 6.7119598388671875,
+      "method_used": "none"
+    },
+    {
+      "original_text": "Check out get hub dot com for the source code",
+      "corrected_text": "Check out get hub dot com for the Source code",
+      "confidence_score": 0.8500000000000001,
+      "corrections_applied": [
+        {
+          "original": "Check",
+          "corrected": "Check",
+          "method": "phonetic_general",
+          "confidence": 1.0
+        },
+        {
+          "original": "source",
+          "corrected": "Source",
+          "method": "phonetic_general",
+          "confidence": 1.0
+        }
+      ],
+      "processing_time_ms": 9.603023529052734,
+      "method_used": "none"
+    },
+    {
+      "original_text": "I'm using react j s with type script for the front end",
+      "corrected_text": "I'm using react j s with type Scripts for the front end",
+      "confidence_score": 0.9,
+      "corrections_applied": [
+        {
+          "original": "script",
+          "corrected": "Scripts",
+          "method": "phonetic_general",
+          "confidence": 0.9571428571428571
+        }
+      ],
+      "processing_time_ms": 15.217065811157227,
+      "method_used": "none"
+    },
+    {
+      "original_text": "The dock her container is running on kuba net is",
+      "corrected_text": "The dock her container is running on kuba net is",
+      "confidence_score": 0.5,
+      "corrections_applied": [],
+      "processing_time_ms": 8.849143981933594,
+      "method_used": "none"
+    },
+    {
+      "original_text": "My email is john dot smith at gee mail dot com",
+      "corrected_text": "My email is Join dot smith at gee mail dot com",
+      "confidence_score": 0.7999999999999999,
+      "corrections_applied": [
+        {
+          "original": "john",
+          "corrected": "Join",
+          "method": "phonetic_general",
+          "confidence": 0.9249999999999999
+        }
+      ],
+      "processing_time_ms": 6.911993026733398,
+      "method_used": "none"
+    },
+    {
+      "original_text": "Call me at five five five one two three four five six seven",
+      "corrected_text": "Call me at five five five one two three For five six seven",
+      "confidence_score": 0.7,
+      "corrections_applied": [
+        {
+          "original": "four",
+          "corrected": "For",
+          "method": "phonetic_general",
+          "confidence": 0.9249999999999999
+        }
+      ],
+      "processing_time_ms": 10.369062423706055,
+      "method_used": "none"
+    },
+    {
+      "original_text": "I work at amazon web services on the cloud formation team contact me at john at a w s dot com",
+      "corrected_text": "I Work at amazon web services on the cloud formation team Context me at Join at a w s dot com",
+      "confidence_score": 0.7,
+      "corrections_applied": [
+        {
+          "original": "work",
+          "corrected": "Work",
+          "method": "phonetic_general",
+          "confidence": 1.0
+        },
+        {
+          "original": "contact",
+          "corrected": "Context",
+          "method": "phonetic_general",
+          "confidence": 0.9142857142857143
+        },
+        {
+          "original": "john",
+          "corrected": "Join",
+          "method": "phonetic_general",
+          "confidence": 0.9249999999999999
+        }
+      ],
+      "processing_time_ms": 14.835834503173828,
+      "method_used": "none"
+    },
+    {
+      "original_text": "The api endpoint is h t t p s colon slash slash a p i dot face book dot com slash graph",
+      "corrected_text": "The api endpoint is h t t p s colon slash slash a p i dot Face book dot com slash graph",
+      "confidence_score": 0.4,
+      "corrections_applied": [
+        {
+          "original": "face",
+          "corrected": "Face",
+          "method": "phonetic_general",
+          "confidence": 1.0
+        }
+      ],
+      "processing_time_ms": 13.119935989379883,
+      "method_used": "none"
+    },
+    {
+      "original_text": "I visited San Francisco last week",
+      "corrected_text": "I visited San Francisco last week",
+      "confidence_score": 0.95,
+      "corrections_applied": [],
+      "processing_time_ms": 8.066892623901367,
+      "method_used": "none"
+    },
+    {
+      "original_text": "The quick brown fox jumps over the lazy dog",
+      "corrected_text": "The Quick brown fox jumps over the lazy dog",
+      "confidence_score": 1.0,
+      "corrections_applied": [
+        {
+          "original": "quick",
+          "corrected": "Quick",
+          "method": "phonetic_general",
+          "confidence": 1.0
+        }
+      ],
+      "processing_time_ms": 8.566141128540039,
+      "method_used": "none"
+    }
+  ],
+  "analysis": {
+    "overall_stats": {
+      "total_tests": 13,
+      "total_time_sec": 0.16004586219787598,
+      "avg_processing_time_ms": 12.21306507404034,
+      "total_corrections": 13
+    },
+    "accuracy_metrics": {
+      "exact_matches": 2,
+      "exact_match_rate": 0.15384615384615385,
+      "avg_original_accuracy": 0.8233221906298829,
+      "avg_enhanced_accuracy": 0.8104120238735623,
+      "avg_improvement": -0.012910166756320592,
+      "tests_improved": 0,
+      "tests_degraded": 2
+    },
+    "category_breakdown": {
+      "names_companies": {
+        "test_count": 2,
+        "exact_match_rate": 0.0,
+        "avg_improvement": -0.045454545454545414,
+        "avg_processing_time": 22.98295497894287,
+        "corrections_per_test": 1.5,
+        "best_case": 

@@ -1,0 +1,3 @@
+meeting_minutes.wav	The board meeting was attended by CEO Michael Rodriguez, CFO Lisa Chen, and CTO David Kumar. We discussed Q4 projections and the partnership with TechCorp Inc.
+dictation_email.wav	Dear Mr. Thompson, Please send the quarterly report to accounting@company.com by Friday. The file should be uploaded to sharepoint.company.com/reports. Best regards, Jennifer Martinez.
+technical_discussion.wav	The API integration with stripe.com requires updating the webhook at webhook.oursite.com/stripe. Contact the DevOps team at devops@company.com for deployment.

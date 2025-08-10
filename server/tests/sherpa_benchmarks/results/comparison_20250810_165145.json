@@ -1,0 +1,42 @@
+[
+  {
+    "model_name": "sherpa-onnx-zipformer-en-2023-06-26",
+    "model_type": "sherpa",
+    "audio_duration_sec": 30.0,
+    "model_load_time_ms": 1998.837947845459,
+    "total_processing_time_sec": 1.3907349109649658,
+    "real_time_factor": 0.04635783036549886,
+    "time_to_first_result_ms": 204.83803749084473,
+    "initial_memory_mb": 191.9375,
+    "peak_memory_mb": 577.375,
+    "final_memory_mb": 577.375,
+    "memory_growth_mb": 385.4375,
+    "avg_cpu_percent": 81.65714285714286,
+    "peak_cpu_percent": 99.9,
+    "final_transcript": "OH YOU ARE",
+    "word_count": 3,
+    "segments_produced": 1,
+    "avg_segment_length": 30.0,
+    "errors_encountered": []
+  },
+  {
+    "model_name": "mlx-whisper-large-v3-turbo",
+    "model_type": "mlx-whisper",
+    "audio_duration_sec": 30.0,
+    "model_load_time_ms": 29070.743799209595,
+    "total_processing_time_sec": 29.07074499130249,
+    "real_time_factor": 0.9690248330434164,
+    "time_to_first_result_ms": 29070.74499130249,
+    "initial_memory_mb": 555.84375,
+    "peak_memory_mb": 2147.078125,
+    "final_memory_mb": 2147.078125,
+    "memory_growth_mb": 1591.234375,
+    "avg_cpu_percent": 42.724137931034484,
+    "peak_cpu_percent": 103.6,
+    "final_transcript": "the the the the the the the Thank you.",
+    "word_count": 9,
+    "segments_produced": 0,
+    "avg_segment_length": 0.0,
+    "errors_encountered": []
+  }
+]

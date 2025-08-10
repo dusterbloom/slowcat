@@ -1,0 +1,8 @@
+news_urls.wav	Please visit bbc.com/news for the latest updates. You can also check cnn.com and reuters.com for international coverage.
+tech_companies.wav	The meeting includes representatives from Microsoft, Google, Apple, Amazon, and Meta. We'll discuss partnerships with OpenAI and Anthropic.
+email_addresses.wav	Send the report to john.doe@company.com and mary.smith@example.org. CC sarah.wilson@university.edu on important updates.
+mixed_entities.wav	John Smith from Microsoft will present at github.com/microsoft/project. Contact him at j.smith@microsoft.com or visit linkedin.com/in/johnsmith.
+technical_terms.wav	Configure the API endpoint at api.example.com/v1/users. Use OAuth2 authentication with client ID and secret from developer.example.com.
+phone_numbers.wav	Call the office at plus one four one five five five five one two three four or mobile at plus one six five zero two three four five six seven eight.
+addresses.wav	The office is located at One Hundred Twenty Three Main Street, San Francisco, California nine four one zero two.
+complex_entities.wav	Dr. Sarah Johnson-Williams from Stanford University will discuss machine learning at ai-conference.org. The event is sponsored by OpenAI and hosted at conference-center.com.

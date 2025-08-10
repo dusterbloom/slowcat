@@ -1,0 +1,53 @@
+[
+  {
+    "model_name": "sherpa-onnx-sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+    "test_file": "0.wav",
+    "reference_text": "AFTER EARLY NIGHTFALL THE YELLOW LAMPS WOULD LIGHT UP HERE AND THERE THE SQUALID QUARTER OF THE BROTHELS",
+    "predicted_text": "THE YELLOW LAMPS WOULD LIGHT UP HERE AND THERE THE SQUALID QUARTER OF THE BRAFFLEL",
+    "model_load_time_ms": 1190.755844116211,
+    "processing_time_ms": 200.44898986816406,
+    "audio_duration_ms": 6625.0,
+    "real_time_factor": 0.030256451300854952,
+    "word_error_rate": 0.2222222222222222,
+    "character_error_rate": 0.25961538461538464,
+    "num_segments": 1,
+    "avg_segment_confidence": 1.0,
+    "endpoint_detection_count": 0,
+    "peak_memory_mb": 500.921875,
+    "avg_cpu_percent": 38.05
+  },
+  {
+    "model_name": "sherpa-onnx-sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+    "test_file": "1.wav",
+    "reference_text": "GOD AS A DIRECT CONSEQUENCE OF THE SIN WHICH MAN THUS PUNISHED HAD GIVEN HER A LOVELY CHILD WHOSE PLACE WAS ON THAT SAME DISHONOURED BOSOM TO CONNECT HER PARENT FOR EVER WITH THE RACE AND DESCENT OF MORTALS AND TO BE FINALLY A BLESSED SOUL IN HEAVEN",
+    "predicted_text": "AS A DIRECT CONSEQUENCE OF THE SIN WHICH MAN THUS PUNISHED HAD GIVEN HER A LOVELY CHILD WHOSE PLACE WAS ON THAT SAME DISHONORED BOSOM TO CONNECT HER PARENT FOR EVER WITH THE RACE AND DESCENT OF MORTALS AND TO BE FINALLY A BLESSED SOUL IN HEA",
+    "model_load_time_ms": 1190.755844116211,
+    "processing_time_ms": 519.3281173706055,
+    "audio_duration_ms": 16715.0,
+    "real_time_factor": 0.031069585245025753,
+    "word_error_rate": 0.0625,
+    "character_error_rate": 0.0321285140562249,
+    "num_segments": 1,
+    "avg_segment_confidence": 1.0,
+    "endpoint_detection_count": 0,
+    "peak_memory_mb": 502.109375,
+    "avg_cpu_percent": 64.53333333333333
+  },
+  {
+    "model_name": "sherpa-onnx-sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+    "test_file": "8k.wav",
+    "reference_text": "YET THESE THOUGHTS AFFECTED HESTER PRYNNE LESS WITH HOPE THAN APPREHENSION",
+    "predicted_text": "S AFFECTED HESTER PRYNNE LESS WITH HOPE THAN APPREHE",
+    "model_load_time_ms": 1190.755844116211,
+    "processing_time_ms": 133.9890956878662,
+    "audio_duration_ms": 4825.0,
+    "real_time_factor": 0.027769760764324605,
+    "word_error_rate": 0.36363636363636365,
+    "character_error_rate": 0.2972972972972973,
+    "num_segments": 1,
+    "avg_segment_confidence": 1.0,
+    "endpoint_detection_count": 0,
+    "peak_memory_mb": 502.140625,
+    "avg_cpu_percent": 38.35
+  }
+]

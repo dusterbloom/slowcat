@@ -1,0 +1,1 @@
+Configure the API endpoint at api.example.com/v1/users. Use OAuth2 authentication with client ID and secret from developer.example.com.

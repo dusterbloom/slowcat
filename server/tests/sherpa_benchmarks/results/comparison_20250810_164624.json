@@ -1,0 +1,42 @@
+[
+  {
+    "model_name": "sherpa-onnx-zipformer-en-2023-06-26",
+    "model_type": "sherpa",
+    "audio_duration_sec": 300.0,
+    "model_load_time_ms": 2851.6018390655518,
+    "total_processing_time_sec": 18.228518962860107,
+    "real_time_factor": 0.060761729876200356,
+    "time_to_first_result_ms": 259.45496559143066,
+    "initial_memory_mb": 507.375,
+    "peak_memory_mb": 861.140625,
+    "final_memory_mb": 861.140625,
+    "memory_growth_mb": 353.765625,
+    "avg_cpu_percent": 85.15238095238095,
+    "peak_cpu_percent": 96.7,
+    "final_transcript": "OH DEAR HOW YOU SPECIALIST S PROSPEROUS SYMS ONE SURPRISE",
+    "word_count": 10,
+    "segments_produced": 7,
+    "avg_segment_length": 42.857142857142854,
+    "errors_encountered": []
+  },
+  {
+    "model_name": "mlx-whisper-large-v3-turbo",
+    "model_type": "mlx-whisper",
+    "audio_duration_sec": 300.0,
+    "model_load_time_ms": 25315.061330795288,
+    "total_processing_time_sec": 25.315073013305664,
+    "real_time_factor": 0.08438357671101888,
+    "time_to_first_result_ms": 25315.073013305664,
+    "initial_memory_mb": 841.140625,
+    "peak_memory_mb": 1957.5,
+    "final_memory_mb": 1818.515625,
+    "memory_growth_mb": 977.375,
+    "avg_cpu_percent": 33.08039215686274,
+    "peak_cpu_percent": 187.4,
+    "final_transcript": "Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Beep Be Thank you. Thank you. Thank you. Thank you. Thank you. Thank you. Thank you. Thank you. Thank you.",
+    "word_count": 130,
+    "segments_produced": 0,
+    "avg_segment_length": 0.0,
+    "errors_encountered": []
+  }
+]

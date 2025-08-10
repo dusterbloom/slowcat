@@ -1,0 +1,1 @@
+Send the report to john.doe@company.com and mary.smith@example.org. CC sarah.wilson@university.edu on important updates.

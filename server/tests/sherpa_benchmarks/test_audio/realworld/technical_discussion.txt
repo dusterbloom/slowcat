@@ -1,0 +1,1 @@
+The API integration with stripe.com requires updating the webhook at webhook.oursite.com/stripe. Contact the DevOps team at devops@company.com for deployment.
