@@ -317,10 +317,10 @@ class ServiceFactory:
                 logger.info("🚀 Using ONLINE Sherpa-ONNX STT Service (OnlineRecognizer)!")
                 SherpaSTT = ml_modules["SherpaOnlineSTTService"]
             elif streaming_mode:
-                logger.info("🔄 Using STREAMING Sherpa-ONNX STT Service (OfflineRecognizer hack)")
+                logger.info("🔥 Using STREAMING Sherpa-ONNX STT Service!")
                 SherpaSTT = ml_modules["SherpaStreamingSTTService"]
             else:
-                logger.info("📦 Using SEGMENTED Sherpa-ONNX STT Service")
+                logger.info("🎙️ Using STANDARD Sherpa-ONNX STT Service!")
                 SherpaSTT = ml_modules["SherpaONNXSTTService"]
             
             model_dir = os.getenv("SHERPA_ONNX_MODEL_DIR", "").strip()
@@ -378,7 +378,27 @@ class ServiceFactory:
                     "language_lock_mode": language_lock_mode,
                 })
             
-            return SherpaSTT(**sherpa_config)
+            # Create base Sherpa service
+            base_service = SherpaSTT(**sherpa_config)
+            
+            # 🔍 ADD ACCURACY ENHANCEMENT IF ENABLED
+            enable_accuracy = os.getenv("SHERPA_ENABLE_ACCURACY_ENHANCEMENT", "false").lower() == "true"
+            if enable_accuracy:
+                try:
+                    from services.accuracy_enhancement.service_wrapper import SherpaWithAccuracyEnhancement
+                    enhanced_service = SherpaWithAccuracyEnhancement(
+                        base_service=base_service,
+                        enable_accuracy_enhancement=True,
+                        accuracy_model=os.getenv("SHERPA_ACCURACY_MODEL", "qwen3-1.7b:2")
+                    )
+                    logger.info("🎯 Accuracy enhancement enabled for Sherpa-ONNX service")
+                    return enhanced_service
+                except Exception as e:
+                    logger.error(f"❌ Failed to enable accuracy enhancement: {e}")
+                    # Fall back to base service
+                    return base_service
+            else:
+                return base_service
         
         # default: Whisper MLX
         MLXModel = ml_modules['MLXModel']
