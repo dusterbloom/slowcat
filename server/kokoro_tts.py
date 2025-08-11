@@ -328,9 +328,13 @@ class KokoroTTSService(TTSService):
                                 
                                 # Send more text chunks if needed, but only if we have meaningful progress
                                 while text_chunks_sent < target_text_chunks and text_chunks_sent < total_text_chunks:
+                                    # Send only the new word, not cumulative text
+                                    if text_chunks_sent < len(words):
+                                        new_word = words[text_chunks_sent]
+                                        # Add space after word (except for last word)
+                                        text_to_send = new_word + (" " if text_chunks_sent < len(words) - 1 else "")
+                                        yield TTSTextFrame(text=text_to_send)
                                     text_chunks_sent += 1
-                                    partial_text = ' '.join(words[:text_chunks_sent])
-                                    yield TTSTextFrame(text=partial_text)
                             
                             # Small delay to prevent overwhelming the pipeline
                             await asyncio.sleep(0.001)
@@ -349,8 +353,11 @@ class KokoroTTSService(TTSService):
             
             # Send any remaining text chunks when TTS is complete
             while text_chunks_sent < total_text_chunks:
-                partial_text = ' '.join(words[:text_chunks_sent + 1])
-                yield TTSTextFrame(text=partial_text)
+                if text_chunks_sent < len(words):
+                    new_word = words[text_chunks_sent]
+                    # Add space after word (except for last word)
+                    text_to_send = new_word + (" " if text_chunks_sent < len(words) - 1 else "")
+                    yield TTSTextFrame(text=text_to_send)
                 text_chunks_sent += 1
 
         except Exception as e:

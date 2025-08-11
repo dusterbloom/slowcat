@@ -297,7 +297,7 @@ class SherpaONNXSTTService(SegmentedSTTService):
                 logger.debug("Sherpa: Returning recognizer to pool")
                 self._return_recognizer(recognizer)
 
-    def cleanup(self):
+    async def cleanup(self):
         """Cleanup recognizer pool"""
         logger.info("🧹 Cleaning up Sherpa recognizer pool")
         while not self._recognizer_pool.empty():

@@ -304,7 +304,7 @@ class SherpaStreamingSTTService(STTService):
         
         await self.stop_processing_metrics()
 
-    def cleanup(self):
+    async def cleanup(self):
         """Cleanup recognizer pool"""
         logger.info("🧹 Cleaning up Sherpa streaming recognizer pool")
         while not self._recognizer_pool.empty():

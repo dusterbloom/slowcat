@@ -455,7 +455,7 @@ class SherpaVoiceSenseSTTService(STTService):
             
             await self.stop_processing_metrics()
 
-    def cleanup(self):
+    async def cleanup(self):
         """Cleanup recognizer resources safely"""
         logger.info("🧹 Cleaning up SenseVoice OfflineRecognizer")
         with self._processing_lock:
