@@ -442,7 +442,14 @@ class PipelineBuilder:
         logger.info("🔧 Building pipeline components...")
         
         from pipecat.processors.frameworks.rtvi import RTVIProcessor
+        from processors.realtime_assistant_text import RealtimeAssistantText
         rtvi = RTVIProcessor()
+
+        # Instantiate the real-time assistant streamer with references to TTS and output
+        realtime_streamer = RealtimeAssistantText(
+            tts_processor=services.get('tts'),
+            websocket_output=transport.output()
+        )
         
         components = [
             transport.input(),
@@ -463,6 +470,8 @@ class PipelineBuilder:
             processors['memory_injector'],
             processors['message_deduplicator'],
             services['llm'],
+            # Place real-time assistant streamer AFTER RTVIProcessor and bot readiness but before TTS
+            realtime_streamer,
             services['tts'],
             transport.output(),
             processors['greeting_filter'],

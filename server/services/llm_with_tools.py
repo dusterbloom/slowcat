@@ -254,18 +254,26 @@ class LLMWithToolsService(OpenAILLMService):
                 # Format result for voice if needed
                 formatted_result = format_tool_response_for_voice(function_name, result)
                 
-                # Ensure result is string for LM Studio
+                # Sanitize repeated phrases / whitespace
+                import re
+                if isinstance(formatted_result, str):
+                    # Collapse repeated sentences
+                    formatted_result = re.sub(r'\b(\w+\b)(?:\s+\1\b)+', r'\1', formatted_result, flags=re.IGNORECASE)
+                    # Remove excessive whitespace
+                    formatted_result = re.sub(r'\s{2,}', ' ', formatted_result).strip()
+                
+                # Use formatted result for LLM context to avoid bloating with raw JSON
+                result_str = formatted_result
+                
+                # Also log the original (possibly truncated) JSON elsewhere for debugging
                 if isinstance(result, (dict, list)):
-                    result_str = json.dumps(result, ensure_ascii=False)
-                else:
-                    result_str = str(result)
+                    raw_result_str = json.dumps(result, ensure_ascii=False)
+                    if len(raw_result_str) > 4000:
+                        raw_result_str = raw_result_str[:3900] + "... [truncated]"
+                        logger.warning(f"⚠️ Truncated large raw result for {function_name}")
+                    logger.debug(f"Full raw tool result for {function_name}: {raw_result_str}")
                 
-                # Truncate if too large
-                if len(result_str) > 4000:
-                    result_str = result_str[:3900] + "... [truncated]"
-                    logger.warning(f"⚠️ Truncated large result for {function_name}")
-                
-                # Send result back through callback
+                # Send sanitized result back through callback
                 await params.result_callback(result_str)
                 
                 logger.info(f"✅ Function '{function_name}' completed successfully")
