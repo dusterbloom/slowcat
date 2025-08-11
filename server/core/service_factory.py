@@ -203,6 +203,10 @@ class ServiceFactory:
             sherpa_sensevoice_module = importlib.import_module("services.sherpa_sensevoice_stt")
             modules['SherpaVoiceSenseSTTService'] = sherpa_sensevoice_module.SherpaVoiceSenseSTTService
             
+            # 🚀 PARAKEET-MLX: Load streaming STT service optimized for Apple Silicon
+            parakeet_module = importlib.import_module("services.parakeet_mlx_streaming_stt")
+            modules['ParakeetMLXStreamingSTTService'] = parakeet_module.ParakeetMLXStreamingSTTService
+            
             stt_module = importlib.import_module("pipecat.services.whisper.stt")
             modules['MLXModel'] = stt_module.MLXModel
             
@@ -421,6 +425,34 @@ class ServiceFactory:
                     return base_service
             else:
                 return base_service
+        
+        elif backend == "parakeet-mlx":
+            # 🚀 PARAKEET-MLX Streaming STT
+            ParakeetMLXSTT = ml_modules["ParakeetMLXStreamingSTTService"]
+            
+            model_name = os.getenv("PARAKEET_MODEL", "mlx-community/parakeet-tdt-0.6b-v2")
+            context_size_str = os.getenv("PARAKEET_CONTEXT_SIZE", "256,256")
+            context_size = tuple(map(int, context_size_str.split(',')))
+            attention_mode = os.getenv("PARAKEET_ATTENTION_MODE", "local")
+            precision = os.getenv("PARAKEET_PRECISION", "bf16")
+            chunk_size_ms = int(os.getenv("PARAKEET_CHUNK_MS", "100"))
+            emit_partial = os.getenv("PARAKEET_EMIT_PARTIAL", "true").lower() == "true"
+            min_confidence = float(os.getenv("PARAKEET_MIN_CONFIDENCE", "0.1"))
+            
+            logger.info(f"🚀 Using Parakeet-MLX STT: {model_name}")
+            logger.info(f"🎯 Context: {context_size}, Attention: {attention_mode}, Precision: {precision}")
+            logger.info(f"⚡ Chunk: {chunk_size_ms}ms, Partial: {emit_partial}, MinConf: {min_confidence}")
+            
+            return ParakeetMLXSTT(
+                model_name=model_name,
+                context_size=context_size,
+                attention_mode=attention_mode,
+                precision=precision,
+                language=language,
+                chunk_size_ms=chunk_size_ms,
+                emit_partial_results=emit_partial,
+                min_confidence=min_confidence,
+            )
         
         # default: Whisper MLX
         MLXModel = ml_modules['MLXModel']
