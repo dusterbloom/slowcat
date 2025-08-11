@@ -129,7 +129,95 @@ class SherpaOnlineSTTService(STTService):
             
             logger.info(f"🔍 Found transducer files: encoder={encoder_file.name if encoder_file else None}, decoder={decoder_file.name if decoder_file else None}, joiner={joiner_file.name if joiner_file else None}")
             
-            if encoder_file and decoder_file and joiner_file:
+            # Check if this is a SenseVoice model
+            is_sense_voice = any(
+                'sense-voice' in f.name.lower() or 
+                'sensevoice' in f.name.lower() or
+                'sense_voice' in f.name.lower()
+                for f in model_files
+            ) or 'sense-voice' in str(self.model_dir).lower()
+            
+            # Check if this is a Nemo CTC model (single model file)
+            # Expanded detection for various CTC model naming conventions
+            is_nemo_ctc = any(
+                'nemo' in f.name.lower() or 
+                'ctc' in f.name.lower() or 
+                'parakeet' in f.name.lower() or
+                'model' in f.name.lower()  # Generic model files are often CTC
+                for f in model_files
+            )
+            
+            if is_sense_voice and model_files:
+                # Handle SenseVoice models - these are non-streaming CTC models with excellent accuracy
+                main_model_file = prefer_quantized(model_files)
+                if not main_model_file:
+                    main_model_file = model_files[0]
+                    
+                logger.info(f"🎯 Creating SenseVoice OnlineRecognizer with model file: {main_model_file.name}")
+                logger.info("📈 SenseVoice provides excellent accuracy for URLs, technical terms, and proper names")
+                
+                # SenseVoice models are CTC-based, so we use from_nemo_ctc
+                # but they may need different parameters
+                try:
+                    self._recognizer = sherpa.OnlineRecognizer.from_nemo_ctc(
+                        tokens=str(tokens_file),
+                        model=str(main_model_file),
+                        num_threads=self.num_threads,
+                        sample_rate=self.sample_rate,
+                        feature_dim=80,
+                        enable_endpoint_detection=self.enable_endpoint_detection,
+                        decoding_method=self.decoding_method,
+                        provider=self.provider,
+                        debug=False,
+                    )
+                    logger.info("✅ SenseVoice model initialized successfully with CTC method")
+                    
+                except Exception as sense_error:
+                    logger.warning(f"⚠️ SenseVoice CTC initialization failed: {sense_error}")
+                    # Try alternative initialization methods for SenseVoice
+                    logger.info("🔄 Trying alternative initialization methods for SenseVoice...")
+                    
+                    # Try Paraformer method as SenseVoice might be compatible
+                    try:
+                        logger.info("🔄 Trying Paraformer initialization...")
+                        self._recognizer = sherpa.OnlineRecognizer.from_paraformer(
+                            tokens=str(tokens_file),
+                            model=str(main_model_file),
+                            num_threads=self.num_threads,
+                            sample_rate=self.sample_rate,
+                            feature_dim=80,
+                            enable_endpoint_detection=self.enable_endpoint_detection,
+                            provider=self.provider,
+                            debug=False,
+                        )
+                        logger.info("✅ SenseVoice initialized successfully with Paraformer method")
+                        
+                    except Exception as para_error:
+                        logger.warning(f"⚠️ Paraformer method also failed: {para_error}")
+                        
+                        # Final fallback: treat as generic CTC model
+                        logger.info("🔄 Final fallback: using generic CTC initialization...")
+                        try:
+                            self._recognizer = sherpa.OnlineRecognizer.from_zipformer2_ctc(
+                                tokens=str(tokens_file),
+                                model=str(main_model_file),
+                                num_threads=self.num_threads,
+                                sample_rate=self.sample_rate,
+                                feature_dim=80,
+                                enable_endpoint_detection=self.enable_endpoint_detection,
+                                decoding_method=self.decoding_method,
+                                provider=self.provider,
+                                debug=False,
+                            )
+                            logger.info("✅ SenseVoice initialized with Zipformer2 CTC method")
+                        except Exception as zip_error:
+                            logger.error(f"❌ All SenseVoice initialization methods failed")
+                            logger.error(f"   CTC error: {sense_error}")
+                            logger.error(f"   Paraformer error: {para_error}")
+                            logger.error(f"   Zipformer2 error: {zip_error}")
+                            raise RuntimeError(f"Failed to initialize SenseVoice model with any method") from sense_error
+                        
+            elif encoder_file and decoder_file and joiner_file:
                 logger.info("🎯 Creating transducer OnlineRecognizer")
                 
                 # Use the factory method with proper parameters from API docs
@@ -159,39 +247,213 @@ class SherpaOnlineSTTService(STTService):
                     provider="cpu",  # Force CPU for stability
                     debug=False,
                 )
-            elif model_file.exists():
-                # 🔥 NEMO CTC MODEL - Use direct configuration approach!
-                logger.info("🎯 Creating Nemo CTC OnlineRecognizer")
+            elif is_nemo_ctc and model_files:
+                # Handle Nemo CTC models (including Parakeet models)
+                # Find the main model file (prefer int8 version)
+                main_model_file = prefer_quantized(model_files)
+                if not main_model_file:
+                    main_model_file = model_files[0]
+                    
+                logger.info(f"🎯 Creating Nemo CTC OnlineRecognizer with model file: {main_model_file.name}")
                 
-                # Create configuration for Nemo CTC model
-                nemo_ctc_config = sherpa.OnlineNemoEncDecCtcModelConfig(
-                    model=str(model_file),
-                )
+                # Use from_nemo_ctc for Nemo CTC models
+                # Try different initialization methods if metadata is missing
+                try:
+                    self._recognizer = sherpa.OnlineRecognizer.from_nemo_ctc(
+                        tokens=str(tokens_file),
+                        model=str(main_model_file),
+                        num_threads=self.num_threads,
+                        sample_rate=self.sample_rate,
+                        feature_dim=80,
+                        enable_endpoint_detection=self.enable_endpoint_detection,
+                        decoding_method=self.decoding_method,
+                        provider=self.provider,
+                        debug=False,
+                    )
+                except Exception as nemo_error:
+                    error_msg = str(nemo_error)
+                    if "window_size" in error_msg or "vocab_size" in error_msg or "context_size" in error_msg:
+                        logger.warning(f"⚠️ Nemo CTC model missing metadata, trying fallback initialization: {error_msg}")
+                        
+                        # Try using OfflineRecognizer as a fallback for models with missing metadata
+                        # This works in test scripts but may have limitations for streaming
+                        try:
+                            logger.info("🔄 Attempting fallback with OfflineRecognizer wrapper...")
+                            
+                            # Import OfflineRecognizer if not already imported
+                            if not hasattr(sherpa, 'OfflineRecognizer'):
+                                logger.error("OfflineRecognizer not available in sherpa_onnx")
+                                raise nemo_error
+                            
+                            # Create an offline recognizer first
+                            offline_recognizer = sherpa.OfflineRecognizer.from_nemo_ctc(
+                                tokens=str(tokens_file),
+                                model=str(main_model_file),
+                                num_threads=self.num_threads,
+                                sample_rate=self.sample_rate,
+                                feature_dim=80,
+                                decoding_method=self.decoding_method,
+                                provider=self.provider,
+                                debug=False,
+                            )
+                            
+                            # Wrap it for streaming (this is a workaround)
+                            logger.warning("⚠️ Using OfflineRecognizer in streaming mode - may have higher latency")
+                            logger.warning("For better streaming performance, consider using Zipformer or SenseVoice models")
+                            
+                            # Create a simple wrapper that mimics OnlineRecognizer interface
+                            class OfflineToOnlineWrapper:
+                                def __init__(self, offline_rec, sample_rate):
+                                    self.offline_rec = offline_rec
+                                    self.sample_rate = sample_rate
+                                    self.accumulated_samples = []
+                                
+                                def create_stream(self):
+                                    return self
+                                
+                                def accept_waveform(self, sample_rate, samples):
+                                    self.accumulated_samples.extend(samples)
+                                
+                                def is_ready(self, stream):
+                                    # Process when we have enough samples (e.g., 1 second)
+                                    return len(self.accumulated_samples) >= self.sample_rate
+                                
+                                def decode_streams(self, streams):
+                                    pass  # Processing happens in get_result
+                                
+                                def is_endpoint(self, stream):
+                                    # Simple endpoint detection based on accumulated samples
+                                    return len(self.accumulated_samples) >= self.sample_rate * 2
+                                
+                                def get_result(self, stream):
+                                    if not self.accumulated_samples:
+                                        return type('Result', (), {'text': ''})()
+                                    
+                                    # Process accumulated samples with offline recognizer
+                                    import numpy as np
+                                    samples_array = np.array(self.accumulated_samples, dtype=np.float32)
+                                    
+                                    # Create offline stream and process
+                                    offline_stream = self.offline_rec.create_stream()
+                                    offline_stream.accept_waveform(self.sample_rate, samples_array.tolist())
+                                    self.offline_rec.decode_stream(offline_stream)
+                                    result = self.offline_rec.get_result(offline_stream)
+                                    return result
+                                
+                                def reset(self, stream):
+                                    self.accumulated_samples = []
+                            
+                            self._recognizer = OfflineToOnlineWrapper(offline_recognizer, self.sample_rate)
+                            logger.info("✅ Fallback initialization successful using OfflineRecognizer wrapper")
+                            
+                        except Exception as fallback_error:
+                            logger.error(f"❌ Fallback initialization also failed: {fallback_error}")
+                            logger.error("Solutions:")
+                            logger.error("  1. Use SenseVoice model for better accuracy:")
+                            logger.error("     - Download: sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+                            logger.error("  2. Use Zipformer model (already installed):")
+                            logger.error("     - sherpa-onnx-streaming-zipformer-en-2023-06-26")
+                            logger.error("  3. Re-export the Parakeet model with proper metadata")
+                            raise RuntimeError(f"Failed to create Nemo CTC recognizer: {nemo_error}") from nemo_error
+                    else:
+                        raise RuntimeError(f"Failed to create Nemo CTC recognizer: {nemo_error}") from nemo_error
+            elif model_files:
+                # Handle any single model file (fallback for models that don't match other criteria)
+                # Find the main model file (prefer int8 version)
+                main_model_file = prefer_quantized(model_files)
+                if not main_model_file:
+                    main_model_file = model_files[0]
+                    
+                logger.info(f"🎯 Creating generic OnlineRecognizer with model file: {main_model_file.name}")
                 
-                model_config = sherpa.OnlineModelConfig(
-                    nemo_ctc=nemo_ctc_config,
-                    tokens=str(tokens_file),
-                    num_threads=self.num_threads,
-                    provider=self.provider,
-                    model_type="nemo_ctc",
-                    debug=False,
-                )
+                # Try different factory methods based on model name patterns
+                model_name = main_model_file.name.lower()
                 
-                feat_config = sherpa.FeatureConfig(
-                    sample_rate=self.sample_rate,
-                    feature_dim=80,
-                )
-                
-                recognizer_config = sherpa.OnlineRecognizerConfig(
-                    feat_config=feat_config,
-                    model_config=model_config,
-                    enable_endpoint_detection=self.enable_endpoint_detection,
-                    max_active_paths=self.max_active_paths,
-                    decoding_method=self.decoding_method,
-                )
-                
-                self._recognizer = sherpa.OnlineRecognizer(recognizer_config)
-                
+                try:
+                    if 'nemo' in model_name or 'ctc' in model_name or 'parakeet' in model_name or 'model' in model_name:
+                        # Try Nemo CTC first for models that match these patterns
+                        logger.info("Trying from_nemo_ctc for generic model")
+                        self._recognizer = sherpa.OnlineRecognizer.from_nemo_ctc(
+                            tokens=str(tokens_file),
+                            model=str(main_model_file),
+                            num_threads=self.num_threads,
+                            sample_rate=self.sample_rate,
+                            feature_dim=80,
+                            enable_endpoint_detection=self.enable_endpoint_detection,
+                            decoding_method=self.decoding_method,
+                            provider=self.provider,
+                            debug=False,
+                        )
+                    elif 'paraformer' in model_name:
+                        # Try Paraformer
+                        logger.info("Trying from_paraformer for generic model")
+                        self._recognizer = sherpa.OnlineRecognizer.from_paraformer(
+                            tokens=str(tokens_file),
+                            model=str(main_model_file),
+                            num_threads=self.num_threads,
+                            sample_rate=self.sample_rate,
+                            feature_dim=80,
+                            enable_endpoint_detection=self.enable_endpoint_detection,
+                            provider=self.provider,
+                            debug=False,
+                        )
+                    elif 'wenet' in model_name:
+                        # Try WeNet CTC
+                        logger.info("Trying from_wenet_ctc for generic model")
+                        self._recognizer = sherpa.OnlineRecognizer.from_wenet_ctc(
+                            tokens=str(tokens_file),
+                            model=str(main_model_file),
+                            num_threads=self.num_threads,
+                            sample_rate=self.sample_rate,
+                            feature_dim=80,
+                            enable_endpoint_detection=self.enable_endpoint_detection,
+                            decoding_method=self.decoding_method,
+                            provider=self.provider,
+                            debug=False,
+                        )
+                    elif 'zipformer' in model_name:
+                        # Try Zipformer2 CTC
+                        logger.info("Trying from_zipformer2_ctc for generic model")
+                        self._recognizer = sherpa.OnlineRecognizer.from_zipformer2_ctc(
+                            tokens=str(tokens_file),
+                            model=str(main_model_file),
+                            num_threads=self.num_threads,
+                            sample_rate=self.sample_rate,
+                            feature_dim=80,
+                            enable_endpoint_detection=self.enable_endpoint_detection,
+                            decoding_method=self.decoding_method,
+                            provider=self.provider,
+                            debug=False,
+                        )
+                    else:
+                        # Fall back to Nemo CTC for any other model
+                        logger.info("Falling back to from_nemo_ctc for generic model")
+                        self._recognizer = sherpa.OnlineRecognizer.from_nemo_ctc(
+                            tokens=str(tokens_file),
+                            model=str(main_model_file),
+                            num_threads=self.num_threads,
+                            sample_rate=self.sample_rate,
+                            feature_dim=80,
+                            enable_endpoint_detection=self.enable_endpoint_detection,
+                            decoding_method=self.decoding_method,
+                            provider=self.provider,
+                            debug=False,
+                        )
+                except Exception as e:
+                    error_msg = str(e)
+                    if "window_size" in error_msg:
+                        logger.error(f"❌ Model missing required metadata: {error_msg}")
+                        logger.error("This model was not exported with all required metadata.")
+                        logger.error("Solutions:")
+                        logger.error("  1. Use a different model type such as Zipformer:")
+                        logger.error("     - sherpa-onnx-streaming-zipformer-en-2023-06-26")
+                        logger.error("  2. Update your .env file to point to a working model directory")
+                        logger.error("  3. Re-export the model with proper metadata")
+                        logger.error("")
+                        logger.error("To fix this issue, update your server/.env file:")
+                        logger.error("Change: SHERPA_ONNX_MODEL_DIR=./models/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8")
+                        logger.error("To:     SHERPA_ONNX_MODEL_DIR=./models/sherpa-onnx-streaming-zipformer-en-2023-06-26")
+                    raise RuntimeError(f"Could not create OnlineRecognizer for model {main_model_file.name}: {e}") from e
             else:
                 raise RuntimeError(f"Could not determine model type. Found files: {[f.name for f in model_files]}")
             
