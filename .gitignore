@@ -25,5 +25,10 @@ server/mcp*.json
 
 # Sherpa models and related files
 server/models/sherpa-*/
+server/models/kroko-*/
+server/models/*/
 *.onnx
 *.tar.bz2
+*.bin
+*.pt
+*.pth
