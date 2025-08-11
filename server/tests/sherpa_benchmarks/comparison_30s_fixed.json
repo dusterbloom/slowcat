@@ -1,0 +1,51 @@
+[
+  {
+    "service": "ParakeetMLXStreamingSTTService",
+    "config": {
+      "model_name": "mlx-community/parakeet-tdt-0.6b-v2",
+      "context_size": [
+        64,
+        64
+      ],
+      "chunk_size_ms": 1000,
+      "language": "en"
+    },
+    "test_case": "Medium audio test (30 seconds)",
+    "processing_time_sec": 59.254379987716675,
+    "ground_truth": "unknown",
+    "transcription": "Whoa. You wait. You know what I mean?",
+    "normalized_ground_truth": "N/A",
+    "normalized_transcript": "whoa. you wait. you know what i mean?",
+    "wer": 0.0,
+    "word_accuracy": 1.0,
+    "cer": 0.0,
+    "word_count_ground_truth": 1,
+    "word_count_transcript": 8,
+    "has_output": true,
+    "alignment": {
+      "note": "No ground truth available for comparison"
+    }
+  },
+  {
+    "service": "WhisperSTTServiceMLX",
+    "config": {
+      "model_name": "whisper-large-v3-turbo",
+      "language": "en"
+    },
+    "test_case": "Medium audio test (30 seconds)",
+    "processing_time_sec": 2.7679359912872314,
+    "ground_truth": "unknown",
+    "transcription": "You Oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh Thank you. Oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought. I'm going to be a little bit more nervous than I thought.",
+    "normalized_ground_truth": "N/A",
+    "normalized_transcript": "you oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh thank you. oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh, oh i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought. i'm going to be a little bit more nervous than i thought.",
+    "wer": 0.0,
+    "word_accuracy": 1.0,
+    "cer": 0.0,
+    "word_count_ground_truth": 1,
+    "word_count_transcript": 395,
+    "has_output": true,
+    "alignment": {
+      "note": "No ground truth available for comparison"
+    }
+  }
+]

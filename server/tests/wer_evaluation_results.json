@@ -1,0 +1,57 @@
+[
+  {
+    "service": "ParakeetMLXStreamingSTTService",
+    "config": {
+      "model_name": "mlx-community/parakeet-tdt-0.6b-v2",
+      "context_size": [
+        64,
+        64
+      ],
+      "chunk_size_ms": 1000,
+      "language": "en"
+    },
+    "test_case": "Numbers sequence test",
+    "processing_time_sec": 1.2704048156738281,
+    "ground_truth": "one zero zero zero one nine zero two one zero zero one eight zero three",
+    "transcription": "one zero zero zero one nine zero two one zero zero one eight zero three",
+    "normalized_ground_truth": "one zero zero zero one nine zero two one zero zero one eight zero three",
+    "normalized_transcript": "one zero zero zero one nine zero two one zero zero one eight zero three",
+    "wer": 0.0,
+    "word_accuracy": 1.0,
+    "cer": 0.0,
+    "word_count_ground_truth": 15,
+    "word_count_transcript": 15,
+    "has_output": true,
+    "alignment": {
+      "substitutions": 0,
+      "deletions": 0,
+      "insertions": 0,
+      "hits": 6
+    }
+  },
+  {
+    "service": "WhisperSTTServiceMLX",
+    "config": {
+      "model_name": "whisper-large-v3-turbo",
+      "language": "en"
+    },
+    "test_case": "Numbers sequence test",
+    "processing_time_sec": 0.5341591835021973,
+    "ground_truth": "one zero zero zero one nine zero two one zero zero one eight zero three",
+    "transcription": "10001 902101803",
+    "normalized_ground_truth": "one zero zero zero one nine zero two one zero zero one eight zero three",
+    "normalized_transcript": "10001 902101803",
+    "wer": 1.0,
+    "word_accuracy": 0.0,
+    "cer": 0.9859154929577465,
+    "word_count_ground_truth": 15,
+    "word_count_transcript": 2,
+    "has_output": true,
+    "alignment": {
+      "substitutions": 0,
+      "deletions": 0,
+      "insertions": 0,
+      "hits": 0
+    }
+  }
+]

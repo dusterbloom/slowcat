@@ -1,0 +1,49 @@
+[
+  {
+    "service": "ParakeetMLXStreamingSTTService",
+    "config": {
+      "model_name": "mlx-community/parakeet-tdt-0.6b-v2",
+      "context_size": [
+        64,
+        64
+      ],
+      "chunk_size_ms": 1000,
+      "language": "en"
+    },
+    "test_case": "Long audio stress test (300 seconds)",
+    "processing_time_sec": 5.432356119155884,
+    "ground_truth": "unknown",
+    "transcription": "",
+    "normalized_ground_truth": "unknown",
+    "normalized_transcript": "",
+    "wer": 1.0,
+    "word_accuracy": 0.0,
+    "cer": 1.0,
+    "word_count_ground_truth": 1,
+    "word_count_transcript": 0,
+    "has_output": false,
+    "alignment": null
+  },
+  {
+    "service": "WhisperSTTServiceMLX",
+    "config": {
+      "model_name": "whisper-large-v3-turbo",
+      "language": "en"
+    },
+    "test_case": "Long audio stress test (300 seconds)",
+    "processing_time_sec": 1.950883150100708,
+    "ground_truth": "unknown",
+    "transcription": "Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah. Yeah.",
+    "normalized_ground_truth": "N/A",
+    "normalized_transcript": "yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah. yeah.",
+    "wer": 0.0,
+    "word_accuracy": 1.0,
+    "cer": 0.0,
+    "word_count_ground_truth": 1,
+    "word_count_transcript": 151,
+    "has_output": true,
+    "alignment": {
+      "note": "No ground truth available for comparison"
+    }
+  }
+]

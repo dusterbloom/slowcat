@@ -1,0 +1,49 @@
+[
+  {
+    "service": "ParakeetMLXStreamingSTTService",
+    "config": {
+      "model_name": "mlx-community/parakeet-tdt-0.6b-v2",
+      "context_size": [
+        64,
+        64
+      ],
+      "chunk_size_ms": 1000,
+      "language": "en"
+    },
+    "test_case": "Medium audio test (30 seconds)",
+    "processing_time_sec": 2.617511034011841,
+    "ground_truth": "unknown",
+    "transcription": "",
+    "normalized_ground_truth": "unknown",
+    "normalized_transcript": "",
+    "wer": 1.0,
+    "word_accuracy": 0.0,
+    "cer": 1.0,
+    "word_count_ground_truth": 1,
+    "word_count_transcript": 0,
+    "has_output": false,
+    "alignment": null
+  },
+  {
+    "service": "WhisperSTTServiceMLX",
+    "config": {
+      "model_name": "whisper-large-v3-turbo",
+      "language": "en"
+    },
+    "test_case": "Medium audio test (30 seconds)",
+    "processing_time_sec": 0.8300907611846924,
+    "ground_truth": "unknown",
+    "transcription": "You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You! You!",
+    "normalized_ground_truth": "N/A",
+    "normalized_transcript": "you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you! you!",
+    "wer": 0.0,
+    "word_accuracy": 1.0,
+    "cer": 0.0,
+    "word_count_ground_truth": 1,
+    "word_count_transcript": 53,
+    "has_output": true,
+    "alignment": {
+      "note": "No ground truth available for comparison"
+    }
+  }
+]

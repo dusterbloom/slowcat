@@ -1,0 +1,41 @@
+[
+  {
+    "service": "ParakeetMLXStreamingSTTService",
+    "config": {
+      "model_name": "mlx-community/parakeet-tdt-0.6b-v2",
+      "context_size": [
+        64,
+        64
+      ],
+      "chunk_size_ms": 1000,
+      "language": "en"
+    },
+    "test_case": "Medium audio test (30 seconds)",
+    "processing_time_sec": 59.244627952575684,
+    "ground_truth": "unknown",
+    "transcription": "Whoa. You wait. You know what I mean?",
+    "normalized_ground_truth": "N/A",
+    "normalized_transcript": "whoa. you wait. you know what i mean?",
+    "wer": 0.0,
+    "word_accuracy": 1.0,
+    "cer": 0.0,
+    "word_count_ground_truth": 1,
+    "word_count_transcript": 8,
+    "has_output": true,
+    "alignment": {
+      "note": "No ground truth available for comparison"
+    }
+  },
+  {
+    "service": "WhisperSTTServiceMLX",
+    "config": {
+      "model_name": "whisper-large-v3-turbo",
+      "language": "en"
+    },
+    "test_case": "Medium audio test (30 seconds)",
+    "error": "'WhisperSTTServiceMLX' object has no attribute 'flush'",
+    "wer": 1.0,
+    "word_accuracy": 0.0,
+    "has_output": false
+  }
+]

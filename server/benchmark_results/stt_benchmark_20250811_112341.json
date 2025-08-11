@@ -1,0 +1,25 @@
+[
+  {
+    "service_name": "parakeet-mlx-parakeet-tdt-0.6b-v2",
+    "service_type": "parakeet-mlx",
+    "audio_duration_sec": 30.0,
+    "service_init_time_ms": 0.20885467529296875,
+    "total_processing_time_sec": 1.0652670860290527,
+    "real_time_factor": 0.03550890286763509,
+    "time_to_first_result_ms": null,
+    "initial_memory_mb": 326.5625,
+    "peak_memory_mb": 342.515625,
+    "final_memory_mb": 342.515625,
+    "memory_growth_mb": 15.953125,
+    "avg_cpu_percent": 27.927272727272733,
+    "peak_cpu_percent": 84.6,
+    "final_transcript": "",
+    "word_count": 0,
+    "interim_results_count": 0,
+    "chunks_processed": 300,
+    "avg_chunk_processing_ms": 2.340842882792155,
+    "model_name": "mlx-community/parakeet-tdt-0.6b-v2",
+    "context_info": "context=(256, 256), chunk=100ms",
+    "errors_encountered": []
+  }
+]
