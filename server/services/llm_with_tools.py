@@ -20,6 +20,7 @@ from tools.definitions import ALL_FUNCTION_SCHEMAS, get_tools
 from pipecat.frames.frames import (
     Frame,
     TextFrame,
+    LLMTextFrame,
     TranscriptionFrame,
     LLMFullResponseStartFrame,
     LLMFullResponseEndFrame,
@@ -103,6 +104,7 @@ class LLMWithToolsService(OpenAILLMService):
                 await result_callback({"error": str(e)})
         
         return mcp_handler
+    
     
     def _should_route_to_mcp(self, function_name: str) -> bool:
         """

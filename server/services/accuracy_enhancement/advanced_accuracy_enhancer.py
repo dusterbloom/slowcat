@@ -305,7 +305,7 @@ class NEREntityCorrector:
 class LLMContextualCorrector:
     """Use local LLM for contextual correction"""
     
-    def __init__(self, model_name: str = "qwen3-1.7b:2", max_length: int = 100):
+    def __init__(self, model_name: str = "qwen3-1.7b", max_length: int = 100):
         self.client = None
         self.model_name = model_name
         self.max_length = max_length

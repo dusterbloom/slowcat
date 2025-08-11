@@ -199,6 +199,10 @@ class ServiceFactory:
             sherpa_online_module = importlib.import_module("services.sherpa_streaming_stt_v2")
             modules['SherpaOnlineSTTService'] = sherpa_online_module.SherpaOnlineSTTService
             
+            # 🎯 HIGH ACCURACY: Load SenseVoice service for excellent accuracy
+            sherpa_sensevoice_module = importlib.import_module("services.sherpa_sensevoice_stt")
+            modules['SherpaVoiceSenseSTTService'] = sherpa_sensevoice_module.SherpaVoiceSenseSTTService
+            
             stt_module = importlib.import_module("pipecat.services.whisper.stt")
             modules['MLXModel'] = stt_module.MLXModel
             
@@ -313,7 +317,20 @@ class ServiceFactory:
             # 🔥 CHECK FOR ONLINE STREAMING MODE (NEW!)
             online_streaming = os.getenv("SHERPA_ONLINE_STREAMING", "true").lower() == "true"
             
-            if online_streaming:
+            model_dir = os.getenv("SHERPA_ONNX_MODEL_DIR", "").strip()
+            if not model_dir:
+                raise RuntimeError(
+                    "STT_BACKEND is 'sherpa-onnx' but SHERPA_ONNX_MODEL_DIR is not set"
+                )
+            
+            # 🎯 CHECK FOR SENSEVOICE MODEL (Auto-detect)
+            is_sensevoice = "sense-voice" in model_dir.lower() or "sensevoice" in model_dir.lower()
+            
+            if is_sensevoice:
+                logger.info("🎯 Detected SenseVoice model - Using HIGH ACCURACY SenseVoice STT Service!")
+                logger.info("📈 Optimized for URLs, technical terms, and proper names")
+                SherpaSTT = ml_modules["SherpaVoiceSenseSTTService"]
+            elif online_streaming:
                 logger.info("🚀 Using ONLINE Sherpa-ONNX STT Service (OnlineRecognizer)!")
                 SherpaSTT = ml_modules["SherpaOnlineSTTService"]
             elif streaming_mode:
@@ -322,12 +339,6 @@ class ServiceFactory:
             else:
                 logger.info("🎙️ Using STANDARD Sherpa-ONNX STT Service!")
                 SherpaSTT = ml_modules["SherpaONNXSTTService"]
-            
-            model_dir = os.getenv("SHERPA_ONNX_MODEL_DIR", "").strip()
-            if not model_dir:
-                raise RuntimeError(
-                    "STT_BACKEND is 'sherpa-onnx' but SHERPA_ONNX_MODEL_DIR is not set"
-                )
             decoding_method = os.getenv("SHERPA_DECODING_METHOD", "greedy_search")
             provider = os.getenv("SHERPA_PROVIDER", "cpu")
             
@@ -338,6 +349,17 @@ class ServiceFactory:
                 "decoding_method": decoding_method,
                 "provider": provider,
             }
+            
+            # SenseVoice-specific configuration
+            if is_sensevoice:
+                logger.info("🎯 Configuring SenseVoice model parameters for optimal performance")
+                sherpa_config.update({
+                    "num_threads": int(os.getenv("SHERPA_THREADS", "4")),  # More threads for speed
+                    "use_itn": os.getenv("SHERPA_USE_ITN", "true").lower() == "true",  # Better formatting
+                    "chunk_size_ms": int(os.getenv("SHERPA_CHUNK_MS", "1500")),  # Optimal batch size
+                    "min_silence_duration_ms": int(os.getenv("SHERPA_MIN_SILENCE_MS", "300")),  # Faster response
+                })
+                logger.info(f"🚀 SenseVoice optimized: {sherpa_config['num_threads']} threads, {sherpa_config['chunk_size_ms']}ms chunks")
             
             if online_streaming:
                 # 🚀 ONLINE STREAMING CONFIG (OnlineRecognizer)

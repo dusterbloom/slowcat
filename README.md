@@ -64,6 +64,7 @@ English • Spanish • French • German • Japanese • Italian • Chinese �
 - **[5-Minute Setup Guide](docs/QUICK_START.md)** - Get running immediately
 - **[What's New](docs/WHATS_NEW.md)** - Latest features and improvements
 - **[API Reference](docs/API_REFERENCE.md)** - Build your own features
+- **[Parakeet Model Guide](docs/PARAKEET_MODEL.md)** - Download and use the Parakeet speech recognition model
 
 ---
 
