@@ -9,14 +9,21 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@chatscope/chat-ui-kit-react": "^2.1.1",
+    "@chatscope/chat-ui-kit-styles": "^1.4.0",
     "@pipecat-ai/client-js": "^1.0.0",
     "@pipecat-ai/client-react": "^1.0.1",
     "@pipecat-ai/daily-transport": "^1.0.0",
     "@pipecat-ai/small-webrtc-transport": "^1.0.0",
     "@pipecat-ai/voice-ui-kit": "^0.1.0-rc.2",
+    "ai": "^5.0.10",
+    "framer-motion": "^12.23.12",
+    "lucide-react": "^0.539.0",
     "next": "15.4.3",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "typewriter-effect": "^2.22.0"
   },
   "devDependencies": {

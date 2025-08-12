@@ -25,6 +25,9 @@ from pipecat.transcriptions.language import Language
 # Import the global MLX lock
 from utils.mlx_lock import MLX_GLOBAL_LOCK # NEW IMPORT
 
+# Import the TTS message protocol
+from services.tts_message_protocol import TTSProtocolHelper, TTSMessage
+
 class KokoroTTSService(TTSService):
     """Kokoro TTS service implementation using MLX Audio.
 
@@ -141,6 +144,9 @@ class KokoroTTSService(TTSService):
             "language": self._language_code,
             "kokoro_language": self._kokoro_language,
         }
+        
+        # Initialize the TTS protocol helper
+        self._protocol = TTSProtocolHelper()
 
     def _initialize_model(self):
         """Initialize the Kokoro model. This runs in a separate thread."""
@@ -261,6 +267,18 @@ class KokoroTTSService(TTSService):
             await self.start_tts_usage_metrics(sanitized_text)
 
             yield TTSStartedFrame()
+            
+            # Start the cleanup task if not already running
+            await self._protocol.start_cleanup_task()
+            
+            # Create a tracked message with UUID
+            tts_message = self._protocol.tracker.create_message(
+                original_text=text,
+                sanitized_text=sanitized_text
+            )
+            
+            # Update message state to streaming
+            self._protocol.tracker.update_message_state(tts_message.message_id, "streaming")
 
             # Create a queue for streaming chunks
             chunk_queue = queue.Queue()
@@ -277,6 +295,7 @@ class KokoroTTSService(TTSService):
                     future.result()  # This will raise if there was an exception
                 except Exception as e:
                     logger.error(f"Background TTS generation failed: {e}")
+                    self._protocol.tracker.update_message_state(tts_message.message_id, "error")
                     # Put the exception in the queue so it can be handled by the main loop
                     try:
                         chunk_queue.put(e)
@@ -291,9 +310,10 @@ class KokoroTTSService(TTSService):
             
             # Text streaming setup - split text into chunks for progressive display
             words = sanitized_text.split()
-            text_chunks_sent = 0
-            total_text_chunks = len(words)
+            total_words = len(words)
             audio_chunks_processed = 0
+            text_chunk_index = 0
+            last_sent_position = 0  # Track the last position we sent text from
             
             while True:
                 try:
@@ -305,6 +325,7 @@ class KokoroTTSService(TTSService):
                         break
                     
                     if isinstance(chunk, Exception):
+                        self._protocol.tracker.update_message_state(tts_message.message_id, "error")
                         raise chunk
                     
                     # Stop TTFB metrics on first chunk
@@ -320,21 +341,34 @@ class KokoroTTSService(TTSService):
                             
                             # Emit text progressively synchronized with audio chunks
                             audio_chunks_processed += 1
-                            if total_text_chunks > 0:
-                                # Calculate how many text chunks should be sent based on audio progress
+                            if total_words > 0:
+                                # Calculate how many words should be sent based on audio progress
                                 # More conservative approach - only send text every few audio chunks
-                                target_text_chunks = min(total_text_chunks, 
-                                    max(1, int((audio_chunks_processed / 15) * total_text_chunks)))
+                                target_word_position = min(total_words, 
+                                    max(1, int((audio_chunks_processed / 15) * total_words)))
                                 
                                 # Send more text chunks if needed, but only if we have meaningful progress
-                                while text_chunks_sent < target_text_chunks and text_chunks_sent < total_text_chunks:
-                                    # Send only the new word, not cumulative text
-                                    if text_chunks_sent < len(words):
-                                        new_word = words[text_chunks_sent]
-                                        # Add space after word (except for last word)
-                                        text_to_send = new_word + (" " if text_chunks_sent < len(words) - 1 else "")
-                                        yield TTSTextFrame(text=text_to_send)
-                                    text_chunks_sent += 1
+                                if last_sent_position < target_word_position and last_sent_position < total_words:
+                                    # Create a properly tracked chunk with metadata
+                                    incremental_text = " ".join(words[last_sent_position:target_word_position]).strip()
+                                    
+                                    if incremental_text:  # Only send if there's actual new text
+                                        # Create structured chunk with protocol
+                                        protocol_chunk = self._protocol.create_streaming_chunk(
+                                            message=tts_message,
+                                            chunk_index=text_chunk_index,
+                                            text=incremental_text,
+                                            is_incremental=True,
+                                            is_final=False
+                                        )
+                                        
+                                        if protocol_chunk:  # Not a duplicate
+                                            # Send as JSON-encoded metadata
+                                            yield TTSTextFrame(text=protocol_chunk.to_json())
+                                            text_chunk_index += 1
+                                            logger.debug(f"Sent TTS chunk {text_chunk_index} for message {tts_message.message_id}: {incremental_text[:30]}...")
+                                    
+                                    last_sent_position = target_word_position
                             
                             # Small delay to prevent overwhelming the pipeline
                             await asyncio.sleep(0.001)
@@ -351,14 +385,38 @@ class KokoroTTSService(TTSService):
             # Ensure generation task completes
             await generation_task
             
-            # Send any remaining text chunks when TTS is complete
-            while text_chunks_sent < total_text_chunks:
-                if text_chunks_sent < len(words):
-                    new_word = words[text_chunks_sent]
-                    # Add space after word (except for last word)
-                    text_to_send = new_word + (" " if text_chunks_sent < len(words) - 1 else "")
-                    yield TTSTextFrame(text=text_to_send)
-                text_chunks_sent += 1
+            # Send final chunk with proper metadata (only if we haven't sent all text)
+            if last_sent_position < total_words:
+                # Send only the remaining incremental text
+                final_incremental_text = " ".join(words[last_sent_position:]).strip()
+                if final_incremental_text:  # Only send if there's actual remaining text
+                    protocol_chunk = self._protocol.create_streaming_chunk(
+                        message=tts_message,
+                        chunk_index=text_chunk_index,
+                        text=final_incremental_text,
+                        is_incremental=True,
+                        is_final=True
+                    )
+                    
+                    if protocol_chunk:
+                        yield TTSTextFrame(text=protocol_chunk.to_json())
+                        logger.debug(f"Sent FINAL TTS chunk for message {tts_message.message_id}")
+            else:
+                # Send a final marker even if all text was already sent
+                protocol_chunk = self._protocol.create_streaming_chunk(
+                    message=tts_message,
+                    chunk_index=text_chunk_index,
+                    text="",
+                    is_incremental=True,
+                    is_final=True
+                )
+                
+                if protocol_chunk:
+                    yield TTSTextFrame(text=protocol_chunk.to_json())
+                    logger.debug(f"Sent FINAL marker for message {tts_message.message_id}")
+            
+            # Mark message as complete
+            self._protocol.mark_message_complete(tts_message.message_id)
 
         except Exception as e:
             logger.error(f"Error in run_tts: {e}")

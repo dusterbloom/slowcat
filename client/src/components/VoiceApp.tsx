@@ -14,9 +14,19 @@ import { PipecatClient } from '@pipecat-ai/client-js';
 import { SmallWebRTCTransport } from '@pipecat-ai/small-webrtc-transport';
 import { VoiceReactivePlasma } from './VoiceReactivePlasma';
 import { StreamingText } from './StreamingText';
+import { ModernVoiceChat } from './ModernVoiceChat';
+import { EnhancedExport } from './EnhancedExport';
 
 interface VoiceAppProps {
   videoEnabled: boolean;
+}
+
+// Extend Window interface for TTS tracking
+declare global {
+  interface Window {
+    currentTtsMessageId: string | null;
+    ttsChunksReceived: Set<string> | null;
+  }
 }
 
 type AppState = "idle" | "connecting" | "connected" | "disconnected";
@@ -52,8 +62,33 @@ const formatBotText = (text: string): string => {
   // Remove markdown asterisks and other formatting
   if (!text) return text;
   
+  // FIRST: Strip ALL emojis to match server-side sanitization
+  let formatted = text
+    // Basic emojis (U+1F600-U+1F64F)
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
+    // Miscellaneous symbols and pictographs (U+1F300-U+1F5FF)
+    .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
+    // Transport and map symbols (U+1F680-U+1F6FF)
+    .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
+    // Supplemental symbols (U+1F700-U+1F77F, U+1F780-U+1F7FF, U+1F800-U+1F8FF, U+1F900-U+1F9FF)
+    .replace(/[\u{1F700}-\u{1F9FF}]/gu, '')
+    // Additional emojis (U+1FA00-U+1FA6F, U+1FA70-U+1FAFF)
+    .replace(/[\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}]/gu, '')
+    // Enclosed alphanumeric supplement (U+1F100-U+1F1FF)
+    .replace(/[\u{1F100}-\u{1F1FF}]/gu, '')
+    // Miscellaneous symbols (U+2600-U+26FF)
+    .replace(/[\u{2600}-\u{26FF}]/gu, '')
+    // Dingbats (U+2700-U+27BF)
+    .replace(/[\u{2700}-\u{27BF}]/gu, '')
+    // Variation selectors (U+FE00-U+FE0F)
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
+    // Zero-width joiner and non-joiner
+    .replace(/[\u200D\u200C]/g, '')
+    // Common special symbols
+    .replace(/[★☆♪♫♯♭♮⚡⭐🔥💯]/g, '');
+  
   // Remove **bold** formatting
-  let formatted = text.replace(/\*\*(.*?)\*\*/g, '$1');
+  formatted = formatted.replace(/\*\*(.*?)\*\*/g, '$1');
   
   // Remove *italic* formatting
   formatted = formatted.replace(/\*(.*?)\*/g, '$1');
@@ -61,6 +96,9 @@ const formatBotText = (text: string): string => {
   // Remove other common markdown
   formatted = formatted.replace(/`([^`]+)`/g, '$1'); // inline code
   formatted = formatted.replace(/^\s*[-*+]\s+/gm, '• '); // bullet points
+  
+  // Clean up any double spaces left from emoji removal
+  formatted = formatted.replace(/\s+/g, ' ').trim();
   
   return formatted;
 };
@@ -76,9 +114,17 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
   const [fontSize, setFontSize] = useState('normal'); // 'small', 'normal', 'large'
-  const [conversationHistory, setConversationHistory] = useState<Array<{role: 'user' | 'assistant', text: string, isStreaming?: boolean, id: string}>>([]);
+  const [conversationHistory, setConversationHistory] = useState<Array<{role: 'user' | 'assistant', text: string, isStreaming?: boolean, id: string, timestamp?: Date}>>([]);
   const [currentUserTranscript, setCurrentUserTranscript] = useState('');
   const [currentAssistantTranscript, setCurrentAssistantTranscript] = useState('');
+  const [currentTtsSegment, setCurrentTtsSegment] = useState(''); // Current TTS segment
+  const currentTtsSegmentRef = useRef(''); // Ref for latest TTS segment
+  const [llmMessageQueue, setLlmMessageQueue] = useState<string[]>([]); // Queue of LLM messages
+  const llmMessageQueueRef = useRef<string[]>([]);
+  // No need for complex index tracking - we just dequeue messages as they're spoken
+  const [accumulatedTtsText, setAccumulatedTtsText] = useState(''); // Accumulated TTS text for current segment
+  const accumulatedTtsTextRef = useRef<string>('');
+  const lastSavedMessageRef = useRef<string>(''); // Track last saved message to prevent re-accumulation
   const [wasConnected, setWasConnected] = useState(false); // Track if we were ever connected
   const [autoReconnectAttempts, setAutoReconnectAttempts] = useState(0);
   const [showPerformanceMonitor, setShowPerformanceMonitor] = useState(false);
@@ -89,6 +135,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
     isWebGLActive: false
   });
   const [showVisualizerControls, setShowVisualizerControls] = useState(false);
+  const [showExportPanel, setShowExportPanel] = useState(false);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -102,7 +149,48 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
         callbacks: {
           // Debug: Log all bot events to see what we're getting
           onBotStartedSpeaking: () => console.log('🎙️ Bot started speaking'),
-          onBotStoppedSpeaking: () => console.log('🎙️ Bot stopped speaking'),
+          onBotStoppedSpeaking: () => {
+            console.log('🎙️ Bot stopped speaking - final check');
+            // Final check for any remaining accumulated TTS when overall speaking stops
+            const currentQueue = llmMessageQueueRef.current;
+            const accumulatedTts = accumulatedTtsTextRef.current.trim();
+            
+            console.log('🔍 Final check - Queue length:', currentQueue.length, 'Accumulated:', accumulatedTts);
+            
+            // Final check using dequeue approach - check first message in queue
+            if (currentQueue.length > 0 && accumulatedTts) {
+              const expectedLlmMessage = currentQueue[0].trim();
+              
+              if (accumulatedTts === expectedLlmMessage) {
+                // MATCH! Save the clean LLM message and dequeue it
+                console.log('💾 Final save - matched first LLM message:', expectedLlmMessage.substring(0, 50) + '...');
+                
+                const messageId = `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+                setConversationHistory(prev => [
+                  ...prev, 
+                  { role: 'assistant', text: expectedLlmMessage, id: messageId, timestamp: new Date() }
+                ]);
+                
+                // DEQUEUE: Remove the first message since it's been spoken and saved
+                setLlmMessageQueue(prev => {
+                  const updated = prev.slice(1);
+                  llmMessageQueueRef.current = updated;
+                  return updated;
+                });
+                
+                console.log('📤 Final dequeue. Queue now has', currentQueue.length - 1, 'messages');
+              } else {
+                console.log('❌ Final check - no match:', `"${accumulatedTts}" vs "${expectedLlmMessage}"`);
+              }
+            }
+            
+            // Clear everything for next conversation
+            setCurrentTtsSegment('');
+            currentTtsSegmentRef.current = '';
+            setCurrentAssistantTranscript('');
+            setAccumulatedTtsText('');
+            accumulatedTtsTextRef.current = '';
+          },
           onTransportStateChanged: (state) => {
             switch (state) {
               case "connecting":
@@ -154,90 +242,277 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
             }
           },
           onBotTranscript: (transcript) => {
-            // IGNORE LLM transcript - we only want to show text when TTS actually speaks it
-            console.log('LLM transcript received (ignoring):', transcript?.text?.substring(0, 50) + '...');
+            // Add LLM message to queue - these are the clean versions we'll save
+            if (transcript && transcript.text && transcript.text.trim().length > 0) {
+              const cleanText = formatBotText(transcript.text.trim());
+              
+              setLlmMessageQueue(prev => {
+                // Prevent duplicate messages from being added to the queue
+                if (prev.length > 0 && prev[prev.length - 1] === cleanText) {
+                  console.log('🚫 Duplicate LLM message ignored:', cleanText.substring(0, 50) + '...');
+                  return prev; // Don't add duplicate
+                }
+                
+                const updated = [...prev, cleanText];
+                llmMessageQueueRef.current = updated;
+                return updated;
+              });
+              console.log('📝 LLM message queued:', cleanText.substring(0, 50) + '...');
+            }
           },
-          // Try different possible TTS text event names
+          // Handle TTS text with new protocol
           onBotTtsText: (ttsData) => {
             console.log('🎵 onBotTtsText:', ttsData);
             if (ttsData && ttsData.text && ttsData.text.trim().length > 0) {
-              const newText = formatBotText(ttsData.text);
-              // Only update if the new text is longer (accumulating) 
-              setCurrentAssistantTranscript(prevText => {
-                // If new text is longer or we have no previous text, update
-                if (!prevText || newText.length > prevText.length) {
-                  console.log('📈 TTS text growing:', prevText?.length || 0, '→', newText.length);
-                  
-                  // Check if this text ends with sentence-ending punctuation
-                  const endsWithPunctuation = /[.!?]$/.test(newText.trim());
-                  if (endsWithPunctuation) {
-                    console.log('🎯 Complete sentence detected:', newText);
-                    // Check if this sentence was already saved (check ALL assistant messages)
-                    setConversationHistory(prev => {
-                      // Check ALL previous assistant messages, not just last 3
-                      const allAssistantMessages = prev.filter(msg => msg.role === 'assistant');
-                      
-                      // Check if this exact text or a variation already exists
-                      for (const msg of allAssistantMessages) {
-                        if (msg.text === newText || 
-                            msg.text.includes(newText) || 
-                            newText.includes(msg.text)) {
-                          console.log('🚫 Duplicate/partial sentence found, skipping:', newText);
-                          return prev;
-                        }
-                      }
-                      
-                      // It's a genuinely new sentence, save it
-                      const messageId = `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-                      console.log('💾 Saving new sentence:', newText);
-                      return [
-                        ...prev, 
-                        { role: 'assistant', text: newText, id: messageId }
-                      ];
-                    });
-                    // Return empty string to start fresh for next sentence
-                    return '';
-                  }
-                  
-                  return newText;
+              // Try to parse as JSON protocol first
+              let messageData = null;
+              let newText = '';
+              
+              try {
+                const parsed = JSON.parse(ttsData.text);
+                if (parsed.protocol === 'tts_v2') {
+                  // New protocol with metadata
+                  messageData = parsed;
+                  newText = formatBotText(parsed.text).trim();
+                  console.log(`📦 TTS Protocol v2 - Message: ${parsed.message_id}, Chunk: ${parsed.chunk_index}/${parsed.total_chunks}, Type: ${parsed.message_type}, Final: ${parsed.is_final}`);
+                } else {
+                  // Not our protocol, treat as plain text
+                  newText = formatBotText(ttsData.text).trim();
                 }
-                // Otherwise keep the longer existing text
-                console.log('🚫 TTS text shrinking, keeping existing:', prevText.length, 'vs', newText.length);
-                return prevText;
-              });
+              } catch (e) {
+                // Not JSON, treat as plain text (fallback for old format)
+                newText = formatBotText(ttsData.text).trim();
+                console.log('📝 Plain text TTS (legacy mode):', newText);
+              }
+              
+              const accumulated = (accumulatedTtsTextRef.current || '').trim();
+              
+              // Skip if empty text
+              if (!newText) {
+                console.log('⚠️ Empty text, skipping');
+                return;
+              }
+              
+              let updatedText = '';
+              
+              // Handle based on protocol version
+              if (messageData && messageData.protocol === 'tts_v2') {
+                // New protocol: Always incremental, properly tracked
+                if (messageData.message_type === 'incremental') {
+                  // Simply append incremental text
+                  updatedText = accumulated ? (accumulated + ' ' + newText) : newText;
+                  console.log(`➕ Appending incremental chunk ${messageData.chunk_index}: ${newText.substring(0, 30)}...`);
+                } else if (messageData.message_type === 'cumulative') {
+                  // Replace with cumulative text
+                  updatedText = newText;
+                  console.log(`🔄 Cumulative update chunk ${messageData.chunk_index}`);
+                }
+                
+                // Store message ID for tracking
+                if (!window.currentTtsMessageId || window.currentTtsMessageId !== messageData.message_id) {
+                  console.log(`🆕 New TTS message started: ${messageData.message_id}`);
+                  window.currentTtsMessageId = messageData.message_id;
+                  window.ttsChunksReceived = new Set();
+                }
+                
+                // Track received chunks to prevent duplicates
+                const chunkKey = `${messageData.message_id}-${messageData.chunk_index}`;
+                if (window.ttsChunksReceived?.has(chunkKey)) {
+                  console.log(`🚫 Duplicate chunk ignored: ${chunkKey}`);
+                  return;
+                }
+                window.ttsChunksReceived?.add(chunkKey);
+                
+              } else {
+                // Legacy fallback logic (for old format)
+                console.log('⚠️ Using legacy TTS handling');
+                
+                // Check if this text was already saved as a complete message
+                if (lastSavedMessageRef.current === newText) {
+                  console.log('🔄 This was already saved, ignoring:', newText);
+                  return;
+                }
+                
+                // Check if this is a duplicate or subset we already have
+                if (accumulated === newText) {
+                  console.log('🔁 Exact duplicate, ignoring');
+                  return;
+                }
+                
+                // Check if new text starts with what we have (cumulative update)
+                if (accumulated && newText.startsWith(accumulated)) {
+                  // Extract only the new part after what we already have
+                  const newPart = newText.substring(accumulated.length).trim();
+                  if (newPart) {
+                    updatedText = accumulated + ' ' + newPart;
+                    console.log('📊 Cumulative update, adding:', newPart);
+                  } else {
+                    console.log('🔁 No new content in cumulative update');
+                    return;
+                  }
+                }
+                // Check if we already have this EXACT text within our accumulated (not just substring)
+                else if (accumulated && accumulated.split(' ').includes(newText)) {
+                  console.log('🚫 Already have this exact word, ignoring:', newText);
+                  return;
+                }
+                // Check if new text contains all our accumulated (full replacement)
+                else if (accumulated && newText.includes(accumulated)) {
+                  updatedText = newText;
+                  console.log('🔄 Full replacement with larger text');
+                }
+                // New incremental text to append
+                else {
+                  updatedText = accumulated ? (accumulated + ' ' + newText) : newText;
+                  console.log('➕ Appending new text:', newText);
+                }
+              }
+              
+              // Store the updated text (already trimmed)
+              updatedText = updatedText.trim();
+              console.log('📚 Updated total:', updatedText.substring(0, 60) + '...');
+              
+              setAccumulatedTtsText(updatedText);
+              accumulatedTtsTextRef.current = updatedText;
+              setCurrentAssistantTranscript(updatedText);
+              
+              // Check for message completion
+              const currentQueue = llmMessageQueueRef.current;
+              let isMessageComplete = false;
+              
+              // Check if this is the final chunk in the new protocol
+              if (messageData && messageData.is_final) {
+                console.log(`🏁 Final chunk received for message ${messageData.message_id}`);
+                isMessageComplete = true;
+              }
+              
+              // Also check for perfect match with LLM queue (for both protocols)
+              if (currentQueue.length > 0) {
+                const expectedMessage = currentQueue[0].trim(); // Trim expected message too
+                
+                if (updatedText === expectedMessage) {
+                  console.log('✅ Perfect match with LLM queue!');
+                  isMessageComplete = true;
+                }
+              }
+              
+              // Save complete message
+              if (isMessageComplete && updatedText) {
+                console.log('💾 Saving complete message to transcript');
+                
+                // Track what we saved to prevent re-accumulation
+                lastSavedMessageRef.current = updatedText;
+                
+                const messageId = `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+                setConversationHistory(prev => [
+                  ...prev, 
+                  { role: 'assistant', text: updatedText, id: messageId, timestamp: new Date() }
+                ]);
+                
+                // Remove from queue if we matched
+                if (currentQueue.length > 0 && updatedText === currentQueue[0].trim()) {
+                  setLlmMessageQueue(prev => {
+                    const updated = prev.slice(1);
+                    llmMessageQueueRef.current = updated;
+                    return updated;
+                  });
+                  console.log('🎯 Dequeued message. Queue remaining:', currentQueue.length - 1);
+                }
+                
+                // Clear for next message
+                setAccumulatedTtsText('');
+                accumulatedTtsTextRef.current = '';
+                setCurrentAssistantTranscript('');
+                
+                // Clear message tracking
+                if (window.currentTtsMessageId) {
+                  console.log(`✨ Message ${window.currentTtsMessageId} complete and saved`);
+                  window.currentTtsMessageId = null;
+                  window.ttsChunksReceived = null;
+                }
+              }
             }
           },
           onBotTtsStarted: () => {
-            console.log('Bot TTS started - keep accumulating text');
-            // Don't clear! Let text accumulate across TTS sessions
+            console.log('🎤 Bot TTS started');
+            // Don't clear accumulated text here - we're building it incrementally
+            // Only clear the display if we're starting a completely new message
+            if (!accumulatedTtsTextRef.current) {
+              setCurrentTtsSegment('');
+              currentTtsSegmentRef.current = '';
+              setCurrentAssistantTranscript('');
+            }
           },
           onBotTtsStopped: () => {
-            console.log('Bot TTS stopped - check for any remaining text');
-            // Fallback: save any remaining text that didn't end with punctuation
-            setCurrentAssistantTranscript(prevText => {
-              if (prevText.trim()) {
-                console.log('💾 Checking to save remaining text without punctuation:', prevText);
-                setConversationHistory(prev => {
-                  // Check ALL assistant messages for duplicates, not just last 3
-                  const allAssistantMessages = prev.filter(msg => msg.role === 'assistant');
-                  
-                  for (const msg of allAssistantMessages) {
-                    if (msg.text === prevText || 
-                        msg.text.includes(prevText) || 
-                        prevText.includes(msg.text)) {
-                      console.log('🚫 Duplicate remaining text found, skipping:', prevText);
-                      return prev;
-                    }
-                  }
-                  
-                  // Save the remaining text
-                  const messageId = `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-                  console.log('✅ Saving remaining text:', prevText);
-                  return [...prev, { role: 'assistant', text: prevText, id: messageId }];
+            console.log('Bot TTS stopped - checking for complete message');
+            
+            const currentQueue = llmMessageQueueRef.current;
+            const accumulatedTts = accumulatedTtsTextRef.current.trim();
+            
+            console.log('🔍 TTS stopped - Queue length:', currentQueue.length, 'Accumulated:', accumulatedTts);
+            
+            // Check if accumulated text matches any message in queue
+            if (currentQueue.length > 0 && accumulatedTts) {
+              const firstMessage = currentQueue[0].trim();
+              
+              // Only save and clear if we have a COMPLETE match
+              if (accumulatedTts === firstMessage) {
+                console.log('✅ TTS stopped with complete message - saving:', firstMessage.substring(0, 50) + '...');
+                
+                // Track and save - DISABLED to prevent duplicates with new protocol
+                lastSavedMessageRef.current = firstMessage;
+                
+                // DISABLED: Saving is now handled by is_final flag in onBotTtsText
+                // const messageId = `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+                // setConversationHistory(prev => [
+                //   ...prev, 
+                //   { role: 'assistant', text: firstMessage, id: messageId, timestamp: new Date() }
+                // ]);
+                
+                // Dequeue the message
+                setLlmMessageQueue(prev => {
+                  const updated = prev.slice(1);
+                  llmMessageQueueRef.current = updated;
+                  return updated;
                 });
+                
+                // Clear for next message since this one is complete
+                setCurrentTtsSegment('');
+                currentTtsSegmentRef.current = '';
+                setCurrentAssistantTranscript('');
+                setAccumulatedTtsText('');
+                accumulatedTtsTextRef.current = '';
+                
+                console.log('📤 Complete message saved. Queue now has', currentQueue.length - 1, 'messages');
+              } else if (firstMessage.includes(accumulatedTts)) {
+                // The accumulated text is found within the expected message - it's a partial match
+                // This handles cases with emojis or when TTS stops mid-sentence
+                console.log('⚠️ TTS stopped mid-sentence. Keeping accumulated text for continuation.');
+                // DON'T clear the accumulator - keep building on it
+                // Just clear the display but keep the accumulator intact
+                setCurrentTtsSegment('');
+                currentTtsSegmentRef.current = '';
+              } else {
+                console.log('❌ TTS stopped with unmatched text:', accumulatedTts);
+                console.log('Expected to find it in:', firstMessage.substring(0, 60) + '...');
+                // Only clear if there's no match at all
+                setCurrentTtsSegment('');
+                currentTtsSegmentRef.current = '';
+                setCurrentAssistantTranscript('');
+                setAccumulatedTtsText('');
+                accumulatedTtsTextRef.current = '';
               }
-              return ''; // Clear for next response
-            });
+            } else {
+              // No queue or no accumulated text - safe to clear
+              setCurrentTtsSegment('');
+              currentTtsSegmentRef.current = '';
+              setCurrentAssistantTranscript('');
+              if (!currentQueue.length) {
+                // Only clear accumulator if queue is empty
+                setAccumulatedTtsText('');
+                accumulatedTtsTextRef.current = '';
+              }
+            }
           },
         },
       });
@@ -273,6 +548,15 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
               // Small delay to ensure cleanup
               await new Promise(resolve => setTimeout(resolve, 100));
             }
+            // Clear conversation state for fresh start
+            setConversationHistory([]);
+            setCurrentAssistantTranscript('');
+            setCurrentTtsSegment('');
+            setCurrentUserTranscript('');
+            setLlmMessageQueue([]);
+            llmMessageQueueRef.current = [];
+            setAccumulatedTtsText('');
+            accumulatedTtsTextRef.current = '';
             await handleConnect();
           } catch (error) {
             console.error("Auto-reconnect failed:", error);
@@ -348,6 +632,12 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
     if (!client) return;
     client.disconnect();
     setConversationHistory([]);
+    setCurrentAssistantTranscript('');
+    setCurrentTtsSegment('');
+    setLlmMessageQueue([]);
+    llmMessageQueueRef.current = [];
+    setAccumulatedTtsText('');
+    accumulatedTtsTextRef.current = '';
   };
 
   const toggleMicrophone = async () => {
@@ -561,6 +851,21 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                 </span>
               </button>
               <button
+                onClick={() => setShowExportPanel(!showExportPanel)}
+                className={`
+                  px-4 py-2 rounded-full transition-all duration-500 flex items-center gap-2
+                  ${isDarkMode 
+                    ? (showExportPanel ? 'bg-green-600 text-white' : 'bg-white/90 hover:bg-white text-black')
+                    : (showExportPanel ? 'bg-green-500 text-white' : 'bg-black/90 hover:bg-black text-white')}
+                  hover:scale-[1.02] active:scale-[0.98] transform
+                `}
+              >
+                <span className="text-sm">📥</span>
+                <span className="font-light text-xs tracking-[0.15em] uppercase">
+                  {showExportPanel ? 'Hide Export' : 'Export'}
+                </span>
+              </button>
+              <button
                 onClick={() => setShowDebugUI(true)}
                 className={`
                   px-4 py-2 rounded-full transition-all duration-500
@@ -631,6 +936,14 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                         await new Promise(resolve => setTimeout(resolve, 100));
                       }
                       setAutoReconnectAttempts(0); // Reset auto attempts when manually connecting
+                      setConversationHistory([]); // Clear conversation history
+                      setCurrentAssistantTranscript(''); // Clear current assistant transcript
+                      setCurrentTtsSegment(''); // Clear current TTS segment
+                      setCurrentUserTranscript(''); // Clear current user transcript
+                      setLlmMessageQueue([]); // Clear LLM message queue
+                      llmMessageQueueRef.current = [];
+                      setAccumulatedTtsText(''); // Clear accumulated TTS
+                      accumulatedTtsTextRef.current = '';
                       await handleConnect();
                     } catch (error) {
                       console.error("Manual reconnect failed:", error);
@@ -821,30 +1134,20 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                           ? 'bg-black text-white' 
                           : (isDarkMode ? 'bg-gray-700 text-gray-100 border border-gray-600' : 'bg-gray-200 text-gray-900 border border-gray-300')
                       }`}>
-{message.role === 'assistant' && message.isStreaming ? (
-                          <div className={`leading-relaxed break-words ${
+                        <div 
+                          className={`leading-relaxed break-words ${
                             fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
-                          }`}>
-                            <StreamingText 
-                              text={message.text}
-                              speed={30}
-                              className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}
-                            />
-                          </div>
-                        ) : (
-                          <div 
-                            className={`leading-relaxed break-words ${
-                              fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
-                            }`}
-                            dangerouslySetInnerHTML={{ 
-                              __html: message.text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="underline hover:no-underline">$1</a>') 
-                            }}
-                          />
-                        )}
+                          }`}
+                        >
+                          {message.text}
+                        </div>
                         <div className={`text-xs mt-1 opacity-70 ${
                           message.role === 'user' ? 'text-white' : (isDarkMode ? 'text-gray-400' : 'text-gray-500')
                         }`}>
-                          {new Date().toLocaleTimeString([], { 
+                          {message.timestamp ? message.timestamp.toLocaleTimeString([], { 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                          }) : new Date().toLocaleTimeString([], { 
                             hour: '2-digit', 
                             minute: '2-digit' 
                           })}
@@ -860,11 +1163,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                         <div className={`leading-relaxed break-words ${
                           fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
                         }`}>
-                          <StreamingText 
-                            text={currentUserTranscript}
-                            speed={30} // Faster for real-time speech
-                            className="text-white"
-                          />
+                          {currentUserTranscript}
                         </div>
                         <div className="text-xs mt-1 opacity-70 text-white flex items-center gap-1">
                           <span>Speaking...</span>
@@ -887,11 +1186,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                         <div className={`leading-relaxed break-words ${
                           fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'
                         }`}>
-                          <StreamingText 
-                            text={currentAssistantTranscript}
-                            speed={30} // Same speed as user side
-                            className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}
-                          />
+                          {currentAssistantTranscript}
                         </div>
                         <div className={`text-xs mt-1 opacity-70 flex items-center gap-1 ${
                           isDarkMode ? 'text-gray-400' : 'text-gray-500'
@@ -915,17 +1210,41 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                   
                 </div>
               ) : (
-                <TranscriptOverlay
-                  participant="remote"
-                  className={`
-                    ${isDarkMode ? 'text-white/80' : 'text-black/80'}
-                    ${fontSize === 'small' ? 'text-xs' : fontSize === 'large' ? 'text-base' : 'text-sm'}
-                  `}
-                />
+                <div className={`text-center py-8 ${
+                  isDarkMode ? 'text-white/60' : 'text-black/60'
+                }`}>
+                  <p className="text-sm">Start a conversation to see the transcript here</p>
+                </div>
               )}
             </div>
           </div>
         )}
+
+        {/* Enhanced Export Panel - Slides in from right */}
+        {showExportPanel && (
+          <div className={`absolute top-0 right-0 bottom-0 w-96 z-[60] transition-all duration-500 ${
+            isDarkMode ? 'bg-black/90' : 'bg-white/90'
+          } backdrop-blur-sm border-l ${
+            isDarkMode ? 'border-white/20' : 'border-black/20'
+          }`}>
+            <EnhancedExport
+              conversationHistory={conversationHistory}
+              isDarkMode={isDarkMode}
+              className="h-full"
+            />
+            <button
+              onClick={() => setShowExportPanel(false)}
+              className={`absolute top-4 right-4 w-8 h-8 rounded-full transition-all duration-300 flex items-center justify-center ${
+                isDarkMode
+                  ? 'bg-white/20 hover:bg-white/30 text-white'
+                  : 'bg-black/20 hover:bg-black/30 text-black'
+              }`}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
       </FullScreenContainer>
       
       {/* Audio component */}

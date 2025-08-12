@@ -1,0 +1,523 @@
+"use client";
+
+import React, { useState, useCallback } from 'react';
+import { Download, FileText, Copy, Share, Eye, EyeOff } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+interface ExportOptions {
+  format: 'markdown' | 'html' | 'json' | 'txt';
+  includeTimestamps: boolean;
+  includeMetadata: boolean;
+  theme: 'light' | 'dark';
+  wordCount: boolean;
+}
+
+interface ConversationMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp?: Date;
+  id: string;
+}
+
+interface EnhancedExportProps {
+  conversationHistory: ConversationMessage[];
+  className?: string;
+  isDarkMode?: boolean;
+}
+
+export function EnhancedExport({ 
+  conversationHistory, 
+  className = "",
+  isDarkMode = false 
+}: EnhancedExportProps) {
+  const [options, setOptions] = useState<ExportOptions>({
+    format: 'markdown',
+    includeTimestamps: true,
+    includeMetadata: true,
+    theme: isDarkMode ? 'dark' : 'light',
+    wordCount: true
+  });
+  
+  const [showPreview, setShowPreview] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string>('');
+
+  // Update theme when dark mode changes
+  React.useEffect(() => {
+    setOptions(prev => ({ ...prev, theme: isDarkMode ? 'dark' : 'light' }));
+  }, [isDarkMode]);
+
+  const formatMarkdown = useCallback(() => {
+    if (conversationHistory.length === 0) {
+      return '# Empty Conversation\n\nNo messages to export.';
+    }
+
+    const now = new Date();
+    const wordCount = conversationHistory.reduce((acc, msg) => acc + msg.text.split(' ').length, 0);
+    
+    let content = '# Voice Conversation Export\n\n';
+    
+    if (options.includeMetadata) {
+      content += `**Exported:** ${now.toLocaleString()}\n`;
+      content += `**Messages:** ${conversationHistory.length}\n`;
+      if (options.wordCount) {
+        content += `**Total Words:** ${wordCount}\n`;
+      }
+      content += `**Duration:** ${formatDuration()}\n\n`;
+      content += '---\n\n';
+    }
+    
+    conversationHistory.forEach((msg, index) => {
+      const timestamp = options.includeTimestamps && msg.timestamp ? 
+        `\n*${msg.timestamp.toLocaleTimeString()}*\n\n` : '\n\n';
+      
+      const speaker = msg.role === 'user' ? '🎤 **You**' : '🤖 **Assistant**';
+      content += `## ${speaker}${timestamp}${msg.text}`;
+      
+      if (index < conversationHistory.length - 1) {
+        content += '\n\n---\n\n';
+      }
+    });
+
+    return content;
+  }, [conversationHistory, options]);
+
+  const formatHTML = useCallback(() => {
+    const markdown = formatMarkdown();
+    const isDark = options.theme === 'dark';
+    
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Conversation Export</title>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 2rem;
+            background-color: ${isDark ? '#0f172a' : '#ffffff'};
+            color: ${isDark ? '#e2e8f0' : '#1e293b'};
+        }
+        .message { 
+            margin: 1.5rem 0; 
+            padding: 1.5rem; 
+            border-radius: 12px; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .user { 
+            background: ${isDark ? '#1e40af' : '#dbeafe'}; 
+            border-left: 4px solid #3b82f6; 
+            color: ${isDark ? '#white' : '#1e40af'};
+            margin-left: 2rem;
+        }
+        .assistant { 
+            background: ${isDark ? '#065f46' : '#d1fae5'}; 
+            border-left: 4px solid #10b981; 
+            color: ${isDark ? '#white' : '#065f46'};
+            margin-right: 2rem;
+        }
+        .timestamp {
+            font-size: 0.875rem;
+            opacity: 0.7;
+            margin-bottom: 0.5rem;
+            font-style: italic;
+        }
+        .metadata {
+            background: ${isDark ? '#1e293b' : '#f8fafc'};
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            border: 1px solid ${isDark ? '#334155' : '#e2e8f0'};
+        }
+        .export-header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid ${isDark ? '#334155' : '#e2e8f0'};
+        }
+        .message-content {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        code {
+            background: ${isDark ? '#374151' : '#f1f5f9'};
+            padding: 0.2em 0.4em;
+            border-radius: 4px;
+            font-size: 0.875em;
+        }
+        @media print {
+            body { padding: 1rem; }
+            .message { break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+    <div class="export-header">
+        <h1>🎤 Voice Conversation Export</h1>
+        <p>Generated by Slowcat Voice Agent</p>
+    </div>
+    ${conversationHistory.map(msg => `
+        <div class="message ${msg.role}">
+            ${options.includeTimestamps && msg.timestamp ? 
+              `<div class="timestamp">${msg.timestamp.toLocaleString()}</div>` : ''}
+            <div class="message-content">${msg.text}</div>
+        </div>
+    `).join('')}
+</body>
+</html>`;
+  }, [formatMarkdown, options, conversationHistory]);
+
+  const formatJSON = useCallback(() => {
+    return JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      exportOptions: options,
+      messageCount: conversationHistory.length,
+      wordCount: conversationHistory.reduce((acc, msg) => acc + msg.text.split(' ').length, 0),
+      duration: formatDuration(),
+      messages: conversationHistory.map(msg => ({
+        ...msg,
+        timestamp: msg.timestamp?.toISOString(),
+        wordCount: msg.text.split(' ').length
+      }))
+    }, null, 2);
+  }, [conversationHistory, options]);
+
+  const formatPlainText = useCallback(() => {
+    if (conversationHistory.length === 0) return 'No messages to export.';
+    
+    let content = 'VOICE CONVERSATION EXPORT\n';
+    content += '========================\n\n';
+    
+    if (options.includeMetadata) {
+      content += `Exported: ${new Date().toLocaleString()}\n`;
+      content += `Messages: ${conversationHistory.length}\n`;
+      content += `Duration: ${formatDuration()}\n\n`;
+    }
+    
+    conversationHistory.forEach((msg, index) => {
+      const timestamp = options.includeTimestamps && msg.timestamp ? 
+        ` (${msg.timestamp.toLocaleTimeString()})` : '';
+      
+      const speaker = msg.role === 'user' ? 'YOU' : 'ASSISTANT';
+      content += `[${speaker}]${timestamp}\n${msg.text}\n\n`;
+      
+      if (index < conversationHistory.length - 1) {
+        content += '---\n\n';
+      }
+    });
+
+    return content;
+  }, [conversationHistory, options]);
+
+  const formatDuration = useCallback(() => {
+    if (conversationHistory.length === 0) return '0 minutes';
+    
+    const first = conversationHistory[0]?.timestamp;
+    const last = conversationHistory[conversationHistory.length - 1]?.timestamp;
+    
+    if (!first || !last) return 'Unknown';
+    
+    const diffMs = last.getTime() - first.getTime();
+    const diffMinutes = Math.round(diffMs / (1000 * 60));
+    
+    if (diffMinutes < 1) return 'Less than 1 minute';
+    if (diffMinutes < 60) return `${diffMinutes} minutes`;
+    
+    const hours = Math.floor(diffMinutes / 60);
+    const remainingMinutes = diffMinutes % 60;
+    return `${hours}h ${remainingMinutes}m`;
+  }, [conversationHistory]);
+
+  const getFormattedContent = useCallback(() => {
+    switch (options.format) {
+      case 'markdown': return formatMarkdown();
+      case 'html': return formatHTML();
+      case 'json': return formatJSON();
+      case 'txt': return formatPlainText();
+      default: return formatMarkdown();
+    }
+  }, [options.format, formatMarkdown, formatHTML, formatJSON, formatPlainText]);
+
+  const getContentType = useCallback((format: string) => {
+    switch (format) {
+      case 'markdown': return 'text/markdown;charset=utf-8';
+      case 'html': return 'text/html;charset=utf-8';
+      case 'json': return 'application/json;charset=utf-8';
+      case 'txt': return 'text/plain;charset=utf-8';
+      default: return 'text/plain;charset=utf-8';
+    }
+  }, []);
+
+  const getFileExtension = useCallback((format: string) => {
+    switch (format) {
+      case 'markdown': return 'md';
+      case 'html': return 'html';
+      case 'json': return 'json';
+      case 'txt': return 'txt';
+      default: return 'md';
+    }
+  }, []);
+
+  const handleExport = useCallback(async (format: string = options.format) => {
+    if (conversationHistory.length === 0) {
+      setExportStatus('No conversation to export');
+      setTimeout(() => setExportStatus(''), 2000);
+      return;
+    }
+
+    try {
+      const data = getFormattedContent();
+      const extension = getFileExtension(format);
+      const filename = `slowcat-conversation-${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.${extension}`;
+      
+      const blob = new Blob([data], { type: getContentType(format) });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      setExportStatus(`Exported as ${filename}`);
+      setTimeout(() => setExportStatus(''), 3000);
+    } catch (error) {
+      console.error('Export failed:', error);
+      setExportStatus('Export failed');
+      setTimeout(() => setExportStatus(''), 2000);
+    }
+  }, [conversationHistory, options.format, getFormattedContent, getFileExtension, getContentType]);
+
+  const handleCopyToClipboard = useCallback(async () => {
+    if (conversationHistory.length === 0) {
+      setExportStatus('No conversation to copy');
+      setTimeout(() => setExportStatus(''), 2000);
+      return;
+    }
+
+    try {
+      const data = formatMarkdown(); // Always copy as markdown
+      await navigator.clipboard.writeText(data);
+      setExportStatus('Copied to clipboard!');
+      setTimeout(() => setExportStatus(''), 2000);
+    } catch (error) {
+      console.error('Copy failed:', error);
+      setExportStatus('Copy failed');
+      setTimeout(() => setExportStatus(''), 2000);
+    }
+  }, [conversationHistory, formatMarkdown]);
+
+  const handleShare = useCallback(async () => {
+    if (!navigator.share || conversationHistory.length === 0) {
+      handleCopyToClipboard(); // Fallback to copy
+      return;
+    }
+
+    try {
+      await navigator.share({
+        title: 'Voice Conversation Export',
+        text: formatMarkdown(),
+      });
+      setExportStatus('Shared successfully!');
+      setTimeout(() => setExportStatus(''), 2000);
+    } catch (error) {
+      if (error instanceof Error && error.name !== 'AbortError') {
+        handleCopyToClipboard(); // Fallback to copy
+      }
+    }
+  }, [conversationHistory, formatMarkdown, handleCopyToClipboard]);
+
+  const stats = {
+    messages: conversationHistory.length,
+    words: conversationHistory.reduce((acc, msg) => acc + msg.text.split(' ').length, 0),
+    duration: formatDuration()
+  };
+
+  return (
+    <div className={`enhanced-export p-4 rounded-lg ${
+      isDarkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
+    } ${className}`}>
+      
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <h3 className={`text-lg font-semibold ${
+          isDarkMode ? 'text-gray-100' : 'text-gray-900'
+        }`}>
+          Export Conversation
+        </h3>
+        <div className={`text-sm ${
+          isDarkMode ? 'text-gray-400' : 'text-gray-600'
+        }`}>
+          {stats.messages} messages • {stats.words} words • {stats.duration}
+        </div>
+      </div>
+
+      {/* Export Options */}
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className={`block text-sm font-medium mb-2 ${
+            isDarkMode ? 'text-gray-300' : 'text-gray-700'
+          }`}>
+            Format
+          </label>
+          <select
+            value={options.format}
+            onChange={(e) => setOptions(prev => ({ ...prev, format: e.target.value as any }))}
+            className={`w-full p-2 rounded border text-sm ${
+              isDarkMode 
+                ? 'bg-gray-700 border-gray-600 text-gray-100' 
+                : 'bg-white border-gray-300 text-gray-900'
+            }`}
+          >
+            <option value="markdown">Markdown (.md)</option>
+            <option value="html">HTML (.html)</option>
+            <option value="json">JSON (.json)</option>
+            <option value="txt">Plain Text (.txt)</option>
+          </select>
+        </div>
+        
+        <div>
+          <label className={`block text-sm font-medium mb-2 ${
+            isDarkMode ? 'text-gray-300' : 'text-gray-700'
+          }`}>
+            Options
+          </label>
+          <div className="space-y-1">
+            <label className="flex items-center text-sm">
+              <input
+                type="checkbox"
+                checked={options.includeTimestamps}
+                onChange={(e) => setOptions(prev => ({ ...prev, includeTimestamps: e.target.checked }))}
+                className="mr-2"
+              />
+              <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>
+                Include timestamps
+              </span>
+            </label>
+            <label className="flex items-center text-sm">
+              <input
+                type="checkbox"
+                checked={options.includeMetadata}
+                onChange={(e) => setOptions(prev => ({ ...prev, includeMetadata: e.target.checked }))}
+                className="mr-2"
+              />
+              <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>
+                Include metadata
+              </span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      {/* Export Buttons */}
+      <div className="flex flex-wrap gap-2 mb-4">
+        <button
+          onClick={() => handleExport()}
+          disabled={conversationHistory.length === 0}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+        >
+          <Download size={16} />
+          Export {options.format.toUpperCase()}
+        </button>
+        
+        <button
+          onClick={handleCopyToClipboard}
+          disabled={conversationHistory.length === 0}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+        >
+          <Copy size={16} />
+          Copy
+        </button>
+        
+        {navigator.share && (
+          <button
+            onClick={handleShare}
+            disabled={conversationHistory.length === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+          >
+            <Share size={16} />
+            Share
+          </button>
+        )}
+        
+        <button
+          onClick={() => setShowPreview(!showPreview)}
+          disabled={conversationHistory.length === 0}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed ${
+            isDarkMode
+              ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          {showPreview ? <EyeOff size={16} /> : <Eye size={16} />}
+          {showPreview ? 'Hide' : 'Show'} Preview
+        </button>
+      </div>
+
+      {/* Status Message */}
+      {exportStatus && (
+        <div className={`text-sm p-2 rounded mb-4 ${
+          exportStatus.includes('failed') 
+            ? 'bg-red-100 text-red-800 border border-red-200' 
+            : 'bg-green-100 text-green-800 border border-green-200'
+        }`}>
+          {exportStatus}
+        </div>
+      )}
+
+      {/* Preview */}
+      {showPreview && conversationHistory.length > 0 && (
+        <div className={`border rounded-lg p-4 ${
+          isDarkMode ? 'border-gray-600 bg-gray-900' : 'border-gray-300 bg-gray-50'
+        }`}>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className={`text-sm font-semibold ${
+              isDarkMode ? 'text-gray-200' : 'text-gray-800'
+            }`}>
+              Preview ({options.format})
+            </h4>
+            <div className={`text-xs ${
+              isDarkMode ? 'text-gray-400' : 'text-gray-600'
+            }`}>
+              {getFormattedContent().length} characters
+            </div>
+          </div>
+          
+          <div className={`max-h-60 overflow-y-auto text-xs font-mono ${
+            isDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-white text-gray-700'
+          } p-3 rounded border`}>
+            {options.format === 'markdown' ? (
+              <ReactMarkdown 
+                remarkPlugins={[remarkGfm]}
+                className={`prose prose-sm max-w-none ${
+                  isDarkMode ? 'prose-invert' : ''
+                }`}
+              >
+                {getFormattedContent().slice(0, 1000) + (getFormattedContent().length > 1000 ? '\n\n...(truncated)' : '')}
+              </ReactMarkdown>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words">
+                {getFormattedContent().slice(0, 1000) + (getFormattedContent().length > 1000 ? '\n\n...(truncated)' : '')}
+              </pre>
+            )}
+          </div>
+        </div>
+      )}
+      
+      {conversationHistory.length === 0 && (
+        <div className={`text-center py-8 ${
+          isDarkMode ? 'text-gray-500' : 'text-gray-400'
+        }`}>
+          <FileText size={32} className="mx-auto mb-2 opacity-50" />
+          <p className="text-sm">No conversation to export yet.</p>
+          <p className="text-xs mt-1">Start chatting to see export options!</p>
+        </div>
+      )}
+    </div>
+  );
+}
