@@ -97,6 +97,18 @@ const formatBotText = (text: string): string => {
   // Clean up any double spaces left from emoji removal
   formatted = formatted.replace(/\s+/g, ' ').trim();
   
+  // CRITICAL FIX: Normalize punctuation marks for validation matching
+  formatted = formatted
+    // Normalize em dashes to hyphens
+    .replace(/—/g, '-')
+    // Normalize en dashes to hyphens  
+    .replace(/–/g, '-')
+    // Normalize curly quotes to straight quotes
+    .replace(/[""]/g, '"')
+    .replace(/['']/g, "'")
+    // Normalize ellipsis
+    .replace(/…/g, '...');
+  
   return formatted;
 };
 
@@ -294,22 +306,27 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
               
               // Handle based on protocol version
               if (messageData && messageData.protocol === 'tts_v2') {
-                // New protocol: Always incremental, properly tracked
+                // CRITICAL FIX: Check for new message ID FIRST and reset state before any calculation
+                if (!window.currentTtsMessageId || window.currentTtsMessageId !== messageData.message_id) {
+                  console.log(`🆕 New TTS message started: ${messageData.message_id} (previous: ${window.currentTtsMessageId})`);
+                  window.currentTtsMessageId = messageData.message_id;
+                  window.ttsChunksReceived = new Set();
+                  // Clear accumulated text when starting a new message
+                  setAccumulatedTtsText('');
+                  accumulatedTtsTextRef.current = '';
+                  console.log('🧹 Cleared accumulated text for new message');
+                }
+                
+                // Now calculate updatedText with the correct (potentially reset) accumulated state
+                const currentAccumulated = (accumulatedTtsTextRef.current || '').trim();
                 if (messageData.message_type === 'incremental') {
-                  // Simply append incremental text
-                  updatedText = accumulated ? (accumulated + ' ' + newText) : newText;
+                  // Use current accumulated state AFTER potential reset
+                  updatedText = currentAccumulated ? (currentAccumulated + ' ' + newText) : newText;
                   console.log(`➕ Appending incremental chunk ${messageData.chunk_index}: ${newText.substring(0, 30)}...`);
                 } else if (messageData.message_type === 'cumulative') {
                   // Replace with cumulative text
                   updatedText = newText;
                   console.log(`🔄 Cumulative update chunk ${messageData.chunk_index}`);
-                }
-                
-                // Store message ID for tracking
-                if (!window.currentTtsMessageId || window.currentTtsMessageId !== messageData.message_id) {
-                  console.log(`🆕 New TTS message started: ${messageData.message_id}`);
-                  window.currentTtsMessageId = messageData.message_id;
-                  window.ttsChunksReceived = new Set();
                 }
                 
                 // Track received chunks to prevent duplicates

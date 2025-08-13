@@ -19,14 +19,10 @@
       ],
       "env": {}
     },
-    "browser-text": {
+    "browser": {
       "command": "npx",
       "args": [
-        "@playwright/mcp@latest",
-        "--caps",
-        "text",
-        "--browser",
-        "chrome"
+        "@agent-infra/mcp-server-browser@latest"
       ]
     }
   }

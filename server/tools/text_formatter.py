@@ -17,34 +17,12 @@ def sanitize_for_voice(text: str) -> str:
     text = re.sub(r'<[^>]*?>', '', text)
     
     # Remove emojis and emoticons (comprehensive Unicode ranges)
-    # Basic emojis (U+1F600-U+1F64F)
-    text = re.sub(r'[\U0001F600-\U0001F64F]', '', text)
-    # Miscellaneous symbols and pictographs (U+1F300-U+1F5FF)
-    text = re.sub(r'[\U0001F300-\U0001F5FF]', '', text)
-    # Transport and map symbols (U+1F680-U+1F6FF)
-    text = re.sub(r'[\U0001F680-\U0001F6FF]', '', text)
-    # Supplemental symbols (U+1F700-U+1F77F)
-    text = re.sub(r'[\U0001F700-\U0001F77F]', '', text)
-    # Geometric shapes extended (U+1F780-U+1F7FF)
-    text = re.sub(r'[\U0001F780-\U0001F7FF]', '', text)
-    # Supplemental arrows (U+1F800-U+1F8FF)
-    text = re.sub(r'[\U0001F800-\U0001F8FF]', '', text)
-    # Symbols and pictographs extended (U+1F900-U+1F9FF)
-    text = re.sub(r'[\U0001F900-\U0001F9FF]', '', text)
-    # Additional emojis (U+1FA00-U+1FA6F, U+1FA70-U+1FAFF)
-    text = re.sub(r'[\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF]', '', text)
-    # Enclosed alphanumeric supplement (U+1F100-U+1F1FF)
-    text = re.sub(r'[\U0001F100-\U0001F1FF]', '', text)
-    # Regional indicator symbols (flags) (U+1F1E0-U+1F1FF)
-    text = re.sub(r'[\U0001F1E0-\U0001F1FF]', '', text)
-    # Miscellaneous symbols (U+2600-U+26FF)
-    text = re.sub(r'[\U00002600-\U000026FF]', '', text)
-    # Dingbats (U+2700-U+27BF)
-    text = re.sub(r'[\U00002700-\U000027BF]', '', text)
-    # Variation selectors (U+FE00-U+FE0F)
-    text = re.sub(r'[\U0000FE00-\U0000FE0F]', '', text)
-    # Zero-width joiner and non-joiner
-    text = re.sub(r'[\u200D\u200C]', '', text)
+    # Use a more comprehensive emoji removal pattern
+    text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U0001F100-\U0001F1FF\U0001F1E0-\U0001F1FF\U00002600-\U000026FF\U00002700-\U000027BF\U0000FE00-\U0000FE0F\u200D\u200C]', '', text)
+    
+    # Additional comprehensive emoji cleanup using simpler approach
+    # Remove any remaining emoji-like characters
+    text = re.sub(r'[🚗💨⚡🔥💯🎵🎤🎙️🔊🎯🎭🎪🎨🎬🎮🎲🃏🎰🎸🎺🎻🥁🎷📱💻⌨️🖥️🖨️📹📷📺📻📞☎️📟📠🔋🔌💡🔦🕯️🪔🧯🛢️💸💰💴💵💶💷💳💎⚖️🧰🔧🔨⚒️🛠️⛏️🔩⚙️🧱⛓️🧲🔫💣🧨🪓🔪⚔️🛡️🚬⚰️⚱️🏺🔮📿🧿💈⚗️🔭🔬🕳️🩹🩺💊💉🧪🧫🧬🦠💧🫧💦☔⭐🌟💫⚡☄️☀️🌤️⛅🌦️🌧️⚈🌩️🌨️❄️☃️⛄🌬️💨🌪️🌫️🌊💧🔥]', '', text)
     
     # Remove traditional emoticons
     text = re.sub(r'[:;=8][-~]?[)\]}>DPp(/\\|*+]', '', text)  # :) ;-) =D etc.
@@ -107,8 +85,25 @@ def sanitize_for_voice(text: str) -> str:
     # Remove domain names that might leak through
     text = re.sub(r'\b\w+\.(com|org|net|io|co|gov|edu)\b', '', text)
     
-    # Final whitespace cleanup
+    # Final whitespace cleanup and spacing normalization
     text = re.sub(r'\s+', ' ', text).strip()
+    
+    # SAFE FIX: Conservative space normalization to avoid removing legitimate word boundaries
+    # Focus on fixing excessive spaces while preserving normal word separation
+    
+    # Step 1: Normalize excessive whitespace (4+ spaces to single space)
+    text = re.sub(r'    +', ' ', text)  # Replace 4+ spaces with single space
+    
+    # Step 2: Fix broken contractions like "can    '  t" -> "can't"
+    text = re.sub(r'(\w+)\s+\'\s*(\w+)', r"\1'\2", text)  # Fix "can ' t" -> "can't"
+    text = re.sub(r'(\w+)\s*\'\s+(\w+)', r"\1'\2", text)  # Fix "can' t" -> "can't"
+    
+    # Step 3: Clean up space around punctuation (but be conservative)
+    text = re.sub(r'\s+([,.!?;:])', r'\1', text)  # Remove space before punctuation
+    text = re.sub(r'([,.!?;:])\s{2,}', r'\1 ', text)  # Normalize excessive space after punctuation
+    
+    # Step 4: Final conservative cleanup - only remove truly excessive spaces
+    text = re.sub(r'\s{3,}', ' ', text)  # Replace 3+ spaces with single space
     
     return text
 

@@ -52,6 +52,13 @@ class SimpleMCPToolManager:
 
     def __post_init__(self):
         """Initialize MCP servers from mcp.json configuration"""
+        # Ensure environment variables are loaded (in case this manager is created in a subprocess)
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=False)  # Don't override if already set
+        except ImportError:
+            pass  # dotenv not available, proceed with existing env vars
+        
         # Load MCP server configurations from mcp.json
         self._mcp_servers = self._load_mcp_config()
         
@@ -252,13 +259,15 @@ class SimpleMCPToolManager:
         import aiohttp
         
         try:
-            logger.info(f"🔍 Probing {server_name} via MCPO: {endpoint}/openapi.json")
+            openapi_url = f"{endpoint}/openapi.json"
+            logger.info(f"🔍 Probing {server_name} via MCPO: {openapi_url}")
             
             # Get API key from environment - fail fast if missing
             api_key = os.getenv("MCPO_API_KEY")
             if not api_key:
                 logger.error("MCPO_API_KEY environment variable not set - MCP tool discovery disabled")
-                return {}
+                logger.debug(f"Available env vars: {[k for k in os.environ.keys() if 'MCPO' in k or 'MCP' in k]}")
+                return []
                 
             headers = {
                 "Authorization": f"Bearer {api_key}",
@@ -266,7 +275,7 @@ class SimpleMCPToolManager:
             }
             
             session = await self._get_http_session()
-            async with session.get(f"{endpoint}/openapi.json", headers=headers, timeout=2.0) as response:
+            async with session.get(openapi_url, headers=headers, timeout=2.0) as response:
                     if response.status == 200:
                         openapi_spec = await response.json()
                         tools = self._extract_tools_from_openapi(openapi_spec)

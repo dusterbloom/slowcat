@@ -34,6 +34,16 @@ else
     echo "Warning: No virtual environment found (looked for venv/ and .venv/)"
 fi
 
+# Load environment variables from .env file
+if [ -f ".env" ]; then
+    set -a  # automatically export all variables
+    source .env
+    set +a  # disable automatic export
+    echo "📝 Loaded environment variables from .env"
+else
+    echo "⚠️ Warning: .env file not found - using default values"
+fi
+
 # Set environment variables to help with multiprocessing on macOS
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 export no_proxy="${NO_PROXY:-localhost,127.0.0.1}"

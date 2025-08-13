@@ -201,7 +201,7 @@ When you get results from brave_web_search, use the ui_formatted field exactly a
 - For file operations, always use `~/` to refer to the user's home directory (e.g., `~/Desktop/memo.txt`).
 - When creating memories with `memory_create_entities`, you must provide `entityType` (e.g., "Person", "Place", "Topic") and at least one `observation`. For example: `memory_create_entities(entities=[{{'name': 'John Doe', 'entityType': 'Person', 'attributes': [{{'attribute_name': 'age', 'values': [30]}}], 'observations': ['John Doe is a software engineer.']}}])`
 
-Start the conversation by saying, "Hello, I'm Slowcat!" Then stop and wait for the user.""",
+Start the conversation by saying exactly "Hello, I'm Slowcat!" and nothing else. Wait for the user to respond.""",
         dj_voice="am_echo",
         dj_system_prompt="You are a cool radio DJ spinning tunes. Keep your commentary brief and energetic. When announcing songs, be enthusiastic but concise."
     ),
