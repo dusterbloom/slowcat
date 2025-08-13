@@ -201,6 +201,10 @@ class PipelineBuilder:
         from processors.response_formatter import ResponseFormatterProcessor
         processors['response_formatter'] = ResponseFormatterProcessor()
         
+        # Smart content router - intelligently route tool results to appropriate processors
+        from processors.smart_content_router import SmartContentRouter
+        processors['smart_content_router'] = SmartContentRouter()
+        
         # Tool result compressor - compress verbose tool outputs
         from processors.tool_result_compressor import ToolResultCompressor
         processors['tool_result_compressor'] = ToolResultCompressor(max_result_tokens=150)
@@ -442,9 +446,9 @@ class PipelineBuilder:
         context = SlidingWindowManager(
             messages=[{"role": "system", "content": final_system_prompt}],
             tools=tools_schema,
-            max_turns=10,  # Keep last 10 conversation turns
-            compression_start_turn=4,  # Start compression after 4 turns
-            ultra_compression_turn=8   # Ultra-compress after 8 turns
+            max_turns=100,  # Keep last 100 conversation turns (10x increase for learning)
+            compression_start_turn=40,  # Start compression after 40 turns  
+            ultra_compression_turn=80   # Ultra-compress after 80 turns
         )
         
         context_aggregator = llm_service.create_context_aggregator(context)
@@ -500,6 +504,7 @@ class PipelineBuilder:
             services['tts'],
             tts_protocol_converter,
             transport.output(),
+            processors['smart_content_router'],  # Route tool results to appropriate processors
             processors['tool_result_compressor'],  # Compress verbose tool results first
             processors['assistant_context_gate'],  # Then clean assistant messages
             context_aggregator.assistant(),  # Assistant context aggregator

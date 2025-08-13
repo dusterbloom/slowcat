@@ -79,15 +79,22 @@ class SlidingWindowManager(OpenAILLMContext):
                     return {**message, "content": content[:80] + "... [response summary]"}
                     
         if role == "tool":
-            # Aggressively compress tool results
+            # Compress tool results but preserve more information for learning
             if compression_level == "medium":
-                # Extract key facts from tool results
-                compressed = self._compress_tool_result(content)
-                return {**message, "content": compressed}
+                # Keep more tool result information for better learning
+                if len(content) > 500:
+                    compressed = self._compress_tool_result(content)
+                    return {**message, "content": compressed}
+                else:
+                    # Don't compress shorter tool results
+                    return message
             elif compression_level == "high":
-                # Ultra compress to minimal facts
-                compressed = self._ultra_compress_tool_result(content)
-                return {**message, "content": compressed}
+                # Even in high compression, keep essential tool result info
+                if len(content) > 200:
+                    compressed = self._compress_tool_result(content)  # Use medium compression even for high
+                    return {**message, "content": compressed}
+                else:
+                    return message
                 
         return message
 

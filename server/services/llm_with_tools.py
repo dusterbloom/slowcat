@@ -497,18 +497,11 @@ class LLMWithToolsService(OpenAILLMService):
                     # Don't add anything to cleaned_messages
                 
             elif role == "tool":
-                logger.info(f"🚫 Message {i}: Cleaning tool result JSON quotes")
-                # Clean tool results - remove JSON quotes and tool_call_id
-                content = msg.get("content", "")
-                
-                # Remove JSON quotes if present
-                if content.startswith('"') and content.endswith('"'):
-                    content = content[1:-1]  # Remove surrounding quotes
-                
-                # Create clean tool message without tool_call_id
-                cleaned_msg = {"role": "tool", "content": content}
-                cleaned_messages.append(cleaned_msg)
-                logger.info(f"✅ Cleaned tool result: {content}")
+                logger.info(f"➡️ Message {i}: Passing through tool result for Smart Content Router")
+                # Pass tool results through unchanged - let Smart Content Router handle them
+                # This preserves rich content for proper processing downstream
+                cleaned_messages.append(msg)
+                logger.debug(f"✅ Tool result preserved for downstream processing")
                 
             else:
                 # User, system, or other messages - pass through unchanged

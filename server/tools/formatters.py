@@ -151,6 +151,39 @@ def format_tool_response_for_voice(function_name: str, result: Union[Dict, str, 
                     else:
                         return f"I found {len(matches)} files containing that text."
         
+        elif function_name == "extract_url_text":
+            if isinstance(result, dict):
+                # Extract the text content from URL extraction
+                text_content = result.get("text", "")
+                title = result.get("title", "")
+                url = result.get("url", "")
+                
+                if text_content:
+                    # Format for voice output - provide a brief intro then the content
+                    intro = ""
+                    if title:
+                        intro = f"From {title}: "
+                    elif url:
+                        intro = f"From {url}: "
+                    
+                    # For voice output, provide substantial content (much longer limit)
+                    max_length = 5000  # 5x increase - allow much more content
+                    if len(text_content) > max_length:
+                        truncated_text = text_content[:max_length].strip()
+                        # Try to end at a sentence boundary
+                        last_period = truncated_text.rfind('.')
+                        if last_period > max_length * 0.7:  # If we find a period in the last 30%
+                            truncated_text = truncated_text[:last_period + 1]
+                        else:
+                            truncated_text += " [content continues]"
+                        return f"{intro}{truncated_text}"
+                    else:
+                        return f"{intro}{text_content}"
+                else:
+                    return "I extracted the content but couldn't find any readable text."
+            elif isinstance(result, str):
+                return result
+        
         # Default formatting for any unhandled cases
         if isinstance(result, str):
             return result
