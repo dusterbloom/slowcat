@@ -364,73 +364,103 @@ class PipelineBuilder:
         logger.info("🔧 Building context...")
 
         from services.llm_with_tools import LLMWithToolsService
-        from tools.definitions import ALL_FUNCTION_SCHEMAS
         from core.prompt_builder import generate_final_system_prompt
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
-        from services.simple_mcp_tool_manager import SimpleMCPToolManager
         from collections import namedtuple
 
         MockFunctionSchema = namedtuple("MockFunctionSchema", ["name"])
 
         base_system_prompt = lang_config["system_instruction"]
-        local_tools = list(ALL_FUNCTION_SCHEMAS)
-
-        # 🚀 USE CACHED MCP TOOLS: Get pre-discovered tools from global cache
-        from services.simple_mcp_tool_manager import get_global_mcp_manager
-        mcp_tool_manager = get_global_mcp_manager(language)
         
-        # Get OpenAI-compatible tools (uses cached tools, no HTTP calls)
-        mcp_tools_array = mcp_tool_manager.get_cached_tools_for_llm()
+        # 🚀 CHECK FOR TOOL DISABLING - RESPECT ENVIRONMENT VARIABLES
+        disable_all_tools = os.getenv("DISABLE_ALL_TOOLS", "false").lower() == "true"
+        enable_mcp = os.getenv("ENABLE_MCP", "false").lower() == "true"
+        enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "").strip()
         
-        # Convert to FunctionSchema for Pipecat integration
-        mcp_function_schemas = []
-        for tool_def in mcp_tools_array:
-            function_info = tool_def["function"]
-            from pipecat.adapters.schemas.function_schema import FunctionSchema
+        if disable_all_tools:
+            logger.info("🚫 ALL TOOLS DISABLED - Creating context with NO TOOLS")
+            local_tools = []
+            mcp_function_schemas = []
+            unified_tools = []
+            tools_schema = None
             
-            mcp_schema = FunctionSchema(
-                name=function_info["name"],
-                description=function_info["description"],
-                properties=function_info.get("parameters", {"type": "object", "properties": {}}),
-                required=function_info.get("parameters", {}).get("required", [])
+            # Use base system prompt without any tool modifications
+            final_system_prompt = base_system_prompt
+            
+            context = OpenAILLMContext([{"role": "system", "content": final_system_prompt}])
+            
+        else:
+            # Original tool loading logic when tools are enabled
+            from tools.definitions import ALL_FUNCTION_SCHEMAS
+            from services.simple_mcp_tool_manager import SimpleMCPToolManager
+            
+            # Load local tools based on configuration
+            if enabled_local_tools == "none" or not enabled_local_tools:
+                local_tools = []
+                logger.info("🚫 Local tools disabled by configuration")
+            else:
+                local_tools = list(ALL_FUNCTION_SCHEMAS)
+                logger.info(f"🔧 Loading {len(local_tools)} local tools")
+
+            # Load MCP tools if enabled
+            if enable_mcp:
+                # 🚀 USE CACHED MCP TOOLS: Get pre-discovered tools from global cache
+                from services.simple_mcp_tool_manager import get_global_mcp_manager
+                mcp_tool_manager = get_global_mcp_manager(language)
+                
+                # Get OpenAI-compatible tools (uses cached tools, no HTTP calls)
+                mcp_tools_array = mcp_tool_manager.get_cached_tools_for_llm()
+                
+                # Convert to FunctionSchema for Pipecat integration
+                mcp_function_schemas = []
+                for tool_def in mcp_tools_array:
+                    function_info = tool_def["function"]
+                    from pipecat.adapters.schemas.function_schema import FunctionSchema
+                    
+                    mcp_schema = FunctionSchema(
+                        name=function_info["name"],
+                        description=function_info["description"],
+                        properties=function_info.get("parameters", {"type": "object", "properties": {}}),
+                        required=function_info.get("parameters", {}).get("required", [])
+                    )
+                    mcp_function_schemas.append(mcp_schema)
+                
+                # Store MCP manager reference and WAIT for tool registration
+                if hasattr(llm_service, 'set_mcp_tool_manager'):
+                    llm_service.set_mcp_tool_manager(mcp_tool_manager)
+                    
+                    # CRITICAL FIX: Wait for MCP tools to be registered before proceeding
+                    logger.info("⏳ Waiting for MCP tool registration to complete...")
+                    await llm_service._register_mcp_tools()  # Ensure tools are registered synchronously
+                    logger.info("✅ MCP tool registration completed")
+                
+                logger.info(f"🔧 Loading {len(mcp_function_schemas)} MCP tools")
+            else:
+                mcp_function_schemas = []
+                logger.info("🚫 MCP tools disabled by configuration")
+            
+            # Create unified tools schema with local and MCP tools
+            unified_tools = local_tools + mcp_function_schemas
+            tools_schema = ToolsSchema(standard_tools=unified_tools) if unified_tools else None
+            
+            logger.info(f"🔧 Tools summary:")
+            logger.info(f"   Local tools: {len(local_tools)} ({[t.name for t in local_tools] if local_tools else 'none'})")
+            logger.info(f"   MCP tools: {len(mcp_function_schemas)} ({[t.name for t in mcp_function_schemas] if mcp_function_schemas else 'none'})")
+            logger.info(f"   Total tools: {len(unified_tools)}")
+
+            # Generate the system prompt (with or without tools)
+            final_system_prompt = generate_final_system_prompt(
+                base_prompt=base_system_prompt,
+                local_tools=local_tools,
+                mcp_tools=mcp_function_schemas
             )
-            mcp_function_schemas.append(mcp_schema)
-        
-        # Create unified tools schema with BOTH local and MCP tools
-        unified_tools = local_tools + mcp_function_schemas
-        tools_schema = ToolsSchema(standard_tools=unified_tools)
-        
-        # Store MCP manager reference and WAIT for tool registration
-        if hasattr(llm_service, 'set_mcp_tool_manager'):
-            llm_service.set_mcp_tool_manager(mcp_tool_manager)
-            
-            # CRITICAL FIX: Wait for MCP tools to be registered before proceeding
-            logger.info("⏳ Waiting for MCP tool registration to complete...")
-            await llm_service._register_mcp_tools()  # Ensure tools are registered synchronously
-            logger.info("✅ MCP tool registration completed")
-        
-        # 🚀 MCPO INTEGRATION: MCP tools are now guaranteed to be registered
-        logger.info(f"🔧 MCP tool registration completed synchronously")
-        
-        logger.info(f"🔧 Unified tools schema created:")
-        logger.info(f"   Local tools: {len(local_tools)} ({[t.name for t in local_tools]})")
-        logger.info(f"   MCP tools: {len(mcp_function_schemas)} ({[t.name for t in mcp_function_schemas]})")
-        logger.info(f"   Total tools: {len(unified_tools)}")
 
-        # Generate the full system prompt with local and MCP tools
-        final_system_prompt = generate_final_system_prompt(
-            base_prompt=base_system_prompt,
-            local_tools=local_tools,
-            mcp_tools=mcp_function_schemas
-        )
-
+            context = OpenAILLMContext(
+                [{"role": "system", "content": final_system_prompt}],
+                tools=tools_schema
+            )
+        
         logger.debug(f"Final System Prompt:\n{final_system_prompt}")
-
-        context = OpenAILLMContext(
-            [{"role": "system", "content": final_system_prompt}],
-            tools=tools_schema
-        )
-        
         context_aggregator = llm_service.create_context_aggregator(context)
         
         logger.info("✅ Context built")

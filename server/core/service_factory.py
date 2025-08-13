@@ -256,47 +256,75 @@ class ServiceFactory:
             'turn_analyzer': turn_analyzer
         }
         
-        # Pre-warm Kokoro TTS model
+        # 🚀 AGGRESSIVE TTS PRE-WARMING - Generate actual audio to warm everything
         try:
-            logger.info("🔄 Pre-warming Kokoro TTS model...")
+            logger.info("🔄 AGGRESSIVE: Pre-warming Kokoro TTS with actual synthesis...")
             kokoro = ml_modules['KokoroTTSService'](voice="af_heart")
-            logger.info("✅ Kokoro TTS model ready")
+            
+            # Force model initialization by generating a short test phrase
+            import asyncio
+            
+            async def prewarm_tts():
+                try:
+                    # Generate a very short test phrase to warm the entire pipeline
+                    test_frames = []
+                    async for frame in kokoro.run_tts("Hi there."):
+                        test_frames.append(frame)
+                        if len(test_frames) >= 5:  # Just get a few frames to warm up
+                            break
+                    logger.info(f"✅ Kokoro TTS FULLY pre-warmed with {len(test_frames)} test frames")
+                except Exception as e:
+                    logger.warning(f"TTS pre-warming failed: {e}")
+            
+            # Run pre-warming in the background during startup
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(prewarm_tts())
+            else:
+                asyncio.run(prewarm_tts())
+                
         except Exception as e:
             logger.warning(f"Failed to pre-warm Kokoro TTS: {e}")
         
-        # Pre-warm STT model (just create instance to load model)
+        # 🚀 AGGRESSIVE MODEL PRELOADING FOR SUB-1S LATENCY
         try:
-            logger.info("🔄 Pre-warming STT model...")
+            logger.info("🚀 SPEED MODE: Pre-warming ALL models aggressively...")
             
-            MLXModel = ml_modules['MLXModel']
-            WhisperSTTServiceMLX = ml_modules['WhisperSTTServiceMLX']
-            
-            # Import here to avoid circular imports
-            from pipecat.transcriptions.language import Language
-            
-            # Temporarily allow downloads for turbo models
-            import os
-            original_offline = os.environ.get("HF_HUB_OFFLINE")
-            original_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
-            logger.info("🔄 Temporarily enabling downloads for STT model pre-warming")
-            os.environ.pop("HF_HUB_OFFLINE", None)
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
-            
+            # Pre-warm Sherpa STT model
             try:
-                # Create STT service instance - this loads the model
+                logger.info("🔄 Pre-warming Sherpa STT model...")
+                SherpaOnlineSTTService = ml_modules['SherpaOnlineSTTService']
+                model_dir = os.getenv("SHERPA_ONNX_MODEL_DIR", "./models/kroko-asr-en")
+                sherpa_stt = SherpaOnlineSTTService(
+                    model_dir=model_dir,
+                    language="en",
+                    chunk_size_ms=100,  # Ultra-fast chunks
+                    enable_endpoint_detection=True
+                )
+                # Initialize recognizer immediately
+                sherpa_stt._ensure_recognizer_initialized()
+                logger.info("✅ Sherpa STT model pre-warmed and ready")
+            except Exception as e:
+                logger.warning(f"Failed to pre-warm Sherpa STT: {e}")
+            
+            # Pre-warm Whisper fallback
+            try:
+                logger.info("🔄 Pre-warming Whisper STT fallback...")
+                MLXModel = ml_modules['MLXModel']
+                WhisperSTTServiceMLX = ml_modules['WhisperSTTServiceMLX']
+                from pipecat.transcriptions.language import Language
+                
+                # Create minimal instance for preloading
                 stt_model = MLXModel.LARGE_V3_TURBO_Q4
                 whisper_language = Language.EN
-                stt_service = WhisperSTTServiceMLX(model=stt_model, language=whisper_language)
-            finally:
-                # Restore offline mode
-                if original_offline:
-                    os.environ["HF_HUB_OFFLINE"] = original_offline
-                if original_transformers_offline:
-                    os.environ["TRANSFORMERS_OFFLINE"] = original_transformers_offline
+                whisper_stt = WhisperSTTServiceMLX(model=stt_model, language=whisper_language)
+                logger.info("✅ Whisper STT fallback pre-warmed")
+            except Exception as e:
+                logger.warning(f"Failed to pre-warm Whisper STT: {e}")
             
-            logger.info("✅ STT model pre-warmed")
+            logger.info("🚀 ALL MODELS PRE-WARMED FOR MAXIMUM SPEED!")
         except Exception as e:
-            logger.warning(f"Failed to pre-warm STT: {e}")
+            logger.warning(f"Failed to pre-warm models: {e}")
         
         logger.info("✅ Global analyzers initialized")
         self._global_analyzers_ready.set()
@@ -511,6 +539,22 @@ class ServiceFactory:
         if not self._global_analyzers_ready.is_set():
             logger.info("Waiting for global analyzers...")
             await asyncio.get_event_loop().run_in_executor(None, self._global_analyzers_ready.wait)
+
+    # Public service creation methods for simple pipeline
+    async def create_stt_service(self, language: str = "en", stt_model: str = None):
+        """Public method to create STT service"""
+        ml_modules = await self.get_service("ml_loader")
+        return self._create_stt_service(ml_modules, language, stt_model)
+
+    async def create_llm_service(self, language: str = "en", llm_model: str = None):
+        """Public method to create LLM service"""
+        ml_modules = await self.get_service("ml_loader")
+        return await self._create_llm_service(ml_modules, language, llm_model)
+
+    async def create_tts_service(self, language: str = "en"):
+        """Public method to create TTS service"""
+        ml_modules = await self.get_service("ml_loader")
+        return self._create_tts_service(ml_modules, language)
 
 
 # Global service factory instance

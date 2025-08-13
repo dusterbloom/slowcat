@@ -80,6 +80,7 @@ class SherpaOnlineSTTService(STTService):
         self._last_result = ""
         self._processing_lock = threading.RLock()  # Use RLock for nested locking
         self._initialization_attempted = False
+        self._metrics_started = False  # Track if metrics are currently active
 
         # Validate model directory
         if not self.model_dir.exists():
@@ -87,6 +88,14 @@ class SherpaOnlineSTTService(STTService):
 
         # Initialize recognizer lazily to avoid import-time issues
         logger.info(f"🚀 Sherpa OnlineRecognizer ready - chunk: {chunk_size_ms}ms, endpoint_detection: {enable_endpoint_detection}")
+
+    def can_generate_metrics(self) -> bool:
+        """Check if this service can generate processing metrics.
+
+        Returns:
+            True, as Sherpa service supports metrics generation.
+        """
+        return True
 
     def _init_recognizer(self):
         """Initialize the OnlineRecognizer with proper model configuration"""
@@ -304,14 +313,11 @@ class SherpaOnlineSTTService(STTService):
             return
 
         with self._processing_lock:
-            await self.start_processing_metrics()
-            
             # Lazy initialization
             try:
                 self._ensure_recognizer_initialized()
             except Exception as e:
                 logger.error(f"Failed to initialize recognizer: {e}")
-                await self.stop_processing_metrics()
                 return
             
             # Initialize stream if needed (with retry)
@@ -352,6 +358,12 @@ class SherpaOnlineSTTService(STTService):
                     await self.stop_processing_metrics()
                     return
                 
+                # Start metrics if not already started
+                if not self._metrics_started:
+                    await self.start_processing_metrics()
+                    await self.start_ttfb_metrics()
+                    self._metrics_started = True
+                
                 # Process the audio chunk synchronously (thread-safe)
                 try:
                     result_text, is_endpoint = self._process_audio_chunk(audio_samples)
@@ -363,42 +375,57 @@ class SherpaOnlineSTTService(STTService):
                             self._stream = self._create_stream()
                     except:
                         pass
-                    await self.stop_processing_metrics()
+                    if self._metrics_started:
+                        await self.stop_ttfb_metrics()
+                        await self.stop_processing_metrics()
+                        self._metrics_started = False
                     return
                 
                 # Emit frames based on results
-                if result_text:
-                    if is_endpoint:
-                        # 🎯 FINAL TRANSCRIPTION - Always emit on endpoint
-                        logger.info(f"✅ Sherpa final: '{result_text}' (endpoint detected)")
+                if result_text and is_endpoint:
+                    # 🎯 FINAL TRANSCRIPTION - Always emit on endpoint
+                    logger.info(f"✅ Sherpa final: '{result_text}' (endpoint detected)")
+                    
+                    yield TranscriptionFrame(
+                        text=result_text,
+                        user_id="default_user",
+                        timestamp=time_now_iso8601(),
+                        language=self.language,
+                    )
+                    self._last_result = result_text
+                    
+                    # Stop metrics after successful transcription
+                    if self._metrics_started:
                         await self.stop_ttfb_metrics()
+                        await self.stop_processing_metrics()
+                        self._metrics_started = False
                         
-                        yield TranscriptionFrame(
-                            text=result_text,
-                            user_id="default_user",
-                            timestamp=time_now_iso8601(),
-                            language=self.language,
-                        )
-                        self._last_result = result_text
-                        
-                    elif self.emit_partial_results and result_text != self._last_result and len(result_text.split()) >= 1:
-                        # 🔄 INTERIM TRANSCRIPTION - Only if text changed
-                        logger.debug(f"🔄 Sherpa interim: '{result_text}'")
-                        
-                        yield InterimTranscriptionFrame(
-                            text=result_text,
-                            user_id="default_user",
-                            timestamp=time_now_iso8601(),
-                            language=self.language,
-                        )
-                        self._last_result = result_text
-            
-            await self.stop_processing_metrics()
+                elif result_text and self.emit_partial_results and result_text != self._last_result and len(result_text.split()) >= 1:
+                    # 🔄 INTERIM TRANSCRIPTION - Only if text changed
+                    logger.debug(f"🔄 Sherpa interim: '{result_text}'")
+                    
+                    yield InterimTranscriptionFrame(
+                        text=result_text,
+                        user_id="default_user",
+                        timestamp=time_now_iso8601(),
+                        language=self.language,
+                    )
+                    self._last_result = result_text
+                    # Keep metrics running for interim results
 
     def cleanup(self):
         """Cleanup recognizer resources safely"""
         logger.info("🧹 Cleaning up Sherpa OnlineRecognizer")
         with self._processing_lock:
+            # Stop metrics if they're running
+            if self._metrics_started:
+                try:
+                    # These are async methods but we're in sync context
+                    # The metrics system should handle this gracefully
+                    self._metrics_started = False
+                except:
+                    pass
+            
             # Clear buffer first
             self._audio_buffer.clear()
             

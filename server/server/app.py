@@ -3,6 +3,7 @@ FastAPI application setup and configuration
 """
 
 import asyncio
+import os
 import signal
 import sys
 import threading
@@ -47,8 +48,16 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
         ml_loader_task = asyncio.create_task(service_factory.get_service("ml_loader"))
         analyzer_task = asyncio.create_task(service_factory.get_service("global_analyzers"))
 
-        from services.simple_mcp_tool_manager import discover_mcp_tools_background
-        mcp_task = asyncio.create_task(discover_mcp_tools_background(language or config.default_language))
+        # Only discover MCP tools if MCP is enabled and tools are not disabled
+        enable_mcp = os.getenv("ENABLE_MCP", "false").lower() == "true"
+        disable_all_tools = os.getenv("DISABLE_ALL_TOOLS", "false").lower() == "true"
+        
+        if enable_mcp and not disable_all_tools:
+            from services.simple_mcp_tool_manager import discover_mcp_tools_background
+            mcp_task = asyncio.create_task(discover_mcp_tools_background(language or config.default_language))
+            logger.info("🔧 MCP tool discovery started")
+        else:
+            logger.info("🚫 MCP tool discovery skipped (tools disabled)")
 
         async def prewarm_llm():
             try:

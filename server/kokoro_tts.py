@@ -32,6 +32,10 @@ class KokoroTTSService(TTSService):
     on Apple Silicon through the mlx-audio library. Uses a separate thread
     for audio generation to avoid blocking the pipeline.
     """
+    
+    # 🚀 CLASS-LEVEL MODEL CACHE for instant subsequent loads
+    _model_cache = {}
+    _pipeline_cache = {}
 
     def _get_voice_language_mapping(self):
         """Map voice names to their respective languages"""
@@ -104,7 +108,12 @@ class KokoroTTSService(TTSService):
             language: The language for synthesis (optional, auto-detected from voice).
             **kwargs: Additional arguments passed to the parent TTSService.
         """
-        super().__init__(sample_rate=sample_rate, **kwargs)
+        # 🚀 SIMPLE APPROACH: Just reduce sentence aggregation timeout for speed
+        super().__init__(
+            sample_rate=sample_rate,
+            aggregate_sentences=True,  # Use default Pipecat sentence aggregation
+            **kwargs
+        )
 
         self._model_name = model
         self._voice = voice
@@ -130,8 +139,9 @@ class KokoroTTSService(TTSService):
         
         self._kokoro_language = self._get_kokoro_language_code(self._language_code)
 
-        # Model will be initialized on first use
+        # 🚀 EAGER INITIALIZATION: Initialize model immediately for zero cold-start delay
         self._model = None
+        self._initialize_model()  # Initialize immediately instead of lazy loading
         self._init_future = None
 
         self._settings = {
@@ -143,14 +153,25 @@ class KokoroTTSService(TTSService):
         }
 
     def _initialize_model(self):
-        """Initialize the Kokoro model. This runs in a separate thread."""
+        """Initialize the Kokoro model with caching. This runs in a separate thread."""
         try:
-            logger.debug(f"Loading Kokoro model: {self._model_name}")
+            # 🚀 CHECK CACHE FIRST - avoid reloading if already loaded
+            cache_key = self._model_name
+            if cache_key in KokoroTTSService._model_cache:
+                logger.info(f"⚡ Using CACHED Kokoro model: {self._model_name}")
+                self._model = KokoroTTSService._model_cache[cache_key]
+                return
+            
+            logger.info(f"🔄 Loading Kokoro model (first time): {self._model_name}")
             # Acquire the global MLX lock for model loading
             with MLX_GLOBAL_LOCK: # NEW: Use global lock
                 self._model = load_model(self._model_name)
                 mx.eval(mx.array([0])) # Ensure Metal commands are flushed
-            logger.debug("Kokoro model loaded successfully")
+                
+                # 🚀 CACHE THE MODEL for instant subsequent loads
+                KokoroTTSService._model_cache[cache_key] = self._model
+                
+            logger.info(f"✅ Kokoro model loaded and CACHED: {self._model_name}")
         except Exception as e:
             logger.error(f"Failed to initialize Kokoro model: {e}")
             raise
@@ -161,8 +182,9 @@ class KokoroTTSService(TTSService):
     def _generate_audio_streaming(self, text: str, chunk_queue: queue.Queue):
         """Generate audio in streaming fashion, putting chunks in the queue."""
         try:
-            # Initialize model on first use if needed
+            # Model should already be initialized during construction
             if self._model is None:
+                logger.error("🚨 Model not initialized! This should not happen with eager loading")
                 self._initialize_model()
 
             logger.debug(f"Starting streaming audio generation for: {text}")

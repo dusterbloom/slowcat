@@ -61,24 +61,21 @@ from server import create_app, run_server
 
 async def run_bot(webrtc_connection, language="en", llm_model=None):
     """
-    Main bot function using the new pipeline builder architecture.
-    Maintains the same interface as the original for backward compatibility.
+    ROCK SOLID bot function using simple STT -> LLM -> TTS pipeline.
+    No tools, no fancy processors, maximum reliability.
     
     Args:
         webrtc_connection: WebRTC connection instance
         language: Language code (default: "en")
-        llm_model: Optional LLM model override
+        llm_model: Optional LLM model override (ignored for simplicity)
     """
-    from core.pipeline_builder import PipelineBuilder
+    from core.simple_pipeline import create_simple_pipeline
     
     try:
-        # Create pipeline builder
-        pipeline_builder = PipelineBuilder(service_factory)
+        logger.info("🚜 Starting rock-solid simple pipeline...")
         
-        # Build and run pipeline
-        pipeline, task = await pipeline_builder.build_pipeline(
-            webrtc_connection, language, llm_model
-        )
+        # Create simple pipeline - STT -> LLM -> TTS only
+        pipeline, task = await create_simple_pipeline(webrtc_connection, language)
         
         # Run the pipeline
         from pipecat.pipeline.runner import PipelineRunner
@@ -86,7 +83,7 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         await runner.run(task)
         
     except Exception as e:
-        logger.error(f"❌ Error in bot pipeline: {e}")
+        logger.error(f"❌ Error in simple bot pipeline: {e}")
         raise
 
 
