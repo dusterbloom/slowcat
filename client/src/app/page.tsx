@@ -5,11 +5,9 @@ import { ThemeProvider } from "@pipecat-ai/voice-ui-kit";
 import { setupLinkConversion } from '../utils/linkFormatter.js';
 import { LoadingScreen } from '../components/LoadingScreen';
 import { VoiceApp } from '../components/VoiceApp';
-import { ModernizedVoiceApp } from '../components/ModernizedVoiceApp';
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
-  const [useModernUI, setUseModernUI] = useState(true); // Start with modern UI by default
   const videoEnabled = process.env.NEXT_PUBLIC_ENABLE_VIDEO === "false" ? false : true;
   
   // Setup automatic markdown link conversion on mount

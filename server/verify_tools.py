@@ -9,6 +9,7 @@ import sys
 import os
 from typing import Dict, Any
 from loguru import logger
+from config import CONFIG
 
 # Add local pipecat to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "pipecat", "src"))
@@ -180,7 +181,7 @@ async def test_llm_service():
         service = LLMWithToolsService(
             api_key="sk-dummy-key-for-testing",
             model="test-model",
-            base_url="http://localhost:1234/v1",
+            base_url=CONFIG.network.llm_base_url,
             max_tokens=1000
         )
         

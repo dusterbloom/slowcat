@@ -16,6 +16,17 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import asyncio
 from loguru import logger
+from pipecat.frames.frames import Frame
+
+
+# Custom frame type for TTS protocol messages that won't be captured by transcript processor
+@dataclass
+class TTSProtocolFrame(Frame):
+    """Custom frame for TTS protocol messages that bypasses transcript processing."""
+    protocol_data: str  # JSON-encoded protocol message
+    
+    def __str__(self):
+        return f"TTSProtocolFrame(protocol_data={self.protocol_data[:50]}...)"
 
 
 MessageType = Literal["incremental", "cumulative", "complete"]
@@ -123,7 +134,7 @@ class TTSMessageTracker:
                 del self._messages[oldest_id]
                 logger.debug(f"Cleaned up old message: {oldest_id}")
             
-            logger.info(f"Created TTS message: {message_id} ({len(words)} words, ~{estimated_chunks} chunks)")
+            # logger.info(f"Created TTS message: {message_id} ({len(words)} words, ~{estimated_chunks} chunks)")
             return message
     
     def get_message(self, message_id: str) -> Optional[TTSMessage]:

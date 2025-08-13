@@ -25,8 +25,8 @@ from pipecat.transcriptions.language import Language
 # Import the global MLX lock
 from utils.mlx_lock import MLX_GLOBAL_LOCK # NEW IMPORT
 
-# Import the TTS message protocol
-from services.tts_message_protocol import TTSProtocolHelper, TTSMessage
+# Import the TTS message protocol and custom frame
+from services.tts_message_protocol import TTSProtocolHelper, TTSMessage, TTSProtocolFrame
 
 class KokoroTTSService(TTSService):
     """Kokoro TTS service implementation using MLX Audio.
@@ -107,7 +107,8 @@ class KokoroTTSService(TTSService):
             language: The language for synthesis (optional, auto-detected from voice).
             **kwargs: Additional arguments passed to the parent TTSService.
         """
-        super().__init__(sample_rate=sample_rate, **kwargs)
+        # Disable base class text frame pushing since we handle it with our protocol
+        super().__init__(sample_rate=sample_rate, push_text_frames=False, **kwargs)
 
         self._model_name = model
         self._voice = voice
@@ -363,10 +364,10 @@ class KokoroTTSService(TTSService):
                                         )
                                         
                                         if protocol_chunk:  # Not a duplicate
-                                            # Send as JSON-encoded metadata
-                                            yield TTSTextFrame(text=protocol_chunk.to_json())
+                                            # Send as custom protocol frame that won't be captured by transcript processor
+                                            yield TTSProtocolFrame(protocol_data=protocol_chunk.to_json())
                                             text_chunk_index += 1
-                                            logger.debug(f"Sent TTS chunk {text_chunk_index} for message {tts_message.message_id}: {incremental_text[:30]}...")
+                                            # logger.debug(f"Sent TTS chunk {text_chunk_index} for message {tts_message.message_id}: {incremental_text[:30]}...")
                                     
                                     last_sent_position = target_word_position
                             
@@ -399,7 +400,7 @@ class KokoroTTSService(TTSService):
                     )
                     
                     if protocol_chunk:
-                        yield TTSTextFrame(text=protocol_chunk.to_json())
+                        yield TTSProtocolFrame(protocol_data=protocol_chunk.to_json())
                         logger.debug(f"Sent FINAL TTS chunk for message {tts_message.message_id}")
             else:
                 # Send a final marker even if all text was already sent
@@ -412,7 +413,7 @@ class KokoroTTSService(TTSService):
                 )
                 
                 if protocol_chunk:
-                    yield TTSTextFrame(text=protocol_chunk.to_json())
+                    yield TTSProtocolFrame(protocol_data=protocol_chunk.to_json())
                     logger.debug(f"Sent FINAL marker for message {tts_message.message_id}")
             
             # Mark message as complete

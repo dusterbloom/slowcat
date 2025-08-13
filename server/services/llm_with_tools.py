@@ -380,8 +380,10 @@ class LLMWithToolsService(OpenAILLMService):
                 logger.info(f"👤 Last user message: {msg.get('content', '')[:100]}...")
                 break
         
+        logger.info("🚀 About to call parent _stream_chat_completions")
         # Get stream from parent
         stream = await super()._stream_chat_completions(context)
+        logger.info("✅ Parent _stream_chat_completions completed, got stream")
         
         # For now, just return the parent stream to fix the async bug
         # TODO: Re-add tool call feedback functionality later
@@ -390,9 +392,13 @@ class LLMWithToolsService(OpenAILLMService):
     async def process_frame(self, frame: Frame, direction=None):
         """Override to intercept and parse custom tool call formats"""
         
+        # Log all frames for debugging
+        frame_type = type(frame).__name__
+        # logger.info(f"🔍 LLMWithTools processing {frame_type}: {getattr(frame, 'text', str(frame)[:100])}...")
+        
         # Log all text frames for debugging
         if isinstance(frame, TextFrame):
-            logger.info(f"🔍 LLMWithTools processing TextFrame: {frame.text[:100]}...")
+            logger.info(f"📝 LLMWithTools processing TextFrame: {frame.text[:100]}...")
         
         # Check if this is a text frame that might contain custom tool calls
         if isinstance(frame, TextFrame) and frame.text and '[' in frame.text:
@@ -443,3 +449,20 @@ class LLMWithToolsService(OpenAILLMService):
             ToolsSchema containing all available tools
         """
         return self._tools_schema
+    
+    def create_context_aggregator(self, context):
+        """
+        Override the context aggregator creation to add logging
+        """
+        logger.info("🔧 LLMWithToolsService creating context aggregator")
+        logger.info(f"📝 Context type: {type(context)}")
+        logger.info(f"📝 Context messages count: {len(context.messages) if hasattr(context, 'messages') else 'N/A'}")
+        
+        # Create the aggregator using the parent method
+        aggregator = super().create_context_aggregator(context)
+        
+        logger.info(f"✅ Context aggregator created: {type(aggregator)}")
+        logger.info(f"📊 User aggregator: {type(aggregator.user())}")
+        logger.info(f"📊 Assistant aggregator: {type(aggregator.assistant())}")
+        
+        return aggregator

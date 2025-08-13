@@ -200,6 +200,10 @@ class PipelineBuilder:
         from processors.response_formatter import ResponseFormatterProcessor
         processors['response_formatter'] = ResponseFormatterProcessor()
         
+        # Assistant context gate processor
+        from processors.assistant_context_gate import AssistantContextGate
+        processors['assistant_context_gate'] = AssistantContextGate()
+
         # Time-aware executor processor
         from processors.time_aware_executor import TimeAwareExecutor
         processors['time_executor'] = TimeAwareExecutor(
@@ -272,6 +276,9 @@ class PipelineBuilder:
             processors['audio_player'] = None
             processors['music_mode'] = None
             processors['dj_config_handler'] = None
+        
+        
+     
         
         logger.info("✅ Processors setup complete")
         return processors
@@ -434,6 +441,9 @@ class PipelineBuilder:
         context_aggregator = llm_service.create_context_aggregator(context)
         
         logger.info("✅ Context built")
+        logger.info(f"📊 Context aggregator created: {type(context_aggregator)}")
+        logger.info(f"📊 Context aggregator user: {type(context_aggregator.user())}")
+        logger.info(f"📊 Context aggregator assistant: {type(context_aggregator.assistant())}")
         return context, context_aggregator
     
     async def _build_pipeline_components(self, transport, services: Dict[str, Any], 
@@ -443,13 +453,19 @@ class PipelineBuilder:
         
         from pipecat.processors.frameworks.rtvi import RTVIProcessor
         from processors.realtime_assistant_text import RealtimeAssistantText
+        from processors.tts_protocol_converter import TTSProtocolConverter
+        
         rtvi = RTVIProcessor()
-
-        # Instantiate the real-time assistant streamer with references to TTS and output
+        
+        # Create the realtime assistant text router
+        # This intercepts assistant TextFrames to send them to the aggregator
+        # while allowing them to continue to TTS for audio + protocol generation
         realtime_streamer = RealtimeAssistantText(
-            tts_processor=services.get('tts'),
-            websocket_output=transport.output()
+            assistant_aggregator=context_aggregator.assistant()
         )
+        
+        # Create protocol converter for TTS messages
+        tts_protocol_converter = TTSProtocolConverter()
         
         components = [
             transport.input(),
@@ -466,20 +482,45 @@ class PipelineBuilder:
             processors['speaker_context'],
             rtvi,
             processors['speaker_name_manager'],
-            context_aggregator.user(),
+            context_aggregator.user(),  # User context aggregator
             processors['memory_injector'],
             processors['message_deduplicator'],
-            services['llm'],
-            # Place real-time assistant streamer AFTER RTVIProcessor and bot readiness but before TTS
-            realtime_streamer,
-            services['tts'],
-            transport.output(),
             processors['greeting_filter'],
-            context_aggregator.assistant(),
+            services['llm'],
+            realtime_streamer,  # Routes assistant text to TTS, WebSocket, and aggregator
+            services['tts'],
+            tts_protocol_converter,
+            transport.output(),
+            processors['assistant_context_gate'],
+            context_aggregator.assistant(),  # Assistant context aggregator
+
         ]
         
         # Filter out None components
         filtered_components = [comp for comp in components if comp is not None]
+        
+        # Log the pipeline component order for debugging
+        logger.info("🔧 Pipeline component order:")
+        for i, comp in enumerate(filtered_components):
+            comp_name = type(comp).__name__
+            comp_details = ""
+            if hasattr(comp, '__class__'):
+                comp_details = f" ({comp.__class__.__module__}.{comp.__class__.__name__})"
+            
+            # Add special markers for key components
+            marker = ""
+            if 'UserContextAggregator' in comp_name:
+                marker = " 🎯 [USER AGGREGATOR]"
+            elif 'AssistantContextAggregator' in comp_name:
+                marker = " 🎯 [ASSISTANT AGGREGATOR]"
+            elif comp == services['llm']:
+                marker = " 🤖 [LLM SERVICE]"
+            elif comp == services['tts']:
+                marker = " 🔊 [TTS SERVICE]"
+            elif 'RealtimeAssistantText' in comp_name:
+                marker = " 📡 [REALTIME STREAMER]"
+            
+            logger.info(f"  {i+1:2d}. {comp_name}{comp_details}{marker}")
         
         logger.info(f"✅ Built pipeline with {len(filtered_components)} components")
         return filtered_components
@@ -520,3 +561,4 @@ class PipelineBuilder:
             await task.queue_frames([context_aggregator.user().get_context_frame()])
         
         return task
+    

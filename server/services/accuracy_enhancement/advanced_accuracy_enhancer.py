@@ -18,9 +18,14 @@ import json
 import os
 import re
 import time
+import sys
+from pathlib import Path
+
+# Add server root to path for config import
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from config import CONFIG
 from collections import Counter, defaultdict
 from dataclasses import dataclass, asdict
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Set, Any
 import logging
 
@@ -313,8 +318,8 @@ class LLMContextualCorrector:
         # Try LM Studio first (local setup)
         if HAS_OPENAI:
             try:
-                self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
-                logger.info(f"LLM corrector initialized with LM Studio at http://localhost:1234/v1 using {model_name}")
+                self.client = OpenAI(base_url=CONFIG.network.llm_base_url, api_key="lm-studio")
+                logger.info(f"LLM corrector initialized with LM Studio at {CONFIG.network.llm_base_url} using {model_name}")
                 return
             except Exception as e:
                 logger.warning(f"Could not initialize LM Studio client: {e}")

@@ -4,7 +4,6 @@ import { useState, useEffect, useRef } from 'react';
 import {
   ConsoleTemplate,
   FullScreenContainer,
-  TranscriptOverlay,
 } from "@pipecat-ai/voice-ui-kit";
 import { 
   PipecatClientProvider,
@@ -13,8 +12,6 @@ import {
 import { PipecatClient } from '@pipecat-ai/client-js';
 import { SmallWebRTCTransport } from '@pipecat-ai/small-webrtc-transport';
 import { VoiceReactivePlasma } from './VoiceReactivePlasma';
-import { StreamingText } from './StreamingText';
-import { ModernVoiceChat } from './ModernVoiceChat';
 import { EnhancedExport } from './EnhancedExport';
 
 interface VoiceAppProps {
@@ -279,7 +276,7 @@ export function VoiceApp({ videoEnabled }: VoiceAppProps) {
                   // Not our protocol, treat as plain text
                   newText = formatBotText(ttsData.text).trim();
                 }
-              } catch (e) {
+              } catch {
                 // Not JSON, treat as plain text (fallback for old format)
                 newText = formatBotText(ttsData.text).trim();
                 console.log('📝 Plain text TTS (legacy mode):', newText);
