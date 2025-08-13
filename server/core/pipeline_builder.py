@@ -11,6 +11,7 @@ from loguru import logger
 from config import config, VoiceRecognitionConfig
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from processors.sliding_window_manager import SlidingWindowManager
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
 from openai import NOT_GIVEN
@@ -199,6 +200,10 @@ class PipelineBuilder:
         # Response formatter - fix markdown links from stubborn Qwen2.5  
         from processors.response_formatter import ResponseFormatterProcessor
         processors['response_formatter'] = ResponseFormatterProcessor()
+        
+        # Tool result compressor - compress verbose tool outputs
+        from processors.tool_result_compressor import ToolResultCompressor
+        processors['tool_result_compressor'] = ToolResultCompressor(max_result_tokens=150)
         
         # Assistant context gate processor
         from processors.assistant_context_gate import AssistantContextGate
@@ -433,9 +438,13 @@ class PipelineBuilder:
 
         logger.debug(f"Final System Prompt:\n{final_system_prompt}")
 
-        context = OpenAILLMContext(
-            [{"role": "system", "content": final_system_prompt}],
-            tools=tools_schema
+        # Use SlidingWindowManager for context pruning while keeping everything else the same
+        context = SlidingWindowManager(
+            messages=[{"role": "system", "content": final_system_prompt}],
+            tools=tools_schema,
+            max_turns=10,  # Keep last 10 conversation turns
+            compression_start_turn=4,  # Start compression after 4 turns
+            ultra_compression_turn=8   # Ultra-compress after 8 turns
         )
         
         context_aggregator = llm_service.create_context_aggregator(context)
@@ -491,7 +500,8 @@ class PipelineBuilder:
             services['tts'],
             tts_protocol_converter,
             transport.output(),
-            processors['assistant_context_gate'],
+            processors['tool_result_compressor'],  # Compress verbose tool results first
+            processors['assistant_context_gate'],  # Then clean assistant messages
             context_aggregator.assistant(),  # Assistant context aggregator
 
         ]

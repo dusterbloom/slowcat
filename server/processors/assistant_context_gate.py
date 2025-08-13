@@ -43,7 +43,9 @@ def _maybe_space(buf: List[str], nxt: str):
     prev=buf[-1]
     if not prev: return
     a=prev[-1]; b=nxt[0]
-    if (not a.isspace() and a not in _PUNCT_R) and (not b.isspace() and b not in _PUNCT_L):
+    # Only add space if we're joining two words that need separation
+    # Be more conservative to avoid over-spacing
+    if (a.isalnum() and b.isalnum()) or (a in ".,!?;:" and b.isalnum()):
         buf.append(" ")
 
 def _is_pure_json(t: str) -> bool:
@@ -69,14 +71,19 @@ def _sanitize_blob_text(s: str) -> str:
         except: pass
         else:
             if _looks_like_proto(obj):
-                t=(obj.get("text") or "").strip()
-                if t: _maybe_space(out, t); out.append(t)
+                # Skip protocol messages entirely - don't extract text from them
+                pass  
+            else:
+                # For non-protocol JSON, we might want to preserve some content
+                # But for now, skip all JSON to keep text clean
+                pass
         idx=b
     if idx<len(s):
         tail=s[idx:].strip()
         if tail: _maybe_space(out, tail); out.append(tail)
     txt="".join(out)
-    txt=re.sub(r"[ \t]+"," ",txt)
+    # More conservative whitespace cleanup - preserve natural spacing
+    txt=re.sub(r"[ \t]{2,}"," ",txt)  # Only collapse multiple spaces, not single spaces
     txt=re.sub(r"\s+\n","\n",txt)
     txt=re.sub(r"\n\s+","\n",txt)
     return txt.strip()
@@ -97,18 +104,78 @@ class AssistantContextGate(pcfp.FrameProcessor):
             await self.push_frame(frame, direction); return
 
         if isinstance(frame, LLMMessagesFrame):
-            buf: List[str]=[]; saw_assistant=False
-            for m in frame.messages:
-                if m.get("role") == "assistant":
-                    saw_assistant=True
-                    t=_clean_assistant_text(m.get("content") or "")
-                    if t: _maybe_space(buf, t); buf.append(t)
-            if saw_assistant:
-                stitched="".join(buf).strip()
-                if stitched:
-                    await self.push_frame(LLMMessagesFrame(messages=[{"role":"assistant","content": stitched}]), direction)
-                # swallow original polluted frame
+            logger.info(f"🎯 AssistantContextGate processing LLMMessagesFrame with {len(frame.messages)} messages")
+            cleaned_messages = []
+            messages_modified = False
+            
+            for i, m in enumerate(frame.messages):
+                role = m.get("role", "")
+                logger.debug(f"  Message {i}: role={role}, has_tool_calls={'tool_calls' in m}, has_tool_call_id={'tool_call_id' in m}")
+                
+                if role == "assistant":
+                    # Handle assistant messages - convert tool_calls JSON to clean text
+                    if "tool_calls" in m:
+                        logger.info("🚫 BLOCKING assistant message with tool_calls JSON!")
+                        # Convert tool calls to readable text for context
+                        tool_calls = m.get("tool_calls", [])
+                        call_descriptions = []
+                        for call in tool_calls:
+                            func_name = call.get("function", {}).get("name", "unknown_function")
+                            try:
+                                args = json.loads(call.get("function", {}).get("arguments", "{}"))
+                                # Format arguments cleanly
+                                arg_strs = [f"{k}={v}" for k, v in args.items()]
+                                call_desc = f"Called {func_name}({', '.join(arg_strs)})"
+                            except:
+                                call_desc = f"Called {func_name}"
+                            call_descriptions.append(call_desc)
+                        
+                        # Include any text content plus the tool call description
+                        content_parts = []
+                        if m.get("content"):
+                            content_parts.append(_clean_assistant_text(m["content"]))
+                        if call_descriptions:
+                            content_parts.extend(call_descriptions)
+                        
+                        if content_parts:
+                            cleaned_content = ". ".join(filter(None, content_parts))
+                            cleaned_messages.append({"role": "assistant", "content": cleaned_content})
+                            logger.info(f"✅ Converted to: {cleaned_content}")
+                        
+                        messages_modified = True
+                    else:
+                        # Regular assistant message - process normally
+                        content = m.get("content") or ""
+                        cleaned_text = _clean_assistant_text(content)
+                        if cleaned_text:
+                            cleaned_messages.append({"role": "assistant", "content": cleaned_text})
+                
+                elif role == "tool":
+                    logger.info("🚫 BLOCKING tool result with tool_call_id!")
+                    # Clean up tool results - remove metadata, keep just the result content
+                    content = m.get("content", "")
+                    # Clean the content but keep the tool role for LLM context
+                    cleaned_content = _clean_assistant_text(content)  # Remove JSON quotes if present
+                    if cleaned_content:
+                        cleaned_messages.append({"role": "tool", "content": cleaned_content})
+                        logger.info(f"✅ Cleaned tool result: {cleaned_content}")
+                    messages_modified = True
+                
+                else:
+                    # User, system, or other messages - pass through unchanged
+                    cleaned_messages.append(m)
+            
+            if messages_modified:
+                logger.info(f"🧹 AssistantContextGate modified {len(frame.messages)} → {len(cleaned_messages)} messages")
+                # Send cleaned frame if we made changes
+                if cleaned_messages:
+                    await self.push_frame(LLMMessagesFrame(messages=cleaned_messages), direction)
+                # Swallow original polluted frame
+                logger.info("🗑️ SWALLOWED original polluted frame")
                 return
+            
+            # No changes needed - pass through original frame
+            logger.debug("➡️ Passing through unmodified frame")
             await self.push_frame(frame, direction); return
 
         if isinstance(frame, TextFrame):

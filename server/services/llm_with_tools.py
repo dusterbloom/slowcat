@@ -380,9 +380,12 @@ class LLMWithToolsService(OpenAILLMService):
                 logger.info(f"👤 Last user message: {msg.get('content', '')[:100]}...")
                 break
         
+        # Clean context messages before sending to parent
+        cleaned_context = self._clean_context_for_llm(context)
+        
         logger.info("🚀 About to call parent _stream_chat_completions")
-        # Get stream from parent
-        stream = await super()._stream_chat_completions(context)
+        # Get stream from parent with cleaned context
+        stream = await super()._stream_chat_completions(cleaned_context)
         logger.info("✅ Parent _stream_chat_completions completed, got stream")
         
         # For now, just return the parent stream to fix the async bug
@@ -466,3 +469,56 @@ class LLMWithToolsService(OpenAILLMService):
         logger.info(f"📊 Assistant aggregator: {type(aggregator.assistant())}")
         
         return aggregator
+
+    def _clean_context_for_llm(self, context):
+        """Clean context messages to remove tool JSON metadata while preserving meaning"""
+        from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+        
+        cleaned_messages = []
+        
+        logger.info(f"🧹 Cleaning context with {len(context.messages)} messages")
+        
+        for i, msg in enumerate(context.messages):
+            role = msg.get("role", "")
+            
+            if role == "assistant" and "tool_calls" in msg:
+                logger.info(f"🚫 Message {i}: Cleaning assistant tool_calls JSON")
+                # For assistant messages with tool_calls, ONLY include the actual text content
+                # NOT the tool call descriptions - those shouldn't be spoken by TTS
+                content = msg.get("content", "")
+                if content and content.strip():
+                    # Only include the actual response text, not tool call metadata
+                    cleaned_msg = {"role": "assistant", "content": content.strip()}
+                    cleaned_messages.append(cleaned_msg)
+                    logger.info(f"✅ Kept only text content: {content.strip()}")
+                else:
+                    # No actual text content in tool call message - skip it entirely
+                    logger.info("✅ Skipped tool-call-only message (no text content)")
+                    # Don't add anything to cleaned_messages
+                
+            elif role == "tool":
+                logger.info(f"🚫 Message {i}: Cleaning tool result JSON quotes")
+                # Clean tool results - remove JSON quotes and tool_call_id
+                content = msg.get("content", "")
+                
+                # Remove JSON quotes if present
+                if content.startswith('"') and content.endswith('"'):
+                    content = content[1:-1]  # Remove surrounding quotes
+                
+                # Create clean tool message without tool_call_id
+                cleaned_msg = {"role": "tool", "content": content}
+                cleaned_messages.append(cleaned_msg)
+                logger.info(f"✅ Cleaned tool result: {content}")
+                
+            else:
+                # User, system, or other messages - pass through unchanged
+                cleaned_messages.append(msg)
+        
+        # Create new context with cleaned messages
+        cleaned_context = OpenAILLMContext(
+            messages=cleaned_messages,
+            tools=context.tools if hasattr(context, 'tools') else None
+        )
+        
+        logger.info(f"🧹 Context cleaned: {len(context.messages)} → {len(cleaned_messages)} messages")
+        return cleaned_context
