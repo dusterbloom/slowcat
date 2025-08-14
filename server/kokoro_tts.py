@@ -309,7 +309,7 @@ class KokoroTTSService(TTSService):
 
             # Stream chunks as they become available
             first_chunk = True
-            CHUNK_SIZE = self.chunk_size
+            CHUNK_SIZE = max(self.chunk_size, 1024)  # Safe default to prevent zero chunk size
             
             # Text streaming setup - split text into chunks for progressive display
             words = sanitized_text.split()

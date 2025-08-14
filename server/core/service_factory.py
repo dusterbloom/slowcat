@@ -457,7 +457,12 @@ class ServiceFactory:
             "api_key": None,
             "model": selected_model,
             "base_url": config.network.llm_base_url,
-            "max_tokens": config.models.llm_max_tokens
+            "max_tokens": config.models.llm_max_tokens,
+            # 🚀 ANTI-REPETITION PARAMETERS to prevent loops
+            "temperature": 0.8,         # Higher creativity to avoid loops
+            "top_p": 0.95,             # More diverse token selection
+            "frequency_penalty": 0.8,   # AGGRESSIVE penalty for repeated words
+            "presence_penalty": 0.4     # Strong encouragement for new topics
         }
         
         if streaming_enabled:
