@@ -10,6 +10,10 @@ from typing import Dict, Any, Optional, Type, TypeVar, Generic, Callable
 from dataclasses import dataclass
 from loguru import logger
 from config import config, VoiceRecognitionConfig
+from dotenv import load_dotenv
+
+# Ensure .env overrides system environment variables
+load_dotenv(override=True)
 
 T = TypeVar('T')
 
@@ -210,8 +214,13 @@ class ServiceFactory:
             llm_tools_module = importlib.import_module("services.llm_with_tools")
             modules['LLMWithToolsService'] = llm_tools_module.LLMWithToolsService
             
-            openai_module = importlib.import_module("pipecat.services.openai.llm")
+            # Load standard OpenAI LLM service from Pipecat
+            openai_module = importlib.import_module("pipecat.services.openai")
             modules['OpenAILLMService'] = openai_module.OpenAILLMService
+            
+            # Load custom dedup OpenAI service with Realtime Beta filtering approach
+            dedup_openai_module = importlib.import_module("services.dedup_openai_llm")
+            modules['DedupOpenAILLMService'] = dedup_openai_module.DedupOpenAILLMService
             
             # Load voice recognition
             voice_module = importlib.import_module("voice_recognition")
@@ -268,10 +277,19 @@ class ServiceFactory:
                 try:
                     # Generate a very short test phrase to warm the entire pipeline
                     test_frames = []
-                    async for frame in kokoro.run_tts("Hi there."):
-                        test_frames.append(frame)
-                        if len(test_frames) >= 5:  # Just get a few frames to warm up
-                            break
+                    generator = kokoro.run_tts("Hi there.")
+                    try:
+                        async for frame in generator:
+                            test_frames.append(frame)
+                            if len(test_frames) >= 5:  # Just get a few frames to warm up
+                                break
+                    except GeneratorExit:
+                        # Properly handle generator cleanup
+                        pass
+                    finally:
+                        # Ensure generator is properly closed
+                        if hasattr(generator, 'aclose'):
+                            await generator.aclose()
                     logger.info(f"✅ Kokoro TTS FULLY pre-warmed with {len(test_frames)} test frames")
                 except Exception as e:
                     logger.warning(f"TTS pre-warming failed: {e}")
@@ -457,12 +475,7 @@ class ServiceFactory:
             "api_key": None,
             "model": selected_model,
             "base_url": config.network.llm_base_url,
-            "max_tokens": config.models.llm_max_tokens,
-            # 🚀 ANTI-REPETITION PARAMETERS to prevent loops
-            "temperature": 0.8,         # Higher creativity to avoid loops
-            "top_p": 0.95,             # More diverse token selection
-            "frequency_penalty": 0.8,   # AGGRESSIVE penalty for repeated words
-            "presence_penalty": 0.4     # Strong encouragement for new topics
+            "max_tokens": config.models.llm_max_tokens
         }
         
         if streaming_enabled:
@@ -475,8 +488,9 @@ class ServiceFactory:
             logger.info("🔧 Tool-enabled LLM service initialized (MCP via LM Studio)")
             return ml_modules['LLMWithToolsService'](**llm_params)
         else:
-            logger.info("🤖 Standard LLM service initialized")
-            return ml_modules['OpenAILLMService'](**llm_params)
+            logger.info("🚫 Dedup OpenAI LLM service initialized - filtering LLMTextFrames")
+            # Use custom dedup service that filters LLMTextFrames like Realtime Beta
+            return ml_modules['DedupOpenAILLMService'](**llm_params)
     
     async def _create_voice_recognition(self, ml_modules: Dict[str, Any], vr_config: VoiceRecognitionConfig = None):
         """Create voice recognition service"""
@@ -492,18 +506,73 @@ class ServiceFactory:
         return voice_recognition
     
     def _create_memory_service(self):
-        """Create memory service"""
-        if not config.memory.enabled:
+        """Create memory service - uses Pipecat's built-in Mem0MemoryService"""
+        # Check if Mem0 is enabled (independent of old memory system)
+        enable_mem0 = os.getenv("ENABLE_MEM0", "false").lower() == "true"
+        
+        if not enable_mem0:
+            logger.info("🧠 Mem0 memory is DISABLED")
             return None
             
-        logger.info("🧠 Memory is ENABLED")
-        from processors import LocalMemoryProcessor
-        return LocalMemoryProcessor(
-            data_dir=config.memory.data_dir,
-            user_id=config.memory.default_user_id,
-            max_history_items=config.memory.max_history_items,
-            include_in_context=config.memory.include_in_context
-        )
+        logger.info("🚀 Mem0 memory is ENABLED - Using Pipecat's built-in Mem0MemoryService")
+        
+        try:
+            from pipecat.services.mem0.memory import Mem0MemoryService
+            
+            # Configure for fully local setup with Chroma + LM Studio
+            local_config = {
+                "vector_store": {
+                    "provider": "chroma",
+                    "config": {
+                        "collection_name": f"slowcat_{config.memory.default_user_id}",
+                        "path": "./data/chroma_db"
+                    }
+                },
+                "embedder": {
+                    "provider": "huggingface", 
+                    "config": {
+                        "model": "sentence-transformers/all-MiniLM-L6-v2",  # Fast local model
+                        "embedding_dims": 384
+                    }
+                },
+                "llm": {
+                    "provider": "openai",
+                    "config": {
+                        "model": os.getenv("MEM0_CHAT_MODEL", "llama-3.2-3b-instruct-uncensored"),
+                        "openai_base_url": os.getenv("OPENAI_BASE_URL", "http://localhost:1234/v1"),
+                        # API key from environment variable OPENAI_API_KEY
+                        "temperature": 0.0,  # Deterministic for speed
+                        "max_tokens": 100    # Much shorter for speed
+                    }
+                },
+                "version": "v1.1",
+                "custom_prompt": None,  # Use default prompts
+                "memory_deduplication": True,  # Enable deduplication
+                "memory_threshold": 0.9  # Higher threshold for deduplication
+            }
+            
+            memory_service = Mem0MemoryService(
+                local_config=local_config,
+                user_id=config.memory.default_user_id,
+                agent_id="slowcat",
+                run_id=None,  # Per-conversation session ID if needed
+                params=Mem0MemoryService.InputParams(
+                    search_limit=int(os.getenv("MEM0_MAX_CONTEXT", "3")),
+                    search_threshold=0.10,  # Much lower threshold to retrieve more memories
+                    system_prompt="You previously learned about the user:\n\n",
+                    add_as_system_message=True
+                )
+            )
+            
+            logger.info(f"✅ Pipecat Mem0MemoryService created successfully for user: {config.memory.default_user_id}")
+            logger.info(f"   Search limit: {int(os.getenv('MEM0_MAX_CONTEXT', '3'))}")
+            logger.info(f"   Search threshold: 0.10") 
+            logger.info(f"   Using local Chroma + LM Studio models")
+            
+            return memory_service
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Pipecat Mem0MemoryService: {e}")
+            return None
     
     async def create_services_for_language(self, language: str, llm_model: str = None, stt_model: str = None) -> Dict[str, Any]:
         """Create core services for a specific language"""

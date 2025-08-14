@@ -845,77 +845,8 @@ class ToolHandlers:
             logger.error(f"Error browsing URL: {e}")
             return {"error": str(e)}
     
-    async def search_conversations(self, query: str, limit: int = 10, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Search through past conversation history
-        
-        Args:
-            query: Text to search for
-            limit: Maximum results to return
-            user_id: Optional user filter
-            
-        Returns:
-            Search results or error
-        """
-        try:
-            logger.info(f"Searching conversations for: {query}")
-            
-            if not self.memory_processor:
-                return {
-                    "error": "Memory is not enabled",
-                    "results": []
-                }
-            
-            # Call the memory processor's search method
-            results = await self.memory_processor.search_conversations(query, limit, user_id)
-            
-            # Format results for voice output
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "role": result["role"],
-                    "content": result["content"][:200] + "..." if len(result["content"]) > 200 else result["content"],
-                    "timestamp": result["timestamp"]
-                })
-            
-            return {
-                "query": query,
-                "results_count": len(results),
-                "results": formatted_results
-            }
-            
-        except Exception as e:
-            logger.error(f"Error searching conversations: {e}")
-            return {"error": str(e), "results": []}
-    
-    async def get_conversation_summary(self, days_back: int = 7, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get a summary of conversations
-        
-        Args:
-            days_back: Number of days to look back (0 for all time)
-            user_id: Optional user filter
-            
-        Returns:
-            Conversation summary or error
-        """
-        try:
-            logger.info(f"Getting conversation summary for {days_back} days")
-            
-            if not self.memory_processor:
-                return {
-                    "error": "Memory is not enabled",
-                    "total_messages": 0
-                }
-            
-            # Call the memory processor's summary method
-            summary = await self.memory_processor.get_conversation_summary(days_back, user_id)
-            
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Error getting conversation summary: {e}")
-            return {"error": str(e), "total_messages": 0}
+    # Note: Old memory search tools removed - Mem0 handles memory automatically
+    # The new Mem0MemoryProcessor handles all memory operations internally
 
 # Global instance
 tool_handlers = ToolHandlers()
@@ -1010,10 +941,7 @@ async def execute_tool_call(function_name: str, arguments: Dict[str, Any]) -> An
     elif function_name == "get_music_stats":
         from .music_tools import get_music_stats
         return await get_music_stats(**arguments)
-    elif function_name == "search_conversations":
-        return await tool_handlers.search_conversations(**arguments)
-    elif function_name == "get_conversation_summary":
-        return await tool_handlers.get_conversation_summary(**arguments)
+    # Note: Memory tools removed - Mem0 handles memory automatically
     else:
         logger.error(f"🚨 Unknown LOCAL tool function: {function_name}")
         logger.info("💡 If this is an MCP tool, it should be routed through LLMWithToolsService")

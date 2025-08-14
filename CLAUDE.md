@@ -30,6 +30,7 @@ python bot.py --language es  # Spanish, French (fr), Japanese (ja), etc.
 **Environment Variables**:
 - `ENABLE_VOICE_RECOGNITION`: Enable/disable speaker recognition (default: true)
 - `ENABLE_MEMORY`: Enable/disable local conversation memory (default: true)
+- `ENABLE_MEM0`: Enable/disable advanced Mem0 semantic memory (default: false)
 - `OPENAI_BASE_URL`: LLM endpoint (default: http://localhost:1234/v1)
 
 ### Client (Next.js)

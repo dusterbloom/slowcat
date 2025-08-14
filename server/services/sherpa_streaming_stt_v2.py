@@ -304,7 +304,6 @@ class SherpaOnlineSTTService(STTService):
             self._recognizer = None
             return self._ensure_recognizer_initialized()
 
-    @traced_stt
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         """
         🚀 TRUE STREAMING STT: Process audio continuously with OnlineRecognizer!

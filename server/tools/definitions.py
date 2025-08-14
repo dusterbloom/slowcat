@@ -64,12 +64,8 @@ EXTRACT_URL_TEXT = FunctionSchema(
     required=["url"]
 )
 
-# ❌ REMOVED: Memory tools - now handled by MCP memory server
-# - store_memory -> memory_create_entities (MCP)
-# - retrieve_memory -> memory_search_nodes (MCP) 
-# - search_memory -> memory_search_nodes (MCP)
-# - delete_memory -> memory_delete_entities (MCP)
-# - update_memory -> memory_update_entities (MCP)
+# Note: Memory tools removed - Mem0 handles memory automatically in background
+# No callable memory tools needed with the advanced Mem0 system
 
 # Calculation Tools
 CALCULATE = FunctionSchema(
@@ -335,6 +331,7 @@ def get_tools(language: str = "en") -> ToolsSchema:
     enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
     if enabled_local_tools.lower() == "none":
         # Return empty tools schema when local tools are disabled
+        # Note: Mem0 memory works automatically in background, no tools needed
         return ToolsSchema(standard_tools=[])
     
     if language == "en" or language not in TOOL_DESCRIPTIONS_LANG:

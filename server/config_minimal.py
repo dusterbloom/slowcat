@@ -25,7 +25,7 @@ MINIMAL_LANGUAGES = {
     "en": MinimalLanguageConfig(
         voice="af_heart",
         whisper_language="EN",
-        system_instruction="You're Slowcat, a friendly voice assistant. You have lots of knowledge inside you but is not infinite. You have tools available you can discover easily by listing them and use them as needed to fulfil the user requests. /no_think"
+        system_instruction="You're Slowcat, a friendly voice assistant. You have lots of knowledge inside you but is not infinite. Start the conversation with single, sweet `Hello. What's up?` /no_think"
     ),
     
     "es": MinimalLanguageConfig(

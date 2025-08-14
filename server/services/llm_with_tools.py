@@ -336,131 +336,29 @@ class LLMWithToolsService(OpenAILLMService):
             return await super()._process_context(context)
 
     def _get_completion_kwargs(self, context) -> dict:
-        """Override to add tool_choice='auto' for MCP tool calling and log full request"""
+        """Override to add tool_choice='auto' for MCP tool calling"""
         kwargs = super()._get_completion_kwargs(context)
         
-        # Check if local tools are disabled - if so, don't add any tool parameters
-        enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
-        if enabled_local_tools.lower() == "none":
-            # Force remove local tools from schema but allow MCP function calling
-            kwargs.pop("tools", None)
-            kwargs.pop("tool_choice", None)
-            logger.info("🔧 Local tools disabled - removed from schema but MCP function calling allowed")
-        else:
-            # 🚀 CRITICAL: Add tool_choice="auto" when tools are present
-            if context.tools != NOT_GIVEN and context.tools:
+        # Add tool_choice="auto" when tools are present for better MCP integration
+        if context.tools != NOT_GIVEN and context.tools:
+            # Check if we have actual tools (not empty)
+            has_tools = False
+            if hasattr(context.tools, 'standard_tools'):
+                has_tools = len(context.tools.standard_tools) > 0
+            elif isinstance(context.tools, list):
+                has_tools = len(context.tools) > 0
+            
+            if has_tools:
                 kwargs["tool_choice"] = "auto"
-                logger.info("🔧 Added tool_choice='auto' for native MCP integration")
-        
-        # 🔍 DEBUG: Log the complete request being sent to LM Studio
-        debug_kwargs = dict(kwargs)
-        if 'messages' in debug_kwargs:
-            debug_kwargs['messages'] = f"[{len(debug_kwargs['messages'])} messages]"
-        if 'tools' in debug_kwargs and debug_kwargs['tools']:
-            if hasattr(debug_kwargs['tools'], 'standard_tools'):
-                tool_names = [t.name for t in debug_kwargs['tools'].standard_tools]
-                debug_kwargs['tools'] = f"[{len(tool_names)} tools: {tool_names}]"
-            elif isinstance(debug_kwargs['tools'], list):
-                tool_names = [getattr(t, 'name', str(t)) for t in debug_kwargs['tools']]
-                debug_kwargs['tools'] = f"[{len(tool_names)} tools: {tool_names}]"
-        
-        logger.info(f"📤 LM Studio Request Parameters: {debug_kwargs}")
         
         return kwargs
 
     async def _stream_chat_completions(self, context):
-        """Override to add debugging and push immediate feedback on tool calls."""
-        logger.debug("🌊 Starting streaming chat completion")
-        logger.info(f"📝 Context has {len(context.messages)} messages")
-        
-        # Check tools - context.tools might be a list or ToolsSchema
-        if context.tools != NOT_GIVEN:
-            if hasattr(context.tools, 'standard_tools'):
-                logger.info(f"🛠️ Tools in context: {len(context.tools.standard_tools)} tools")
-            elif isinstance(context.tools, list):
-                logger.info(f"🛠️ Tools in context: {len(context.tools)} tools")
-            else:
-                logger.info(f"🛠️ Tools in context: {type(context.tools)}")
-        else:
-            logger.info("🛠️ Tools in context: None")
-        
-        # Debug: Log message roles to check for alternation issues
-        roles = [msg.get("role", "unknown") for msg in context.messages]
-        logger.debug(f"Message roles sequence: {roles}")
-        
-        # Check for consecutive same-role messages
-        for i in range(1, len(roles)):
-            if roles[i] == roles[i-1] and roles[i] in ["user", "assistant"]:
-                logger.warning(f"⚠️ Consecutive {roles[i]} messages at positions {i-1} and {i}")
-        
-        # Log the last user message
-        for msg in reversed(context.messages):
-            if msg.get("role") == "user":
-                logger.info(f"👤 Last user message: {msg.get('content', '')[:100]}...")
-                break
-        
-        # Get stream from parent
-        stream = await super()._stream_chat_completions(context)
-        
-        # For now, just return the parent stream to fix the async bug
-        # TODO: Re-add tool call feedback functionality later
-        return stream
+        """Use parent streaming without interference"""
+        return await super()._stream_chat_completions(context)
     
     async def process_frame(self, frame: Frame, direction=None):
-        """Override to intercept and parse custom tool call formats"""
-        
-        # Log all text frames for debugging
-        if isinstance(frame, TextFrame):
-            logger.info(f"🔍 LLMWithTools processing TextFrame: {frame.text[:100]}...")
-        
-        # Check if this is a text frame that might contain custom tool calls
-        if isinstance(frame, TextFrame) and frame.text and '[' in frame.text:
-            # Try to parse custom tool format
-            tool_calls, remaining_text = CustomToolParser.parse_content_for_tools(frame.text)
-            
-            if tool_calls:
-                logger.info(f"🔧 Intercepted custom tool calls in text: {frame.text[:100]}...")
-                
-                # Send immediate feedback
-                await self.push_frame(TextFrame("Let me check that for you."))
-                
-                # Convert to proper format and execute
-                for tool_call in tool_calls:
-                    try:
-                        # Create function call params
-                        function_name = tool_call["function"]["name"]
-                        raw_arguments = tool_call["function"]["arguments"]
-                        
-                        # Debug JSON parsing with better error reporting
-                        try:
-                            arguments = json.loads(raw_arguments)
-                        except json.JSONDecodeError as json_err:
-                            logger.error(f"🚨 JSON parsing failed for tool {function_name}")
-                            logger.error(f"Raw arguments: {repr(raw_arguments)}")
-                            logger.error(f"JSON error: {json_err}")
-                            raise
-                        
-                        # Execute the tool
-                        logger.info(f"🔨 Executing parsed tool: {function_name} with {arguments}")
-                        result = await execute_tool_call(function_name, arguments)
-                        
-                        # Format and send result
-                        formatted_result = format_tool_response_for_voice(function_name, result)
-                        
-                        # If there's remaining text, combine it with the result
-                        if remaining_text.strip():
-                            formatted_result = f"{remaining_text} {formatted_result}"
-                        
-                        await self.push_frame(TextFrame(formatted_result))
-                        
-                    except Exception as e:
-                        logger.error(f"Error executing parsed tool call: {e}")
-                        await self.push_frame(TextFrame(f"I had trouble with that request: {str(e)}"))
-                
-                # Don't process the original frame further
-                return
-        
-        # Otherwise, process normally
+        """Process frames normally without interfering with streaming"""
         await super().process_frame(frame, direction)
 
     def get_tools_schema(self) -> ToolsSchema:

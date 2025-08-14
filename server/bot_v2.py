@@ -1,12 +1,12 @@
 """
-Refactored bot.py using the new service factory and pipeline builder approach.
-This version maintains the same CLI interface and behavior as the original bot.py
-while using the new modular architecture.
+Advanced Slowcat bot with Mem0 memory integration.
+Uses the full pipeline builder with memory, processors, and intelligent features.
 
-This file serves as:
-1. A migration target - showing how the new architecture works
-2. A compatibility layer - can be used as a drop-in replacement for bot.py
-3. A demonstration - showcasing the cleaner separation of concerns
+Features:
+1. Advanced Mem0 memory system - semantic conversation memory
+2. Full pipeline with all processors and context injection  
+3. Intelligent conversation continuity across restarts
+4. Clean modular architecture with dependency injection
 """
 
 import argparse
@@ -61,21 +61,24 @@ from server import create_app, run_server
 
 async def run_bot(webrtc_connection, language="en", llm_model=None):
     """
-    ROCK SOLID bot function using simple STT -> LLM -> TTS pipeline.
-    No tools, no fancy processors, maximum reliability.
+    Advanced bot function using full pipeline with Mem0 memory support.
+    Includes memory, processors, and intelligent context injection.
     
     Args:
         webrtc_connection: WebRTC connection instance
         language: Language code (default: "en")
-        llm_model: Optional LLM model override (ignored for simplicity)
+        llm_model: Optional LLM model override
     """
-    from core.simple_pipeline import create_simple_pipeline
+    from core.pipeline_builder import PipelineBuilder
     
     try:
-        logger.info("🚜 Starting rock-solid simple pipeline...")
+        logger.info("🚀 Starting advanced pipeline with Mem0 memory...")
         
-        # Create simple pipeline - STT -> LLM -> TTS only
-        pipeline, task = await create_simple_pipeline(webrtc_connection, language)
+        # Create full pipeline with memory and all processors
+        pipeline_builder = PipelineBuilder(service_factory)
+        pipeline, task = await pipeline_builder.build_pipeline(
+            webrtc_connection, language, llm_model
+        )
         
         # Run the pipeline
         from pipecat.pipeline.runner import PipelineRunner

@@ -1,29 +1,251 @@
-2025-08-14 14:37:15,924 - INFO - Starting MCPO Server...
-2025-08-14 14:37:15,924 - INFO -   Name: mcpo-proxy
-2025-08-14 14:37:15,924 - INFO -   Version: 1.0
-2025-08-14 14:37:15,924 - INFO -   Description: Automatically generated API from MCP Tool Schemas
-2025-08-14 14:37:15,924 - INFO -   Hostname: MacBook.local
-2025-08-14 14:37:15,924 - INFO -   Port: 3001
-2025-08-14 14:37:15,924 - INFO -   API Key: Provided
-2025-08-14 14:37:15,924 - INFO -   CORS Allowed Origins: ['*']
-2025-08-14 14:37:15,924 - INFO -   Path Prefix: /
-2025-08-14 14:37:15,924 - INFO - Loading MCP server configurations from: mcp.json
-2025-08-14 14:37:15,924 - INFO - Configuring MCP Servers:
-2025-08-14 14:37:15,925 - INFO - Uvicorn server starting...
-INFO:     Started server process [30494]
-INFO:     Waiting for application startup.
-2025-08-14 14:37:15,937 - INFO - Initiating connection for server: 'memory'...
-Knowledge Graph MCP Server running on stdio
-2025-08-14 14:37:16,974 - INFO - Successfully connected to 'memory'.
-2025-08-14 14:37:16,974 - INFO - 
---- Server Startup Summary ---
-2025-08-14 14:37:16,974 - INFO - Successfully connected to:
-2025-08-14 14:37:16,974 - INFO -   - memory
-2025-08-14 14:37:16,974 - INFO - --------------------------
-
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:3001 (Press CTRL+C to quit)
+2025-08-14 17:07:18,213 - INFO - Starting MCPO Server...
+2025-08-14 17:07:18,213 - INFO -   Name: mcpo-proxy
+2025-08-14 17:07:18,213 - INFO -   Version: 1.0
+2025-08-14 17:07:18,213 - INFO -   Description: Automatically generated API from MCP Tool Schemas
+2025-08-14 17:07:18,213 - INFO -   Hostname: MacBook.local
+2025-08-14 17:07:18,213 - INFO -   Port: 3001
+2025-08-14 17:07:18,213 - INFO -   API Key: Provided
+2025-08-14 17:07:18,213 - INFO -   CORS Allowed Origins: ['*']
+2025-08-14 17:07:18,213 - INFO -   Path Prefix: /
+2025-08-14 17:07:18,213 - INFO - Loading MCP server configurations from: mcp.json
+2025-08-14 17:07:18,213 - ERROR - Invalid JSON in config file mcp.json: Expecting value: line 1 column 1 (char 0)
 Starting MCP OpenAPI Proxy with config file: mcp.json
-INFO:     127.0.0.1:58438 - "GET /memory/openapi.json HTTP/1.1" 200 OK
-2025-08-14 14:37:28,089 - INFO - Calling endpoint: search_nodes, with args: {'query': 'favorite number'}
-INFO:     127.0.0.1:58443 - "POST /memory/search_nodes HTTP/1.1" 200 OK
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-p │
+│ ackages/mcpo/__init__.py:126 in main                                         │
+│                                                                              │
+│   123 │   │   path_prefix = f"/{path_prefix}"                                │
+│   124 │                                                                      │
+│   125 │   # Run your async run function from mcpo.main                       │
+│ ❱ 126 │   asyncio.run(                                                       │
+│   127 │   │   run(                                                           │
+│   128 │   │   │   host,                                                      │
+│   129 │   │   │   port,                                                      │
+│                                                                              │
+│ ╭─────────────── locals ────────────────╮                                    │
+│ │            api_key = 'slowcat-secret' │                                    │
+│ │        config_path = 'mcp.json'       │                                    │
+│ │ cors_allow_origins = ['*']            │                                    │
+│ │        description = None             │                                    │
+│ │                env = None             │                                    │
+│ │           env_dict = {}               │                                    │
+│ │           env_path = None             │                                    │
+│ │            headers = None             │                                    │
+│ │               host = '127.0.0.1'      │                                    │
+│ │         hot_reload = False            │                                    │
+│ │               name = 'mcpo-proxy'     │                                    │
+│ │        path_prefix = '/'              │                                    │
+│ │               port = 3001             │                                    │
+│ │     server_command = None             │                                    │
+│ │        server_type = 'stdio'          │                                    │
+│ │       ssl_certfile = None             │                                    │
+│ │        ssl_keyfile = None             │                                    │
+│ │        strict_auth = False            │                                    │
+│ │            version = None             │                                    │
+│ ╰───────────────────────────────────────╯                                    │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versi │
+│ ons/3.12/lib/python3.12/asyncio/runners.py:195 in run                        │
+│                                                                              │
+│   192 │   │   │   "asyncio.run() cannot be called from a running event loop" │
+│   193 │                                                                      │
+│   194 │   with Runner(debug=debug, loop_factory=loop_factory) as runner:     │
+│ ❱ 195 │   │   return runner.run(main)                                        │
+│   196                                                                        │
+│   197                                                                        │
+│   198 def _cancel_all_tasks(loop):                                           │
+│                                                                              │
+│ ╭─────────────────────────── locals ────────────────────────────╮            │
+│ │        debug = None                                           │            │
+│ │ loop_factory = None                                           │            │
+│ │         main = <coroutine object run at 0x11f748380>          │            │
+│ │       runner = <asyncio.runners.Runner object at 0x103c863f0> │            │
+│ ╰───────────────────────────────────────────────────────────────╯            │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versi │
+│ ons/3.12/lib/python3.12/asyncio/runners.py:118 in run                        │
+│                                                                              │
+│   115 │   │                                                                  │
+│   116 │   │   self._interrupt_count = 0                                      │
+│   117 │   │   try:                                                           │
+│ ❱ 118 │   │   │   return self._loop.run_until_complete(task)                 │
+│   119 │   │   except exceptions.CancelledError:                              │
+│   120 │   │   │   if self._interrupt_count > 0:                              │
+│   121 │   │   │   │   uncancel = getattr(task, "uncancel", None)             │
+│                                                                              │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮ │
+│ │        context = <_contextvars.Context object at 0x105438740>            │ │
+│ │           coro = <coroutine object run at 0x11f748380>                   │ │
+│ │           self = <asyncio.runners.Runner object at 0x103c863f0>          │ │
+│ │ sigint_handler = None                                                    │ │
+│ │           task = <Task finished name='Task-1' coro=<run() done, defined  │ │
+│ │                  at                                                      │ │
+│ │                  /Users/peppi/Dev/macos-local-voice-agents/server/.venv… │ │
+│ │                  exception=JSONDecodeError('Expecting value: line 1      │ │
+│ │                  column 1 (char 0)')>                                    │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versi │
+│ ons/3.12/lib/python3.12/asyncio/base_events.py:691 in run_until_complete     │
+│                                                                              │
+│    688 │   │   if not future.done():                                         │
+│    689 │   │   │   raise RuntimeError('Event loop stopped before Future comp │
+│    690 │   │                                                                 │
+│ ❱  691 │   │   return future.result()                                        │
+│    692 │                                                                     │
+│    693 │   def stop(self):                                                   │
+│    694 │   │   """Stop running the event loop.                               │
+│                                                                              │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮ │
+│ │   future = <Task finished name='Task-1' coro=<run() done, defined at     │ │
+│ │            /Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/p… │ │
+│ │            exception=JSONDecodeError('Expecting value: line 1 column 1   │ │
+│ │            (char 0)')>                                                   │ │
+│ │ new_task = False                                                         │ │
+│ │     self = <_UnixSelectorEventLoop running=False closed=True             │ │
+│ │            debug=False>                                                  │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ /Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-p │
+│ ackages/mcpo/main.py:559 in run                                              │
+│                                                                              │
+│   556 │   │   main_app.state.api_dependency = api_dependency                 │
+│   557 │   elif config_path:                                                  │
+│   558 │   │   logger.info(f"Loading MCP server configurations from: {config_ │
+│ ❱ 559 │   │   config_data = load_config(config_path)                         │
+│   560 │   │   mount_config_servers(                                          │
+│   561 │   │   │   main_app, config_data, cors_allow_origins, api_key, strict │
+│   562 │   │   │   api_dependency, connection_timeout, lifespan, path_prefix  │
+│                                                                              │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮ │
+│ │            api_key = 'slowcat-secret'                                    │ │
+│ │        config_path = 'mcp.json'                                          │ │
+│ │ connection_timeout = None                                                │ │
+│ │ cors_allow_origins = ['*']                                               │ │
+│ │        description = 'Automatically generated API from MCP Tool Schemas' │ │
+│ │            headers = None                                                │ │
+│ │               host = '127.0.0.1'                                         │ │
+│ │         hot_reload = False                                               │ │
+│ │             kwargs = {                                                   │ │
+│ │                      │   'strict_auth': False,                           │ │
+│ │                      │   'server_type': 'stdio',                         │ │
+│ │                      │   'config_path': 'mcp.json',                      │ │
+│ │                      │   'name': 'mcpo-proxy',                           │ │
+│ │                      │   'description': None,                            │ │
+│ │                      │   'version': None,                                │ │
+│ │                      │   'server_command': None,                         │ │
+│ │                      │   'ssl_certfile': None,                           │ │
+│ │                      │   'ssl_keyfile': None,                            │ │
+│ │                      │   'path_prefix': '/',                             │ │
+│ │                      │   ... +2                                          │ │
+│ │                      }                                                   │ │
+│ │           main_app = <fastapi.applications.FastAPI object at             │ │
+│ │                      0x105635d30>                                        │ │
+│ │               name = 'mcpo-proxy'                                        │ │
+│ │        path_prefix = '/'                                                 │ │
+│ │               port = 3001                                                │ │
+│ │     server_command = None                                                │ │
+│ │        server_type = 'stdio'                                             │ │
+│ │   shutdown_handler = <mcpo.main.GracefulShutdown object at 0x1051ae2a0>  │ │
+│ │       ssl_certfile = None                                                │ │
+│ │        ssl_keyfile = None                                                │ │
+│ │        strict_auth = False                                               │ │
+│ │            version = '1.0'                                               │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ /Users/peppi/Dev/macos-local-voice-agents/server/.venv/lib/python3.12/site-p │
+│ ackages/mcpo/main.py:77 in load_config                                       │
+│                                                                              │
+│    74 │   """Load and validate config from file."""                          │
+│    75 │   try:                                                               │
+│    76 │   │   with open(config_path, "r") as f:                              │
+│ ❱  77 │   │   │   config_data = json.load(f)                                 │
+│    78 │   │                                                                  │
+│    79 │   │   mcp_servers = config_data.get("mcpServers", {})                │
+│    80 │   │   if not mcp_servers:                                            │
+│                                                                              │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮ │
+│ │ config_path = 'mcp.json'                                                 │ │
+│ │           f = <_io.TextIOWrapper name='mcp.json' mode='r'                │ │
+│ │               encoding='UTF-8'>                                          │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versi │
+│ ons/3.12/lib/python3.12/json/__init__.py:293 in load                         │
+│                                                                              │
+│   290 │   To use a custom ``JSONDecoder`` subclass, specify it with the ``cl │
+│   291 │   kwarg; otherwise ``JSONDecoder`` is used.                          │
+│   292 │   """                                                                │
+│ ❱ 293 │   return loads(fp.read(),                                            │
+│   294 │   │   cls=cls, object_hook=object_hook,                              │
+│   295 │   │   parse_float=parse_float, parse_int=parse_int,                  │
+│   296 │   │   parse_constant=parse_constant, object_pairs_hook=object_pairs_ │
+│                                                                              │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮ │
+│ │               cls = None                                                 │ │
+│ │                fp = <_io.TextIOWrapper name='mcp.json' mode='r'          │ │
+│ │                     encoding='UTF-8'>                                    │ │
+│ │                kw = {}                                                   │ │
+│ │       object_hook = None                                                 │ │
+│ │ object_pairs_hook = None                                                 │ │
+│ │    parse_constant = None                                                 │ │
+│ │       parse_float = None                                                 │ │
+│ │         parse_int = None                                                 │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versi │
+│ ons/3.12/lib/python3.12/json/__init__.py:346 in loads                        │
+│                                                                              │
+│   343 │   if (cls is None and object_hook is None and                        │
+│   344 │   │   │   parse_int is None and parse_float is None and              │
+│   345 │   │   │   parse_constant is None and object_pairs_hook is None and n │
+│ ❱ 346 │   │   return _default_decoder.decode(s)                              │
+│   347 │   if cls is None:                                                    │
+│   348 │   │   cls = JSONDecoder                                              │
+│   349 │   if object_hook is not None:                                        │
+│                                                                              │
+│ ╭───────── locals ─────────╮                                                 │
+│ │               cls = None │                                                 │
+│ │                kw = {}   │                                                 │
+│ │       object_hook = None │                                                 │
+│ │ object_pairs_hook = None │                                                 │
+│ │    parse_constant = None │                                                 │
+│ │       parse_float = None │                                                 │
+│ │         parse_int = None │                                                 │
+│ │                 s = ''   │                                                 │
+│ ╰──────────────────────────╯                                                 │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versi │
+│ ons/3.12/lib/python3.12/json/decoder.py:338 in decode                        │
+│                                                                              │
+│   335 │   │   containing a JSON document).                                   │
+│   336 │   │                                                                  │
+│   337 │   │   """                                                            │
+│ ❱ 338 │   │   obj, end = self.raw_decode(s, idx=_w(s, 0).end())              │
+│   339 │   │   end = _w(s, end).end()                                         │
+│   340 │   │   if end != len(s):                                              │
+│   341 │   │   │   raise JSONDecodeError("Extra data", s, end)                │
+│                                                                              │
+│ ╭────────────────────────────── locals ──────────────────────────────╮       │
+│ │   _w = <built-in method match of re.Pattern object at 0x103edd8a0> │       │
+│ │    s = ''                                                          │       │
+│ │ self = <json.decoder.JSONDecoder object at 0x103f0ba70>            │       │
+│ ╰────────────────────────────────────────────────────────────────────╯       │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.10_1/Frameworks/Python.framework/Versi │
+│ ons/3.12/lib/python3.12/json/decoder.py:356 in raw_decode                    │
+│                                                                              │
+│   353 │   │   try:                                                           │
+│   354 │   │   │   obj, end = self.scan_once(s, idx)                          │
+│   355 │   │   except StopIteration as err:                                   │
+│ ❱ 356 │   │   │   raise JSONDecodeError("Expecting value", s, err.value) fro │
+│   357 │   │   return obj, end                                                │
+│   358                                                                        │
+│                                                                              │
+│ ╭──────────────────────── locals ─────────────────────────╮                  │
+│ │  idx = 0                                                │                  │
+│ │    s = ''                                               │                  │
+│ │ self = <json.decoder.JSONDecoder object at 0x103f0ba70> │                  │
+│ ╰─────────────────────────────────────────────────────────╯                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+JSONDecodeError: Expecting value: line 1 column 1 (char 0)

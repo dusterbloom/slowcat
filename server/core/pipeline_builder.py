@@ -147,24 +147,14 @@ class PipelineBuilder:
         
         processors = {}
         
-        # Memory processor
-        memory_processor = await self.service_factory.get_service("memory_service")
-        if memory_processor:
-            # Set memory processor for tool handlers
-            from tools import set_memory_processor
-            set_memory_processor(memory_processor)
-            
-            from processors import MemoryContextInjector
-            memory_injector = MemoryContextInjector(
-                memory_processor=memory_processor,
-                system_prompt=config.memory.context_system_prompt,
-                inject_as_system=True
-            )
-            processors['memory_processor'] = memory_processor
-            processors['memory_injector'] = memory_injector
+        # Memory service (Pipecat's built-in Mem0MemoryService)
+        memory_service = await self.service_factory.get_service("memory_service") 
+        if memory_service:
+            logger.info(f"✅ Memory service created: {type(memory_service).__name__}")
+            processors['memory_service'] = memory_service
         else:
-            processors['memory_processor'] = None
-            processors['memory_injector'] = None
+            logger.warning("❌ No memory service created - memory disabled")
+            processors['memory_service'] = None
         
         # Video processor
         if config.video.enabled:
@@ -179,7 +169,7 @@ class PipelineBuilder:
         voice_recognition = await self.service_factory.get_service("voice_recognition")
         if voice_recognition:
             processors.update(await self._setup_voice_recognition_processors(
-                voice_recognition, memory_processor
+                voice_recognition, processors['memory_service']
             ))
         else:
             logger.info("🔇 Voice recognition is DISABLED")
@@ -193,8 +183,14 @@ class PipelineBuilder:
         
         # Other processors
         from processors import GreetingFilterProcessor, MessageDeduplicator
+        from processors.response_sanitizer import ResponseSanitizer
+        from processors.response_filter import ResponseFilter
+        from processors.context_filter import ContextFilter
         processors['greeting_filter'] = GreetingFilterProcessor(greeting_text="Hello, I'm Slowcat!")
         processors['message_deduplicator'] = MessageDeduplicator()
+        processors['response_sanitizer'] = ResponseSanitizer()
+        processors['response_filter'] = ResponseFilter()
+        processors['context_filter'] = ContextFilter()
         
         # Response formatter - fix markdown links from stubborn Qwen2.5  
         from processors.response_formatter import ResponseFormatterProcessor
@@ -276,7 +272,7 @@ class PipelineBuilder:
         logger.info("✅ Processors setup complete")
         return processors
     
-    async def _setup_voice_recognition_processors(self, voice_recognition, memory_processor) -> Dict[str, Any]:
+    async def _setup_voice_recognition_processors(self, voice_recognition, memory_service) -> Dict[str, Any]:
         """Setup voice recognition related processors"""
         logger.info("🎙️ Setting up voice recognition processors...")
         
@@ -308,9 +304,10 @@ class PipelineBuilder:
         # Setup callbacks
         async def on_speaker_changed(data: Dict[str, Any]):
             speaker_context.update_speaker(data)
-            if memory_processor:
+            if memory_service:
                 user_id = data.get('speaker_name', data.get('speaker_id', 'unknown'))
-                await memory_processor.update_user_id(user_id)
+                # Update user_id in Pipecat's Mem0MemoryService
+                memory_service.user_id = user_id
                 logger.info(f"📝 Memory switched to user: {user_id}")
         
         async def on_speaker_enrolled(data: Dict[str, Any]):
@@ -480,22 +477,23 @@ class PipelineBuilder:
             processors['audio_tee'],
             processors['vad_bridge'],
             services['stt'],
-            processors['dictation_mode'],  # Must be after STT but before LLM
-            processors['music_mode'],  # Music mode filtering (after STT, before LLM)
-            processors['dj_config_handler'],  # Handle DJ mode voice/prompt changes
-            processors['audio_player'],  # Music player with ducking
-            processors['time_executor'],  # Time-aware task execution
-            processors['memory_processor'],
+            # processors['dictation_mode'],  # Must be after STT but before LLM
+            # processors['music_mode'],  # Music mode filtering (after STT, before LLM)
+            # processors['dj_config_handler'],  # Handle DJ mode voice/prompt changes
+            # processors['audio_player'],  # Music player with ducking
+            # processors['time_executor'],  # Time-aware task execution
             processors['speaker_context'],
             rtvi,
             processors['speaker_name_manager'],
-            context_aggregator.user(),
-            processors['memory_injector'],
-            processors['message_deduplicator'],
+            context_aggregator.user(),  # Creates LLMMessagesFrame from TranscriptionFrame
+            processors['memory_service'],   # 🚀 Pipecat's Mem0MemoryService - AFTER context, BEFORE LLM
+            # processors['message_deduplicator'],
+            # processors['response_sanitizer'],
+            # processors['greeting_filter'],
             services['llm'],
             services['tts'],
+            # processors['response_filter'],  # TEMPORARILY DISABLED - Testing basic pipeline
             transport.output(),
-            processors['greeting_filter'],
             context_aggregator.assistant(),
         ]
         
@@ -503,6 +501,16 @@ class PipelineBuilder:
         filtered_components = [comp for comp in components if comp is not None]
         
         logger.info(f"✅ Built pipeline with {len(filtered_components)} components")
+        
+        # DEBUG: Log which components are in the pipeline
+        component_names = []
+        for comp in filtered_components:
+            if hasattr(comp, '__class__'):
+                component_names.append(comp.__class__.__name__)
+            else:
+                component_names.append(str(type(comp)))
+        
+        logger.debug(f"Pipeline components: {component_names}")
         return filtered_components
     
     def _create_pipeline(self, components: List[Any]) -> Pipeline:
