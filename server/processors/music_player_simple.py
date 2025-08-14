@@ -257,7 +257,7 @@ class SimpleMusicPlayer:
             "queue": next_songs
         }
     
-    def cleanup(self):
+    async def cleanup(self):
         """Cleanup resources"""
         logger.info("🎵 Cleaning up music player")
         self.stop_event.set()

@@ -413,7 +413,7 @@ class SherpaOnlineSTTService(STTService):
                     self._last_result = result_text
                     # Keep metrics running for interim results
 
-    def cleanup(self):
+    async def cleanup(self):
         """Cleanup recognizer resources safely"""
         logger.info("🧹 Cleaning up Sherpa OnlineRecognizer")
         with self._processing_lock:

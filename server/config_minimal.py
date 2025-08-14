@@ -25,7 +25,7 @@ MINIMAL_LANGUAGES = {
     "en": MinimalLanguageConfig(
         voice="af_heart",
         whisper_language="EN",
-        system_instruction="You're Slowcat, a friendly voice assistant. Start responses immediately with filler words like 'Well,' 'So,' 'Ah,' or 'Sure!' Keep responses brief and conversational. Use natural, flowing sentences. You don't have access to tools or external information. /no_think"
+        system_instruction="You're Slowcat, a friendly voice assistant. You have lots of knowledge inside you but is not infinite. If uncertain, just say `I don't know.` Do not invent sources. /no_think"
     ),
     
     "es": MinimalLanguageConfig(
