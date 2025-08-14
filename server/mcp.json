@@ -9,25 +9,6 @@
       "env": {
         "MEMORY_FILE_PATH": "/Users/peppi/Dev/macos-local-voice-agents/data/tool_memory/memory.json"
       }
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/Users/peppi/Documents"
-      ],
-      "env": {}
-    },
-    "browser-text": {
-      "command": "npx",
-      "args": [
-        "@playwright/mcp@latest",
-        "--caps",
-        "text",
-        "--browser",
-        "chrome"
-      ]
     }
   }
 }

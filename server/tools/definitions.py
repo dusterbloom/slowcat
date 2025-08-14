@@ -6,6 +6,7 @@ This is the single source of truth for all tool definitions
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from typing import List
+import os
 
 # Time and Date Tools
 GET_CURRENT_TIME = FunctionSchema(
@@ -263,7 +264,6 @@ GET_MUSIC_STATS = FunctionSchema(
     required=[]
 )
 
-
 # List of LOCAL-ONLY function schemas (MCP tools removed)
 # These tools stay local for performance/hardware integration reasons
 ALL_FUNCTION_SCHEMAS: List[FunctionSchema] = [
@@ -331,6 +331,12 @@ def get_tools(language: str = "en") -> ToolsSchema:
     Returns:
         ToolsSchema object containing all available tools
     """
+    # Check if local tools are disabled
+    enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
+    if enabled_local_tools.lower() == "none":
+        # Return empty tools schema when local tools are disabled
+        return ToolsSchema(standard_tools=[])
+    
     if language == "en" or language not in TOOL_DESCRIPTIONS_LANG:
         return ToolsSchema(standard_tools=ALL_FUNCTION_SCHEMAS)
 

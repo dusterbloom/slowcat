@@ -57,7 +57,7 @@ if [ "$ENABLE_MCP" = "true" ]; then
         
         # Start MCPO server in background
         MEMORY_FILE_PATH="${MCPO_MEMORY_FILE_PATH:-$PWD/data/tool_memory/memory.json}" \
-        mcpo --host 127.0.0.1 --port "${MCPO_PORT:-3001}" --api-key "${MCPO_API_KEY:-$(openssl rand -hex 16)}" --config mcp.json --name mcpo-proxy > mcpo.log 2>&1 &
+        mcpo --host 127.0.0.1 --port "${MCPO_PORT:-3001}" --api-key "${MCPO_API_KEY:-slowcat-secret}" --config mcp.json --name mcpo-proxy > mcpo.log 2>&1 &
         
         # Store the PID for cleanup
         MCPO_PID=$!

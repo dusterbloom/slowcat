@@ -6,6 +6,7 @@ Uses FunctionSchema and ToolsSchema for OpenAI-compatible tool calling with LM S
 from typing import Optional, Dict
 import json
 import asyncio
+import os
 from loguru import logger
 from openai import NOT_GIVEN
 from pipecat.services.openai.llm import OpenAILLMService
@@ -46,7 +47,15 @@ class LLMWithToolsService(OpenAILLMService):
         
         # Store tools schema for reference
         self._tools_schema = get_tools()
-        logger.info(f"🛠️ Loaded {len(self._tools_schema.standard_tools)} tools")
+        
+        # Check if local tools are disabled
+        enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
+        if enabled_local_tools.lower() == "none":
+            logger.info("🚫 Local tools disabled - will use MCP direct routing only")
+            # Override tools with empty schema to prevent OpenAI function calling
+            self._tools_schema = ToolsSchema(standard_tools=[])
+        else:
+            logger.info(f"🛠️ Loaded {len(self._tools_schema.standard_tools)} local tools")
         
         # Audio player reference (will be set by pipeline builder)
         self._audio_player = None
@@ -70,6 +79,12 @@ class LLMWithToolsService(OpenAILLMService):
             if not self._mcp_tool_manager:
                 logger.warning("⚠️ MCP tool manager not set, skipping registration")
                 return
+            
+            # Allow MCP tools to be registered even if local tools are disabled
+            # This ensures MCP function calls discovered by LM Studio can be handled
+            enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
+            if enabled_local_tools.lower() == "none":
+                logger.info("🔧 Local tools disabled but registering MCP tools to handle LM Studio function calls")
             
             # Ensure tools are discovered
             await self._mcp_tool_manager.refresh_if_stale()
@@ -148,6 +163,12 @@ class LLMWithToolsService(OpenAILLMService):
     
     def _register_function_handlers(self):
         """Register function handlers using Pipecat's register_function method"""
+        
+        # Check if local tools are enabled
+        enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
+        if enabled_local_tools.lower() == "none":
+            logger.info("🚫 Local tools disabled by ENABLED_LOCAL_TOOLS=none")
+            return
         
         # Register LOCAL tools with handlers
         for function_schema in ALL_FUNCTION_SCHEMAS:
@@ -318,10 +339,18 @@ class LLMWithToolsService(OpenAILLMService):
         """Override to add tool_choice='auto' for MCP tool calling and log full request"""
         kwargs = super()._get_completion_kwargs(context)
         
-        # 🚀 CRITICAL: Add tool_choice="auto" when tools are present
-        if context.tools != NOT_GIVEN and context.tools:
-            kwargs["tool_choice"] = "auto"
-            logger.info("🔧 Added tool_choice='auto' for native MCP integration")
+        # Check if local tools are disabled - if so, don't add any tool parameters
+        enabled_local_tools = os.getenv("ENABLED_LOCAL_TOOLS", "all").strip()
+        if enabled_local_tools.lower() == "none":
+            # Force remove local tools from schema but allow MCP function calling
+            kwargs.pop("tools", None)
+            kwargs.pop("tool_choice", None)
+            logger.info("🔧 Local tools disabled - removed from schema but MCP function calling allowed")
+        else:
+            # 🚀 CRITICAL: Add tool_choice="auto" when tools are present
+            if context.tools != NOT_GIVEN and context.tools:
+                kwargs["tool_choice"] = "auto"
+                logger.info("🔧 Added tool_choice='auto' for native MCP integration")
         
         # 🔍 DEBUG: Log the complete request being sent to LM Studio
         debug_kwargs = dict(kwargs)
@@ -400,7 +429,16 @@ class LLMWithToolsService(OpenAILLMService):
                     try:
                         # Create function call params
                         function_name = tool_call["function"]["name"]
-                        arguments = json.loads(tool_call["function"]["arguments"])
+                        raw_arguments = tool_call["function"]["arguments"]
+                        
+                        # Debug JSON parsing with better error reporting
+                        try:
+                            arguments = json.loads(raw_arguments)
+                        except json.JSONDecodeError as json_err:
+                            logger.error(f"🚨 JSON parsing failed for tool {function_name}")
+                            logger.error(f"Raw arguments: {repr(raw_arguments)}")
+                            logger.error(f"JSON error: {json_err}")
+                            raise
                         
                         # Execute the tool
                         logger.info(f"🔨 Executing parsed tool: {function_name} with {arguments}")
