@@ -4,6 +4,7 @@ import sys
 import hashlib
 import json
 import time
+import concurrent.futures
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
@@ -81,6 +82,9 @@ class MemobaseMemoryProcessor(FrameProcessor):
         self._redis_client = None
         self._cache_ttl = 300  # 5 minutes TTL for memory cache
         self._injection_cache = {}  # Fallback for when Redis unavailable
+        
+        # Async optimization: Dedicated executor for MemoBase operations
+        self._memory_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="memobase")
         
         # Initialize Redis connection if available
         if REDIS_AVAILABLE:
@@ -330,14 +334,16 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 logger.info(f"🔍 Storing {role} message with user_id: {self.user_id}")
                 
                 try:
-                    # CRITICAL FIX: Make this blocking to ensure storage happens
-                    await asyncio.to_thread(
-                        self.patched_sync_client.chat.completions.create,
-                        model=getattr(self, 'memory_model', config.models.default_llm_model),
-                        messages=messages,
-                        user_id=self.user_id,
-                        max_tokens=1,  # Minimal response 
-                        temperature=0.0  # Deterministic
+                    # FULL ASYNC: Use shared executor for storage
+                    await asyncio.get_event_loop().run_in_executor(
+                        self._memory_executor,
+                        lambda: self.patched_sync_client.chat.completions.create(
+                            model=getattr(self, 'memory_model', config.models.default_llm_model),
+                            messages=messages,
+                            user_id=self.user_id,
+                            max_tokens=1,  # Minimal response 
+                            temperature=0.0  # Deterministic
+                        )
                     )
                     logger.info(f"✅ Successfully stored {role} message in MemoBase: {content[:30]}...")
                 except Exception as e:
@@ -361,14 +367,16 @@ class MemobaseMemoryProcessor(FrameProcessor):
                     
                     logger.info(f"🔍 Storing conversation pair with user_id: {self.user_id}")
                     try:
-                        # CRITICAL FIX: Make this blocking to ensure storage happens
-                        await asyncio.to_thread(
-                            self.patched_sync_client.chat.completions.create,
-                            model=getattr(self, 'memory_model', config.models.default_llm_model),
-                            messages=messages,
-                            user_id=self.user_id,
-                            max_tokens=1,
-                            temperature=0.0
+                        # FULL ASYNC: Use shared executor for conversation pair storage
+                        await asyncio.get_event_loop().run_in_executor(
+                            self._memory_executor,
+                            lambda: self.patched_sync_client.chat.completions.create(
+                                model=getattr(self, 'memory_model', config.models.default_llm_model),
+                                messages=messages,
+                                user_id=self.user_id,
+                                max_tokens=1,
+                                temperature=0.0
+                            )
                         )
                         logger.info(f"✅ Successfully stored conversation pair in MemoBase")
                     except Exception as e:
@@ -497,15 +505,17 @@ class MemobaseMemoryProcessor(FrameProcessor):
             logger.error(f"🔍 CRITICAL DEBUG - Using user_id: '{self.user_id}' -> UUID: {uuid_for_user}")
             logger.error(f"🔍 Expected UUID for 'default_user': {string_to_uuid('default_user')}")
             
-            # Use the proper context() API with temporal-friendly parameters
-            memory_context = await asyncio.to_thread(
-                user.context,
-                max_token_size=min(self.max_context_size, self.max_token_limit),
-                chats=[{"role": "user", "content": user_message}],  # Context-aware retrieval
-                event_similarity_threshold=0.1,  # Very low threshold for maximum recall
-                fill_window_with_events=True,  # Fill remaining space with events
-                profile_event_ratio=0.9,  # 90% profile, 10% events - prioritize profile data
-                require_event_summary=False  # Don't require event summaries to save space
+            # Use the proper context() API with temporal-friendly parameters (FULL ASYNC)
+            memory_context = await asyncio.get_event_loop().run_in_executor(
+                self._memory_executor,
+                lambda: user.context(
+                    max_token_size=min(self.max_context_size, self.max_token_limit),
+                    chats=[{"role": "user", "content": user_message}],  # Context-aware retrieval
+                    event_similarity_threshold=0.1,  # Very low threshold for maximum recall
+                    fill_window_with_events=True,  # Fill remaining space with events
+                    profile_event_ratio=0.9,  # 90% profile, 10% events - prioritize profile data
+                    require_event_summary=False  # Don't require event summaries to save space
+                )
             )
             
             logger.error(f"🧠 Retrieved memory length: {len(memory_context)} chars")
@@ -519,9 +529,10 @@ class MemobaseMemoryProcessor(FrameProcessor):
             if not self.patched_sync_client:
                 return None
                 
-            return await asyncio.to_thread(
-                self.patched_sync_client.get_memory_prompt,
-                self.user_id
+            # Fallback with shared async executor
+            return await asyncio.get_event_loop().run_in_executor(
+                self._memory_executor,
+                lambda: self.patched_sync_client.get_memory_prompt(self.user_id)
             )
     
     async def _inject_memory_context(self, context, user_message: str):
@@ -608,7 +619,11 @@ class MemobaseMemoryProcessor(FrameProcessor):
         try:
             async with self._lock:
                 if self.patched_sync_client and hasattr(self.patched_sync_client, 'flush'):
-                    await asyncio.to_thread(self.patched_sync_client.flush, self.user_id)
+                    # FULL ASYNC: Use shared executor for flush
+                    await asyncio.get_event_loop().run_in_executor(
+                        self._memory_executor,
+                        lambda: self.patched_sync_client.flush(self.user_id)
+                    )
                     logger.info(f"🧠 Flushed MemoBase memory for user: {self.user_id} ({self._buffer_token_count} tokens)")
                 
                 self._conversation_buffer.clear()
@@ -639,7 +654,11 @@ class MemobaseMemoryProcessor(FrameProcessor):
         # Get user profile if available
         if self.patched_sync_client and hasattr(self.patched_sync_client, 'get_profile'):
             try:
-                profile = await asyncio.to_thread(self.patched_sync_client.get_profile, self.user_id)
+                # FULL ASYNC: Use shared executor for profile retrieval
+                profile = await asyncio.get_event_loop().run_in_executor(
+                    self._memory_executor,
+                    lambda: self.patched_sync_client.get_profile(self.user_id)
+                )
                 stats["profile"] = [p.describe for p in profile] if profile else []
             except Exception as e:
                 stats["profile_error"] = str(e)
@@ -742,6 +761,11 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 logger.info("🧠 MemoBase processor cleanup completed")
             except Exception as e:
                 logger.error(f"❌ Error during MemoBase cleanup: {e}")
+        
+        # Shutdown the dedicated executor
+        if hasattr(self, '_memory_executor'):
+            self._memory_executor.shutdown(wait=True)
+            logger.debug("🧠 MemoBase async executor shutdown")
         
         await super().cleanup()
 
