@@ -124,8 +124,20 @@ class MemoBaseConfig:
     project_url: str = field(default_factory=lambda: os.getenv("MEMOBASE_PROJECT_URL", "http://localhost:8019"))
     api_key: str = field(default_factory=lambda: os.getenv("MEMOBASE_API_KEY", "secret"))
     fallback_to_local: bool = field(default_factory=lambda: os.getenv("MEMOBASE_FALLBACK_TO_LOCAL", "true").lower() == "true")
-    max_context_size: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_CONTEXT_SIZE", "500")))
+    
+    # Context size management for small models
+    max_context_size: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_CONTEXT_SIZE", "200")))  # Reduced for small models
+    max_token_limit: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_TOKEN_LIMIT", "500")))  # Hard token limit
+    enable_compression: bool = field(default_factory=lambda: os.getenv("MEMOBASE_ENABLE_COMPRESSION", "true").lower() == "true")
+    compression_ratio: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_COMPRESSION_RATIO", "0.5")))  # Compress to 50% when needed
+    
+    # Buffer management
+    auto_flush_threshold: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_AUTO_FLUSH_THRESHOLD", "512")))  # Auto flush at 512 tokens
     flush_on_session_end: bool = field(default_factory=lambda: os.getenv("MEMOBASE_FLUSH_ON_SESSION_END", "true").lower() == "true")
+    
+    # Relevance filtering
+    enable_relevance_filtering: bool = field(default_factory=lambda: os.getenv("MEMOBASE_ENABLE_RELEVANCE_FILTERING", "true").lower() == "true")
+    relevance_threshold: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_RELEVANCE_THRESHOLD", "0.7")))  # Only include relevant memories
 
 
 @dataclass

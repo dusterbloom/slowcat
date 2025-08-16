@@ -4,6 +4,7 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+import re
 
 # Add parent directory to path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,7 +44,7 @@ class MemobaseMemoryProcessor(FrameProcessor):
     def __init__(
         self,
         user_id: Optional[str] = None,
-        max_context_size: int = 500,
+        max_context_size: Optional[int] = None,
         flush_on_session_end: bool = True,
         fallback_to_local: bool = True
     ):
@@ -52,12 +53,19 @@ class MemobaseMemoryProcessor(FrameProcessor):
         # Configuration from config or parameters
         self.user_id = user_id or config.memory.default_user_id
         self.max_context_size = max_context_size or config.memobase.max_context_size
+        self.max_token_limit = config.memobase.max_token_limit
+        self.enable_compression = config.memobase.enable_compression
+        self.compression_ratio = config.memobase.compression_ratio
+        self.auto_flush_threshold = config.memobase.auto_flush_threshold
+        self.enable_relevance_filtering = config.memobase.enable_relevance_filtering
+        self.relevance_threshold = config.memobase.relevance_threshold
         self.flush_on_session_end = flush_on_session_end or config.memobase.flush_on_session_end
         self.fallback_to_local = fallback_to_local or config.memobase.fallback_to_local
         
         # Session tracking
         self._session_active = False
         self._conversation_buffer: List[Dict[str, str]] = []
+        self._buffer_token_count = 0
         self._lock = asyncio.Lock()
         
         # MemoBase clients - hybrid approach
@@ -89,16 +97,17 @@ class MemobaseMemoryProcessor(FrameProcessor):
                     base_url=config.network.llm_base_url
                 )
                 
-                # Apply MemoBase patching to the sync client
+                # Apply MemoBase patching to the sync client with smart limits
                 self.patched_sync_client = openai_memory(
                     self.sync_openai_client, 
                     self.mb_client,
-                    max_context_size=self.max_context_size
+                    max_context_size=min(self.max_context_size, self.max_token_limit)
                 )
                 
                 self.is_enabled = True
                 logger.info(f"🧠 MemoBase hybrid integration initialized - connected to {config.memobase.project_url}")
                 logger.info(f"🔧 Using sync OpenAI client with MemoBase patching for user: {self.user_id}")
+                logger.info(f"🎛️ Context limits: max_size={self.max_context_size}, token_limit={self.max_token_limit}, compression={self.enable_compression}")
                 
                 # Debug: Check actual UUID mapping
                 from memobase.utils import string_to_uuid
@@ -121,19 +130,37 @@ class MemobaseMemoryProcessor(FrameProcessor):
             logger.error("❌ MemoBase required but unavailable")
             raise RuntimeError("MemoBase memory service unavailable")
 
+    def _estimate_tokens(self, text: str) -> int:
+        """Rough token estimation (1 token ≈ 4 characters for English)"""
+        return len(text) // 4
+    
+    async def _check_and_flush_buffer(self):
+        """Check if buffer needs flushing based on token count"""
+        if self._buffer_token_count >= self.auto_flush_threshold:
+            logger.info(f"🔄 Auto-flushing MemoBase buffer ({self._buffer_token_count} tokens)")
+            await self.flush_memory()
+    
     async def _add_to_conversation_buffer(self, role: str, content: str, metadata: Optional[Dict] = None):
-        """Add conversation to buffer and store in MemoBase."""
+        """Add conversation to buffer and store in MemoBase with smart token management."""
         if not self.is_enabled or not self.patched_sync_client:
             logger.debug(f"🔄 MemoBase disabled, skipping: {content[:50]}...")
             return
             
+        # Estimate token cost
+        content_tokens = self._estimate_tokens(content)
+        
         async with self._lock:
             self._conversation_buffer.append({
                 "role": role,
                 "content": content,
                 "metadata": metadata or {},
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "tokens": content_tokens
             })
+            self._buffer_token_count += content_tokens
+            
+        # Auto-flush if buffer is getting large
+        await self._check_and_flush_buffer()
             
         # Store individual messages in MemoBase immediately
         try:
@@ -141,7 +168,7 @@ class MemobaseMemoryProcessor(FrameProcessor):
         except Exception as e:
             logger.error(f"❌ Failed to store message in MemoBase: {e}")
             
-        logger.info(f"🧠 Added to MemoBase: {role} - {content[:50]}...")
+        logger.info(f"🧠 Added to MemoBase: {role} - {content[:50]}... ({content_tokens} tokens, buffer: {self._buffer_token_count})")
 
     async def _store_message_in_memobase(self, role: str, content: str):
         """Store a single message in MemoBase using the patched client."""
@@ -197,31 +224,105 @@ class MemobaseMemoryProcessor(FrameProcessor):
             logger.error(f"❌ Failed to store {role} message in MemoBase: {e}")
             logger.error(f"❌ Error details: {str(e)}")
 
+    def _compress_memory_content(self, memory_prompt: str) -> str:
+        """Compress memory content when it exceeds token limits"""
+        if not self.enable_compression:
+            return memory_prompt
+            
+        current_tokens = self._estimate_tokens(memory_prompt)
+        if current_tokens <= self.max_token_limit:
+            return memory_prompt
+            
+        target_tokens = int(self.max_token_limit * self.compression_ratio)
+        target_chars = target_tokens * 4  # Rough conversion
+        
+        # Simple compression: keep most recent and most relevant parts
+        lines = memory_prompt.split('\n')
+        
+        # Keep header and summary lines
+        compressed_lines = []
+        char_count = 0
+        
+        # Prioritize lines with recent dates and important keywords
+        priority_patterns = [r'2025', r'today', r'recently', r'important', r'name', r'preference']
+        
+        # First pass: high priority lines
+        for line in lines:
+            if any(re.search(pattern, line, re.IGNORECASE) for pattern in priority_patterns):
+                if char_count + len(line) <= target_chars:
+                    compressed_lines.append(line)
+                    char_count += len(line)
+        
+        # Second pass: fill remaining space with other lines
+        for line in lines:
+            if line not in compressed_lines and char_count + len(line) <= target_chars:
+                compressed_lines.append(line)
+                char_count += len(line)
+                
+        compressed = '\n'.join(compressed_lines)
+        logger.info(f"🗜️ Compressed memory from {current_tokens} to {self._estimate_tokens(compressed)} tokens")
+        return compressed
+    
+    async def _get_contextual_memory(self, user_message: str) -> Optional[str]:
+        """Get contextual memory using MemoBase's context() API with relevance filtering"""
+        if not self.patched_sync_client or not hasattr(self.patched_sync_client, 'context'):
+            # Fallback to old method
+            return await asyncio.to_thread(
+                self.patched_sync_client.get_memory_prompt,
+                self.user_id
+            )
+            
+        try:
+            # Use MemoBase context API for targeted memory retrieval
+            context_params = {
+                'user_id': self.user_id,
+                'max_tokens': min(self.max_context_size, self.max_token_limit),
+                'query': user_message  # Use current message for relevance
+            }
+            
+            if self.enable_relevance_filtering:
+                context_params['threshold'] = self.relevance_threshold
+                
+            memory_context = await asyncio.to_thread(
+                self.patched_sync_client.context,
+                **context_params
+            )
+            
+            return memory_context
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Context API failed, falling back to get_memory_prompt: {e}")
+            return await asyncio.to_thread(
+                self.patched_sync_client.get_memory_prompt,
+                self.user_id
+            )
+    
     async def _inject_memory_context(self, context, user_message: str):
-        """Retrieve relevant memories from MemoBase and inject into context."""
+        """Retrieve relevant memories from MemoBase and inject into context with smart compression."""
         if not self.is_enabled or not self.patched_sync_client:
             return
             
         try:
-            # Get memory prompt from the patched client
-            logger.debug(f"🔍 Retrieving memory for user_id: {self.user_id}")
-            memory_prompt = await asyncio.to_thread(
-                self.patched_sync_client.get_memory_prompt,
-                self.user_id
-            )
+            # Get contextual memory
+            logger.debug(f"🔍 Retrieving contextual memory for user_id: {self.user_id}")
+            memory_prompt = await self._get_contextual_memory(user_message)
             logger.debug(f"🔍 Raw memory prompt: {repr(memory_prompt)[:200]}...")
             
             if memory_prompt and memory_prompt.strip():
+                # Apply compression if needed
+                compressed_memory = self._compress_memory_content(memory_prompt)
+                
                 # Insert memory context before the last user message
                 memory_msg = {
                     "role": "system",
-                    "content": memory_prompt
+                    "content": compressed_memory
                 }
                 
                 # Insert into context messages before the last user message
                 if len(context._messages) >= 1:
                     context._messages.insert(-1, memory_msg)
-                    logger.info(f"🧠 Injected MemoBase memories into context for: {user_message[:50]}...")
+                    token_count = self._estimate_tokens(compressed_memory)
+                    logger.info(f"🧠 Injected MemoBase memories ({token_count} tokens) for: {user_message[:50]}...")
                     
         except Exception as e:
             logger.error(f"❌ Failed to retrieve memories from MemoBase: {e}")
@@ -254,9 +355,10 @@ class MemobaseMemoryProcessor(FrameProcessor):
             async with self._lock:
                 if self.patched_sync_client and hasattr(self.patched_sync_client, 'flush'):
                     await asyncio.to_thread(self.patched_sync_client.flush, self.user_id)
-                    logger.info(f"🧠 Flushed MemoBase memory for user: {self.user_id}")
+                    logger.info(f"🧠 Flushed MemoBase memory for user: {self.user_id} ({self._buffer_token_count} tokens)")
                 
                 self._conversation_buffer.clear()
+                self._buffer_token_count = 0
                     
         except Exception as e:
             logger.error(f"❌ Error flushing MemoBase memory: {e}")
@@ -271,7 +373,13 @@ class MemobaseMemoryProcessor(FrameProcessor):
             "user_id": self.user_id,
             "session_active": self._session_active,
             "buffer_size": len(self._conversation_buffer),
-            "integration_method": "hybrid sync/async with patched client"
+            "buffer_tokens": self._buffer_token_count,
+            "max_context_size": self.max_context_size,
+            "max_token_limit": self.max_token_limit,
+            "compression_enabled": self.enable_compression,
+            "relevance_filtering": self.enable_relevance_filtering,
+            "auto_flush_threshold": self.auto_flush_threshold,
+            "integration_method": "hybrid sync/async with smart compression"
         }
         
         # Get user profile if available
