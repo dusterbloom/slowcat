@@ -81,7 +81,7 @@ class MemobaseMemoryProcessor(FrameProcessor):
             logger.info("🧠 MemoBase memory processor disabled or unavailable")
 
     def _initialize_memobase_hybrid(self):
-        """Initialize MemoBase with hybrid sync/async approach."""
+        """Initialize MemoBase with flexible provider architecture."""
         try:
             # Create MemoBase client (using keyword arguments for local connection)
             self.mb_client = MemoBaseClient(
@@ -91,11 +91,36 @@ class MemobaseMemoryProcessor(FrameProcessor):
             
             # Test connection
             if self.mb_client.ping():
-                # Create a sync OpenAI client for MemoBase patching
-                self.sync_openai_client = OpenAI(
-                    api_key=None,  # No API key needed for LM Studio
-                    base_url=config.network.llm_base_url
+                # Determine which client configuration to use
+                use_separate_memory_llm = (
+                    config.memobase.memory_llm.base_url != config.network.llm_base_url or
+                    config.memobase.memory_llm.model != config.models.default_llm_model
                 )
+                
+                if use_separate_memory_llm:
+                    # Use separate Memory LLM provider (Option 1: Different provider for memory)
+                    logger.info(f"🔄 Using separate Memory LLM: {config.memobase.memory_llm.provider_name}")
+                    self.sync_openai_client = OpenAI(
+                        api_key=config.memobase.memory_llm.api_key,
+                        base_url=config.memobase.memory_llm.base_url
+                    )
+                    # Set the model for memory operations
+                    self.memory_model = config.memobase.memory_llm.model
+                    logger.info(f"   📍 Memory LLM: {config.memobase.memory_llm.base_url}")
+                    logger.info(f"   🤖 Memory Model: {self.memory_model}")
+                else:
+                    # Use same LLM as main conversation (Option 2: Simple setup)
+                    logger.info(f"🔄 Using main LLM for memory: {config.network.llm_base_url}")
+                    self.sync_openai_client = OpenAI(
+                        api_key=config.memobase.main_llm.api_key,
+                        base_url=config.network.llm_base_url
+                    )
+                    self.memory_model = config.models.default_llm_model
+                
+                # Log embedding provider info
+                logger.info(f"🔍 Embedding provider: {config.memobase.embedding.provider_name}")
+                logger.info(f"   📍 Embedding URL: {config.memobase.embedding.base_url}")
+                logger.info(f"   🧲 Embedding Model: {config.memobase.embedding.model}")
                 
                 # Apply MemoBase patching to the sync client with smart limits
                 self.patched_sync_client = openai_memory(
@@ -105,8 +130,8 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 )
                 
                 self.is_enabled = True
-                logger.info(f"🧠 MemoBase hybrid integration initialized - connected to {config.memobase.project_url}")
-                logger.info(f"🔧 Using sync OpenAI client with MemoBase patching for user: {self.user_id}")
+                logger.info(f"🧠 MemoBase multi-provider architecture initialized")
+                logger.info(f"🔧 Main LLM: {config.network.llm_base_url} | Memory LLM: {config.memobase.memory_llm.base_url}")
                 logger.info(f"🎛️ Context limits: max_size={self.max_context_size}, token_limit={self.max_token_limit}, compression={self.enable_compression}")
                 
                 # Debug: Check actual UUID mapping
@@ -188,7 +213,7 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 logger.debug(f"🔍 Storing {role} message with user_id: {self.user_id}")
                 await asyncio.to_thread(
                     self.patched_sync_client.chat.completions.create,
-                    model=config.models.default_llm_model,
+                    model=getattr(self, 'memory_model', config.models.default_llm_model),
                     messages=messages,
                     user_id=self.user_id,
                     max_tokens=1,  # Minimal response 
@@ -212,7 +237,7 @@ class MemobaseMemoryProcessor(FrameProcessor):
                     logger.debug(f"🔍 Storing conversation pair with user_id: {self.user_id}")
                     await asyncio.to_thread(
                         self.patched_sync_client.chat.completions.create,
-                        model=config.models.default_llm_model,
+                        model=getattr(self, 'memory_model', config.models.default_llm_model),
                         messages=messages,
                         user_id=self.user_id,
                         max_tokens=1,

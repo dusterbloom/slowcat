@@ -110,12 +110,16 @@ MAIN_PORT="1234"  # Default port for main model
 # Store original arguments
 ORIGINAL_ARGS=("$@")
 
-# Parse command line arguments to extract models
+# Parse command line arguments to extract models and flags
+USE_OLLAMA_MEMO="false"
 for ((i=0; i<${#ORIGINAL_ARGS[@]}; i++)); do
     if [[ "${ORIGINAL_ARGS[i]}" == "--memo" && $((i+1)) -lt ${#ORIGINAL_ARGS[@]} ]]; then
         MEMO_MODEL="${ORIGINAL_ARGS[$((i+1))]}"
     elif [[ "${ORIGINAL_ARGS[i]}" == "--llm" && $((i+1)) -lt ${#ORIGINAL_ARGS[@]} ]]; then
         MAIN_LLM_MODEL="${ORIGINAL_ARGS[$((i+1))]}"
+    elif [[ "${ORIGINAL_ARGS[i]}" == "--ollama-memo" ]]; then
+        USE_OLLAMA_MEMO="true"
+        echo "🦙 Ollama mode enabled for MemoBase"
     fi
 done
 
@@ -256,7 +260,81 @@ else
     echo "🧠 No separate memo model specified - using main LLM for memory operations"
 fi
 
-# Auto-load embedding model if needed
+# Check if we should use Ollama for MemoBase
+if [ "$USE_OLLAMA_MEMO" = "true" ]; then
+    echo ""
+    echo "🦙 Configuring Ollama for MemoBase memory operations"
+    
+    # Check if Ollama is running
+    if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+        echo "⚠️ Ollama not running. Attempting to start..."
+        ollama serve >/dev/null 2>&1 &
+        sleep 3
+        
+        if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+            echo "❌ Failed to start Ollama. Please start manually: ollama serve"
+            exit 1
+        fi
+    fi
+    
+    echo "✅ Ollama is running"
+    
+    # List available Ollama models
+    echo "📦 Available Ollama models:"
+    ollama list | tail -n +2 | awk '{print "   - " $1}'
+    
+    # Check for recommended models
+    MEMORY_MODEL="llama3.2:1b"
+    if ollama list | grep -q "$MEMORY_MODEL"; then
+        echo "✅ Memory model '$MEMORY_MODEL' found"
+    else
+        echo "📦 Pulling memory model: $MEMORY_MODEL"
+        if ollama pull "$MEMORY_MODEL"; then
+            echo "✅ Successfully pulled $MEMORY_MODEL"
+        else
+            echo "⚠️ Failed to pull $MEMORY_MODEL, trying fallback..."
+            MEMORY_MODEL="llama3.2:3b"
+            if ollama list | grep -q "$MEMORY_MODEL"; then
+                echo "✅ Using fallback model: $MEMORY_MODEL"
+            else
+                echo "❌ No suitable memory model available"
+                exit 1
+            fi
+        fi
+    fi
+    
+    EMBEDDING_MODEL_OLLAMA="nomic-embed-text"
+    if ollama list | grep -q "$EMBEDDING_MODEL_OLLAMA"; then
+        echo "✅ Embedding model '$EMBEDDING_MODEL_OLLAMA' found"
+    else
+        echo "📦 Pulling embedding model: $EMBEDDING_MODEL_OLLAMA"
+        if ollama pull "$EMBEDDING_MODEL_OLLAMA"; then
+            echo "✅ Successfully pulled $EMBEDDING_MODEL_OLLAMA"
+        else
+            echo "❌ Failed to pull embedding model"
+            exit 1
+        fi
+    fi
+    
+    # Set environment variables for MemoBase to use Ollama
+    export MEMOBASE_LLM_BASE_URL="http://localhost:11434/v1"
+    export MEMOBASE_LLM_MODEL="$MEMORY_MODEL"
+    export MEMOBASE_LLM_API_KEY="not-needed"
+    export MEMOBASE_EMBEDDING_BASE_URL="http://localhost:11434/v1"
+    export MEMOBASE_EMBEDDING_MODEL="$EMBEDDING_MODEL_OLLAMA"
+    export MEMOBASE_EMBEDDING_API_KEY="not-needed"
+    
+    echo "🎛️ MemoBase configured for Ollama:"
+    echo "   📱 Memory LLM: $MEMORY_MODEL (Ollama:11434)"
+    echo "   🧲 Embeddings: $EMBEDDING_MODEL_OLLAMA (Ollama:11434)"
+    echo "   🚀 Main LLM: (LMStudio:$EMBEDDING_PORT)"
+    
+    # Skip LMStudio embedding setup since we're using Ollama
+    SKIP_LMSTUDIO_EMBEDDING="true"
+fi
+
+# Auto-load embedding model if needed (only if not using Ollama)
+if [ "$SKIP_LMSTUDIO_EMBEDDING" != "true" ]; then
 EMBEDDING_MODEL="text-embedding-nomic-embed-text-v1.5"
 echo ""
 echo "📊 Checking embedding model: $EMBEDDING_MODEL"
@@ -317,6 +395,7 @@ else
         echo "🔍 Known issue: Embedding models may not auto-load via headless mode"
     fi
 fi
+fi  # End of SKIP_LMSTUDIO_EMBEDDING check
 
 # Final embedding model validation
 echo ""

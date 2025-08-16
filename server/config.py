@@ -118,26 +118,74 @@ class MemoryConfig:
 
 
 @dataclass
+class ProviderConfig:
+    """OpenAI-compatible provider configuration"""
+    base_url: str
+    api_key: str
+    model: str
+    provider_name: str = "unknown"
+    
+    def __post_init__(self):
+        # Auto-detect provider from base_url if not specified
+        if self.provider_name == "unknown":
+            if "localhost:1234" in self.base_url or "127.0.0.1:1234" in self.base_url:
+                self.provider_name = "lmstudio"
+            elif "localhost:11434" in self.base_url or "127.0.0.1:11434" in self.base_url:
+                self.provider_name = "ollama" 
+            elif "api.openai.com" in self.base_url:
+                self.provider_name = "openai"
+            elif "api.anthropic.com" in self.base_url:
+                self.provider_name = "anthropic"
+            elif "api.groq.com" in self.base_url:
+                self.provider_name = "groq"
+
+
+@dataclass
 class MemoBaseConfig:
-    """MemoBase external memory service configuration"""
+    """MemoBase external memory service configuration with flexible providers"""
     enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MEMOBASE", "false").lower() == "true")
     project_url: str = field(default_factory=lambda: os.getenv("MEMOBASE_PROJECT_URL", "http://localhost:8019"))
     api_key: str = field(default_factory=lambda: os.getenv("MEMOBASE_API_KEY", "secret"))
     fallback_to_local: bool = field(default_factory=lambda: os.getenv("MEMOBASE_FALLBACK_TO_LOCAL", "true").lower() == "true")
     
+    # Universal Provider Architecture - Any OpenAI-compatible endpoint
+    # Main LLM Provider (for conversation)
+    main_llm: ProviderConfig = field(default_factory=lambda: ProviderConfig(
+        base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:1234/v1"),
+        api_key=os.getenv("OPENAI_API_KEY", "not-needed"), 
+        model=os.getenv("DEFAULT_LLM_MODEL", "qwen2.5-7b-instruct"),
+        provider_name="lmstudio"
+    ))
+    
+    # Memory LLM Provider (for memory processing) - can be different from main
+    memory_llm: ProviderConfig = field(default_factory=lambda: ProviderConfig(
+        base_url=os.getenv("MEMOBASE_LLM_BASE_URL", os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")),
+        api_key=os.getenv("MEMOBASE_LLM_API_KEY", "not-needed"),
+        model=os.getenv("MEMOBASE_LLM_MODEL", "llama3.2:1b"),  # Fast small model for memory
+        provider_name=os.getenv("MEMOBASE_LLM_PROVIDER", "ollama")
+    ))
+    
+    # Embedding Provider (for semantic search)
+    embedding: ProviderConfig = field(default_factory=lambda: ProviderConfig(
+        base_url=os.getenv("MEMOBASE_EMBEDDING_BASE_URL", "http://localhost:11434/v1"),
+        api_key=os.getenv("MEMOBASE_EMBEDDING_API_KEY", "not-needed"),
+        model=os.getenv("MEMOBASE_EMBEDDING_MODEL", "nomic-embed-text"),
+        provider_name=os.getenv("MEMOBASE_EMBEDDING_PROVIDER", "ollama")
+    ))
+    
     # Context size management for small models
-    max_context_size: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_CONTEXT_SIZE", "200")))  # Reduced for small models
-    max_token_limit: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_TOKEN_LIMIT", "500")))  # Hard token limit
+    max_context_size: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_CONTEXT_SIZE", "200")))
+    max_token_limit: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_TOKEN_LIMIT", "500")))
     enable_compression: bool = field(default_factory=lambda: os.getenv("MEMOBASE_ENABLE_COMPRESSION", "true").lower() == "true")
-    compression_ratio: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_COMPRESSION_RATIO", "0.5")))  # Compress to 50% when needed
+    compression_ratio: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_COMPRESSION_RATIO", "0.5")))
     
     # Buffer management
-    auto_flush_threshold: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_AUTO_FLUSH_THRESHOLD", "512")))  # Auto flush at 512 tokens
+    auto_flush_threshold: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_AUTO_FLUSH_THRESHOLD", "512")))
     flush_on_session_end: bool = field(default_factory=lambda: os.getenv("MEMOBASE_FLUSH_ON_SESSION_END", "true").lower() == "true")
     
     # Relevance filtering
     enable_relevance_filtering: bool = field(default_factory=lambda: os.getenv("MEMOBASE_ENABLE_RELEVANCE_FILTERING", "true").lower() == "true")
-    relevance_threshold: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_RELEVANCE_THRESHOLD", "0.7")))  # Only include relevant memories
+    relevance_threshold: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_RELEVANCE_THRESHOLD", "0.7")))
 
 
 @dataclass

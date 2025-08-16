@@ -15,6 +15,8 @@ import os
 import sys
 import multiprocessing
 import threading
+import subprocess
+import requests
 from loguru import logger
 
 # Set multiprocessing start method to 'spawn' for macOS Metal GPU safety
@@ -92,6 +94,91 @@ async def run_bot(webrtc_connection, language="en", llm_model=None, memo_model=N
 
 
 
+def setup_ollama_memobase():
+    """Configure Ollama for MemoBase memory operations"""
+    logger.info("🦙 Configuring Ollama for MemoBase memory operations")
+    
+    # Check if Ollama is running
+    try:
+        response = requests.get("http://localhost:11434/api/tags", timeout=5)
+        if response.status_code == 200:
+            logger.info("✅ Ollama is running")
+        else:
+            logger.error("❌ Ollama is not responding correctly")
+            return False
+    except requests.RequestException:
+        logger.warning("⚠️ Ollama not running. Attempting to start...")
+        try:
+            # Try to start Ollama in background
+            subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Give it time to start
+            import time
+            time.sleep(3)
+            
+            # Check again
+            response = requests.get("http://localhost:11434/api/tags", timeout=5)
+            if response.status_code != 200:
+                logger.error("❌ Failed to start Ollama")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Could not start Ollama: {e}")
+            return False
+    
+    # Check for required models
+    models = response.json().get('models', [])
+    model_names = [model['name'] for model in models]
+    
+    # Check for memory LLM model
+    memory_model = "llama3.2:1b"
+    if not any(memory_model in name for name in model_names):
+        logger.info(f"📦 Pulling memory model: {memory_model}")
+        try:
+            result = subprocess.run(['ollama', 'pull', memory_model], 
+                                  capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                logger.info(f"✅ Successfully pulled {memory_model}")
+            else:
+                logger.error(f"❌ Failed to pull {memory_model}: {result.stderr}")
+                # Try fallback to 3b model
+                memory_model = "llama3.2:3b"
+                logger.info(f"🔄 Trying fallback model: {memory_model}")
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Model pull timeout - using available models")
+    else:
+        logger.info(f"✅ Memory model {memory_model} already available")
+    
+    # Check for embedding model
+    embedding_model = "nomic-embed-text"
+    if not any(embedding_model in name for name in model_names):
+        logger.info(f"📦 Pulling embedding model: {embedding_model}")
+        try:
+            result = subprocess.run(['ollama', 'pull', embedding_model], 
+                                  capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                logger.info(f"✅ Successfully pulled {embedding_model}")
+            else:
+                logger.error(f"❌ Failed to pull {embedding_model}: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Embedding model pull timeout")
+    else:
+        logger.info(f"✅ Embedding model {embedding_model} already available")
+    
+    # Set environment variables for MemoBase to use Ollama
+    os.environ['MEMOBASE_LLM_BASE_URL'] = "http://localhost:11434/v1"
+    os.environ['MEMOBASE_LLM_MODEL'] = memory_model
+    os.environ['MEMOBASE_LLM_API_KEY'] = "not-needed"
+    os.environ['MEMOBASE_EMBEDDING_BASE_URL'] = "http://localhost:11434/v1"
+    os.environ['MEMOBASE_EMBEDDING_MODEL'] = embedding_model
+    os.environ['MEMOBASE_EMBEDDING_API_KEY'] = "not-needed"
+    
+    logger.info("🎛️ MemoBase configured for Ollama:")
+    logger.info(f"   📱 Memory LLM: {memory_model} (Ollama)")
+    logger.info(f"   🧲 Embeddings: {embedding_model} (Ollama)")
+    logger.info(f"   🚀 Main LLM: {config.models.default_llm_model} (LMStudio)")
+    
+    return True
+
+
 def main():
     """
     Main entry point with the same CLI interface as original bot.py
@@ -108,11 +195,17 @@ def main():
                        help="STT model to use")
     parser.add_argument("--mode", choices=["server", "standalone"], default="server",
                        help="Run as server (default) or standalone pipeline")
+    parser.add_argument("--ollama-memo", action="store_true", 
+                       help="Use Ollama for MemoBase memory processing (fast with llama3.2:1b)")
     args = parser.parse_args()
 
     logger.info(f"🚀 Starting Slowcat Bot v2 - Refactored Architecture")
     logger.info(f"🌍 Language: {args.language}")
     logger.info(f"🏃 Mode: {args.mode}")
+    
+    # Configure Ollama for MemoBase if requested
+    if args.ollama_memo:
+        setup_ollama_memobase()
     
     if args.llm_model:
         logger.info(f"🤖 LLM Model: {args.llm_model}")
@@ -134,7 +227,8 @@ def main():
             language=args.language,
             llm_model=args.llm_model,
             memo_model=args.memo_model,
-            stt_model=args.stt_model
+            stt_model=args.stt_model,
+            ollama_memo=args.ollama_memo
         )
     else:
         # Standalone mode for testing/development

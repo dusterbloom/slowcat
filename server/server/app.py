@@ -238,7 +238,8 @@ def setup_signal_handlers(webrtc_manager: WebRTCManager):
 
 
 def run_server(host: str = None, port: int = None, language: str = None, 
-               llm_model: str = None, memo_model: str = None, stt_model: str = None):
+               llm_model: str = None, memo_model: str = None, stt_model: str = None,
+               ollama_memo: bool = False):
     """
     Run the Slowcat server
     
