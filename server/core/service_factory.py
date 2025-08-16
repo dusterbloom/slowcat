@@ -464,7 +464,7 @@ class ServiceFactory:
         )
     
     async def _create_llm_service(self, ml_modules: Dict[str, Any], language: str = "en", llm_model: str = None):
-        """Create LLM service"""
+        """Create LLM service with optional MemoBase memory integration"""
         selected_model = llm_model or config.models.default_llm_model
         logger.info(f"🤖 Using LLM model: {selected_model}")
         
@@ -483,14 +483,22 @@ class ServiceFactory:
         else:
             logger.info("🔒 LLM streaming mode DISABLED")
         
-        # MCP tools are handled natively by LM Studio via mcp.json
+        # Create the base LLM service
         if config.mcp.enabled:
             logger.info("🔧 Tool-enabled LLM service initialized (MCP via LM Studio)")
-            return ml_modules['LLMWithToolsService'](**llm_params)
+            llm_service = ml_modules['LLMWithToolsService'](**llm_params)
         else:
             logger.info("🚫 Dedup OpenAI LLM service initialized - filtering LLMTextFrames")
             # Use custom dedup service that filters LLMTextFrames like Realtime Beta
-            return ml_modules['DedupOpenAILLMService'](**llm_params)
+            llm_service = ml_modules['DedupOpenAILLMService'](**llm_params)
+        
+        # MemoBase integration will be handled via the MemobaseMemoryProcessor
+        # due to AsyncOpenAI compatibility limitations with direct client patching
+        if config.memobase.enabled:
+            logger.info("🧠 MemoBase integration will be handled by MemobaseMemoryProcessor")
+        
+        return llm_service
+    
     
     async def _create_voice_recognition(self, ml_modules: Dict[str, Any], vr_config: VoiceRecognitionConfig = None):
         """Create voice recognition service"""
@@ -506,13 +514,51 @@ class ServiceFactory:
         return voice_recognition
     
     def _create_memory_service(self):
-        """Create memory service - uses Pipecat's built-in Mem0MemoryService"""
-        # Check if Mem0 is enabled (independent of old memory system)
+        """Create memory service - supports both Mem0 and MemoBase"""
+        logger.info("🔍 _create_memory_service() called")
+        
+        # Check if MemoBase is enabled (preferred over Mem0)
+        enable_memobase = config.memobase.enabled
         enable_mem0 = os.getenv("ENABLE_MEM0", "false").lower() == "true"
         
-        if not enable_mem0:
-            logger.info("🧠 Mem0 memory is DISABLED")
+        logger.info(f"🔍 Memory service selection: enable_memobase={enable_memobase}, enable_mem0={enable_mem0}")
+        
+        if enable_memobase:
+            logger.info("🧠 MemoBase memory is ENABLED - using external memory service")
+            return self._create_memobase_service()
+        elif enable_mem0:
+            logger.info("🧠 Mem0 memory is ENABLED - using Pipecat's built-in Mem0MemoryService")
+            return self._create_mem0_service()
+        else:
+            logger.info("🧠 External memory services are DISABLED")
             return None
+    
+    def _create_memobase_service(self):
+        """Create MemoBase memory processor"""
+        try:
+            from processors.memobase_memory_processor import MemobaseMemoryProcessor
+            
+            memory_processor = MemobaseMemoryProcessor(
+                user_id=config.memory.default_user_id,
+                max_context_size=config.memobase.max_context_size,
+                flush_on_session_end=config.memobase.flush_on_session_end,
+                fallback_to_local=config.memobase.fallback_to_local
+            )
+            
+            logger.info(f"✅ MemoBase memory processor created for user: {config.memory.default_user_id}")
+            logger.info(f"   Project URL: {config.memobase.project_url}")
+            logger.info(f"   Fallback to local: {config.memobase.fallback_to_local}")
+            
+            return memory_processor
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize MemoBase memory processor: {e}")
+            if config.memobase.fallback_to_local:
+                logger.warning("⚠️ Falling back to no memory service")
+                return None
+            raise
+    
+    def _create_mem0_service(self):
+        """Create Mem0 memory service - original implementation"""
             
         logger.info("🚀 Mem0 memory is ENABLED - Using Pipecat's built-in Mem0MemoryService")
         

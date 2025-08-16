@@ -118,6 +118,17 @@ class MemoryConfig:
 
 
 @dataclass
+class MemoBaseConfig:
+    """MemoBase external memory service configuration"""
+    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MEMOBASE", "false").lower() == "true")
+    project_url: str = field(default_factory=lambda: os.getenv("MEMOBASE_PROJECT_URL", "http://localhost:8019"))
+    api_key: str = field(default_factory=lambda: os.getenv("MEMOBASE_API_KEY", "secret"))
+    fallback_to_local: bool = field(default_factory=lambda: os.getenv("MEMOBASE_FALLBACK_TO_LOCAL", "true").lower() == "true")
+    max_context_size: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_MAX_CONTEXT_SIZE", "500")))
+    flush_on_session_end: bool = field(default_factory=lambda: os.getenv("MEMOBASE_FLUSH_ON_SESSION_END", "true").lower() == "true")
+
+
+@dataclass
 class ConversationTimerConfig:
     """Configuration for conversation timer and transcript saving"""
     enabled: bool = True
@@ -608,6 +619,7 @@ class Config:
     models: ModelConfig = field(default_factory=ModelConfig)
     voice_recognition: VoiceRecognitionConfig = field(default_factory=VoiceRecognitionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    memobase: MemoBaseConfig = field(default_factory=MemoBaseConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     conversation_timer: ConversationTimerConfig = field(default_factory=ConversationTimerConfig)
     dictation_mode: DictationModeConfig = field(default_factory=DictationModeConfig)

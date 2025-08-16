@@ -147,11 +147,15 @@ class PipelineBuilder:
         
         processors = {}
         
-        # Memory service (Pipecat's built-in Mem0MemoryService)
+        # Memory service (supports both Mem0MemoryService and MemobaseMemoryProcessor)
         memory_service = await self.service_factory.get_service("memory_service") 
         if memory_service:
             logger.info(f"✅ Memory service created: {type(memory_service).__name__}")
             processors['memory_service'] = memory_service
+            
+            # If it's a MemoBase processor, we may need additional setup
+            if hasattr(memory_service, '_initialize_memobase'):
+                logger.info("🧠 MemoBase memory processor detected - ensuring initialization")
         else:
             logger.warning("❌ No memory service created - memory disabled")
             processors['memory_service'] = None
@@ -306,9 +310,16 @@ class PipelineBuilder:
             speaker_context.update_speaker(data)
             if memory_service:
                 user_id = data.get('speaker_name', data.get('speaker_id', 'unknown'))
-                # Update user_id in Pipecat's Mem0MemoryService
-                memory_service.user_id = user_id
-                logger.info(f"📝 Memory switched to user: {user_id}")
+                
+                # Update user_id based on memory service type
+                if hasattr(memory_service, 'update_user_id'):
+                    # MemoBase processor
+                    await memory_service.update_user_id(user_id)
+                    logger.info(f"🧠 MemoBase memory switched to user: {user_id}")
+                else:
+                    # Pipecat's Mem0MemoryService
+                    memory_service.user_id = user_id
+                    logger.info(f"📝 Mem0 memory switched to user: {user_id}")
         
         async def on_speaker_enrolled(data: Dict[str, Any]):
             speaker_id = data.get('speaker_id')

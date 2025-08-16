@@ -30,6 +30,6 @@ huggingface_hub>=0.23.0
 # --- DuckDuckGo Search ---
 ddgs>=9.5.2
 
-# --- Mem0 and HuggingFace Embeddings ---
-mem0ai>=0.1.26
-sentence-transformers>=5.1.0
+# --- MemoBase External Memory Service (Client only - Server runs in Docker) ---
+memobase>=0.1.0
+
