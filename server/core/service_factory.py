@@ -620,7 +620,7 @@ class ServiceFactory:
             logger.error(f"❌ Failed to initialize Pipecat Mem0MemoryService: {e}")
             return None
     
-    async def create_services_for_language(self, language: str, llm_model: str = None, stt_model: str = None) -> Dict[str, Any]:
+    async def create_services_for_language(self, language: str, llm_model: str = None, stt_model: str = None, memo_model: str = None) -> Dict[str, Any]:
         """Create core services for a specific language"""
         # Ensure ML modules are loaded
         await self.get_service("ml_loader")

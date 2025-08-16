@@ -57,7 +57,7 @@ class VideoConfig:
 class ModelConfig:
     """AI model configuration"""
     # LLM
-    default_llm_model: str = "google/gemma-3-12b"
+    default_llm_model: str = field(default_factory=lambda: os.getenv("DEFAULT_LLM_MODEL", "qwen2.5-7b-instruct"))
     llm_max_tokens: int = 8192
     llm_context_length: int = field(default_factory=lambda: int(os.getenv("LLM_CONTEXT_LENGTH", "32768")))  # Default 32k
     

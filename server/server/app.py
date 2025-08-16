@@ -27,13 +27,15 @@ class OfferRequest(BaseModel):
     pc_id: Optional[str] = None
     restart_pc: bool = False
 
-def create_app(language: str = None, llm_model: str = None, stt_model: str = None) -> FastAPI:
+def create_app(language: str = None, llm_model: str = None, memo_model: str = None, stt_model: str = None) -> FastAPI:
     """
     Create FastAPI application with proper configuration
     
     Args:
         language: Default language for the application
         llm_model: Default LLM model
+        memo_model: Separate LLM model for memory operations
+        stt_model: STT model to use
         
     Returns:
         Configured FastAPI application
@@ -88,6 +90,7 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
     # Store configuration in app state
     app.state.language = language or config.default_language
     app.state.llm_model = llm_model
+    app.state.memo_model = memo_model
     app.state.stt_model = stt_model
     
     # Initialize managers
@@ -135,6 +138,7 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
             # Start bot pipeline in background
             language = getattr(app.state, 'language', config.default_language)
             llm_model = getattr(app.state, 'llm_model', None)
+            memo_model = getattr(app.state, 'memo_model', None)
             
             background_tasks.add_task(
                 run_bot_pipeline,
@@ -142,6 +146,7 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
                 connection,
                 language,
                 llm_model,
+                memo_model,
                 getattr(app.state, 'stt_model', None)
             )
             
@@ -158,6 +163,7 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
             "status": "healthy",
             "language": app.state.language,
             "llm_model": app.state.llm_model,
+            "memo_model": app.state.memo_model,
             "stt_model": app.state.stt_model,
             "active_connections": len(webrtc_manager.get_active_connections())
         }
@@ -174,7 +180,7 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
 
 
 async def run_bot_pipeline(pipeline_builder: PipelineBuilder, webrtc_connection, 
-                          language: str = "en", llm_model: str = None, stt_model: str = None):
+                          language: str = "en", llm_model: str = None, memo_model: str = None, stt_model: str = None):
     """
     Run bot pipeline for a WebRTC connection
     
@@ -183,13 +189,15 @@ async def run_bot_pipeline(pipeline_builder: PipelineBuilder, webrtc_connection,
         webrtc_connection: WebRTC connection
         language: Language for the bot
         llm_model: Optional LLM model
+        memo_model: Optional separate model for memory operations
+        stt_model: Optional STT model
     """
     try:
         logger.info(f"🤖 Starting bot pipeline for language: {language}")
         
         # Build pipeline
         pipeline, task = await pipeline_builder.build_pipeline(
-            webrtc_connection, language, llm_model, stt_model
+            webrtc_connection, language, llm_model, stt_model, memo_model=memo_model
         )
         
         # Run pipeline
@@ -230,7 +238,7 @@ def setup_signal_handlers(webrtc_manager: WebRTCManager):
 
 
 def run_server(host: str = None, port: int = None, language: str = None, 
-               llm_model: str = None, stt_model: str = None):
+               llm_model: str = None, memo_model: str = None, stt_model: str = None):
     """
     Run the Slowcat server
     
@@ -239,6 +247,7 @@ def run_server(host: str = None, port: int = None, language: str = None,
         port: Server port (default from config)  
         language: Default language (default from config)
         llm_model: Default LLM model
+        memo_model: Separate LLM model for memory operations
         stt_model: STT model to use
     """
     # Use config defaults if not specified
@@ -247,7 +256,7 @@ def run_server(host: str = None, port: int = None, language: str = None,
     language = language or config.default_language
     
     # Create application
-    app = create_app(language, llm_model, stt_model)
+    app = create_app(language, llm_model, memo_model, stt_model)
     
     # Setup signal handlers
     setup_signal_handlers(app.state.webrtc_manager)
@@ -256,6 +265,8 @@ def run_server(host: str = None, port: int = None, language: str = None,
     logger.info(f"🌍 Default language: {language}")
     if llm_model:
         logger.info(f"🤖 LLM model: {llm_model}")
+    if memo_model:
+        logger.info(f"🧠 Memory model: {memo_model}")
     if stt_model:
         logger.info(f"🎤 STT model: {stt_model}")
     

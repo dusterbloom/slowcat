@@ -59,7 +59,7 @@ from core.service_factory import service_factory
 from server import create_app, run_server
 
 
-async def run_bot(webrtc_connection, language="en", llm_model=None):
+async def run_bot(webrtc_connection, language="en", llm_model=None, memo_model=None):
     """
     Advanced bot function using full pipeline with Mem0 memory support.
     Includes memory, processors, and intelligent context injection.
@@ -68,6 +68,7 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         webrtc_connection: WebRTC connection instance
         language: Language code (default: "en")
         llm_model: Optional LLM model override
+        memo_model: Optional separate model for memory operations
     """
     from core.pipeline_builder import PipelineBuilder
     
@@ -77,7 +78,7 @@ async def run_bot(webrtc_connection, language="en", llm_model=None):
         # Create full pipeline with memory and all processors
         pipeline_builder = PipelineBuilder(service_factory)
         pipeline, task = await pipeline_builder.build_pipeline(
-            webrtc_connection, language, llm_model
+            webrtc_connection, language, llm_model, memo_model=memo_model
         )
         
         # Run the pipeline
@@ -100,7 +101,8 @@ def main():
     parser.add_argument("--port", type=int, default=config.network.server_port)
     parser.add_argument("--language", default=config.default_language, 
                        choices=list(config.language_configs.keys()))
-    parser.add_argument("--llm", dest="llm_model", default=None)
+    parser.add_argument("--llm", dest="llm_model", default=None, help="Main LLM model for conversation")
+    parser.add_argument("--memo", dest="memo_model", default=None, help="Separate LLM model for memory operations")
     parser.add_argument("--stt", dest="stt_model", default=None, 
                        choices=["TINY", "MEDIUM", "LARGE_V3", "LARGE_V3_TURBO", "LARGE_V3_TURBO_Q4", "DISTIL_LARGE_V3"],
                        help="STT model to use")
@@ -114,6 +116,8 @@ def main():
     
     if args.llm_model:
         logger.info(f"🤖 LLM Model: {args.llm_model}")
+    if args.memo_model:
+        logger.info(f"🧠 Memory Model: {args.memo_model}")
     if args.stt_model:
         logger.info(f"🎤 STT Model: {args.stt_model}")
     
@@ -129,15 +133,16 @@ def main():
             port=args.port,
             language=args.language,
             llm_model=args.llm_model,
+            memo_model=args.memo_model,
             stt_model=args.stt_model
         )
     else:
         # Standalone mode for testing/development
         logger.info("🔧 Running in standalone mode...")
-        asyncio.run(run_standalone_bot(args.language, args.llm_model))
+        asyncio.run(run_standalone_bot(args.language, args.llm_model, args.memo_model))
 
 
-async def run_standalone_bot(language: str, llm_model: str = None):
+async def run_standalone_bot(language: str, llm_model: str = None, memo_model: str = None):
     """
     Run bot in standalone mode for testing/development
     This creates a mock WebRTC connection for testing purposes
@@ -156,7 +161,7 @@ async def run_standalone_bot(language: str, llm_model: str = None):
     mock_connection = MockWebRTCConnection()
     
     try:
-        await run_bot(mock_connection, language, llm_model)
+        await run_bot(mock_connection, language, llm_model, memo_model)
     except KeyboardInterrupt:
         logger.info("🛑 Standalone bot stopped")
     except Exception as e:

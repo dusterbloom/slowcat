@@ -97,6 +97,144 @@ else
     echo "🧠 Mem0 memory system disabled"
 fi
 
+# LM Studio Model Management - Extract memo model info early
+echo ""
+echo "📊 LM Studio Model Management"
+
+# Parse arguments to extract memo model (preserve original args)
+MEMO_MODEL=""
+MAIN_LLM_MODEL=""
+MEMO_PORT="1235"  # Default port for memory model
+MAIN_PORT="1234"  # Default port for main model
+
+# Store original arguments
+ORIGINAL_ARGS=("$@")
+
+# Parse command line arguments to extract models
+for ((i=1; i<=${#ORIGINAL_ARGS[@]}; i++)); do
+    if [[ "${ORIGINAL_ARGS[i]}" == "--memo" && $((i+1)) -le ${#ORIGINAL_ARGS[@]} ]]; then
+        MEMO_MODEL="${ORIGINAL_ARGS[$((i+1))]}"
+    elif [[ "${ORIGINAL_ARGS[i]}" == "--llm" && $((i+1)) -le ${#ORIGINAL_ARGS[@]} ]]; then
+        MAIN_LLM_MODEL="${ORIGINAL_ARGS[$((i+1))]}"
+    fi
+done
+
+# Function to check if LM Studio is running and get loaded models
+check_lmstudio_models() {
+    local port=$1
+    if curl -s --connect-timeout 3 "http://localhost:$port/v1/models" 2>/dev/null | grep -q "object.*list"; then
+        curl -s "http://localhost:$port/v1/models" | grep -o '"id":"[^"]*"' | sed 's/"id":"//g' | sed 's/"//g'
+    else
+        echo ""
+    fi
+}
+
+# Function to load model in LM Studio headless
+load_model_headless() {
+    local model_name=$1
+    local port=$2
+    
+    echo "🚀 Starting LM Studio headless for model: $model_name on port $port"
+    
+    # Check if LM Studio CLI is available
+    if ! command -v lms >/dev/null 2>&1; then
+        echo "❌ LM Studio CLI (lms) not found - cannot auto-load models"
+        echo "💡 Install LM Studio CLI or manually load the model"
+        return 1
+    fi
+    
+    # Start LM Studio server headless with specific model
+    echo "📦 Loading $model_name on port $port..."
+    lms server start --port "$port" --model "$model_name" --headless &
+    
+    # Wait for server to start
+    echo "⏳ Waiting for model to load..."
+    local retries=0
+    while [ $retries -lt 30 ]; do
+        if curl -s --connect-timeout 2 "http://localhost:$port/v1/models" >/dev/null 2>&1; then
+            echo "✅ Model $model_name loaded successfully on port $port"
+            return 0
+        fi
+        sleep 2
+        retries=$((retries + 1))
+        echo "   Retry $retries/30..."
+    done
+    
+    echo "❌ Failed to load model $model_name on port $port"
+    return 1
+}
+
+# Check main LM Studio instance
+echo "🔍 Checking main LM Studio instance on port $MAIN_PORT..."
+MAIN_MODELS=$(check_lmstudio_models $MAIN_PORT)
+if [ -n "$MAIN_MODELS" ]; then
+    echo "✅ Main LM Studio running with models:"
+    echo "$MAIN_MODELS" | sed 's/^/   - /'
+    
+    # Check if specified main model is loaded
+    if [ -n "$MAIN_LLM_MODEL" ]; then
+        if echo "$MAIN_MODELS" | grep -q "$MAIN_LLM_MODEL"; then
+            echo "✅ Main model '$MAIN_LLM_MODEL' is already loaded"
+        else
+            echo "⚠️ Main model '$MAIN_LLM_MODEL' not loaded, but LM Studio is running"
+            echo "💡 You may need to manually switch to the desired model"
+        fi
+    fi
+else
+    echo "❌ Main LM Studio not running on port $MAIN_PORT"
+    echo "💡 Please start LM Studio and load your main conversation model"
+fi
+
+# Check memo model if specified
+if [ -n "$MEMO_MODEL" ]; then
+    echo ""
+    echo "🧠 Checking memo model: $MEMO_MODEL"
+    
+    # First check if it's already loaded on main port
+    if echo "$MAIN_MODELS" | grep -q "$MEMO_MODEL"; then
+        echo "✅ Memo model '$MEMO_MODEL' found on main LM Studio instance"
+        echo "💡 Will use main instance for both conversation and memory"
+    else
+        # Check memo port
+        echo "🔍 Checking dedicated memo port $MEMO_PORT..."
+        MEMO_MODELS=$(check_lmstudio_models $MEMO_PORT)
+        
+        if [ -n "$MEMO_MODELS" ]; then
+            echo "✅ LM Studio running on memo port $MEMO_PORT with models:"
+            echo "$MEMO_MODELS" | sed 's/^/   - /'
+            
+            if echo "$MEMO_MODELS" | grep -q "$MEMO_MODEL"; then
+                echo "✅ Memo model '$MEMO_MODEL' is already loaded on port $MEMO_PORT"
+                # Set memo model URL for use in MemoBase config
+                export MEMO_LLM_BASE_URL="http://localhost:$MEMO_PORT/v1"
+                echo "🔗 Set MEMO_LLM_BASE_URL=$MEMO_LLM_BASE_URL"
+            else
+                echo "⚠️ Memo model '$MEMO_MODEL' not found on port $MEMO_PORT"
+                echo "💡 Available models don't include the requested memo model"
+            fi
+        else
+            echo "🚀 No LM Studio instance on memo port $MEMO_PORT"
+            echo "🤖 Attempting to auto-load memo model..."
+            
+            # Try to load memo model headless
+            if load_model_headless "$MEMO_MODEL" "$MEMO_PORT"; then
+                echo "✅ Memo model auto-loaded successfully"
+                # Update environment for MemoBase to use memo port
+                export MEMO_LLM_BASE_URL="http://localhost:$MEMO_PORT/v1"
+                echo "🔗 Set MEMO_LLM_BASE_URL=$MEMO_LLM_BASE_URL"
+            else
+                echo "❌ Failed to auto-load memo model"
+                echo "💡 Will fall back to using main LM Studio instance"
+            fi
+        fi
+    fi
+else
+    echo "🧠 No separate memo model specified - using main LLM for memory operations"
+fi
+
+echo ""
+echo "🚀 Model configuration complete"
+
 # Check if MemoBase is enabled and setup external memory service
 ENABLE_MEMOBASE=${ENABLE_MEMOBASE:-false}
 
@@ -252,12 +390,19 @@ except:
             # Convert localhost to host.docker.internal for container networking
             DOCKER_LLM_URL=$(echo "${OPENAI_BASE_URL:-http://localhost:1234/v1}" | sed 's/localhost/host.docker.internal/g')
             
+            # Use memo model URL if available, otherwise use main LLM URL
+            MEMO_LLM_URL=${MEMO_LLM_BASE_URL:-$DOCKER_LLM_URL}
+            MEMO_LLM_URL=$(echo "$MEMO_LLM_URL" | sed 's/localhost/host.docker.internal/g')
+            
+            # Use memo model name if specified, otherwise use default
+            MEMO_MODEL_NAME=${MEMO_MODEL:-${DEFAULT_LLM_MODEL:-qwen2.5-7b-instruct}}
+            
             cat > ./data/memobase/env.list << EOF
 # MemoBase environment variables with database configuration
 MEMOBASE_API_KEY=$MEMOBASE_API_KEY
 llm_api_key=lm-studio
-llm_base_url=$DOCKER_LLM_URL
-best_llm_model=${DEFAULT_LLM_MODEL:-qwen2.5:7b}
+llm_base_url=$MEMO_LLM_URL
+best_llm_model=$MEMO_MODEL_NAME
 language=en
 
 # Database configuration
@@ -277,17 +422,17 @@ EOF
             # Create simple config.yaml for MemoBase (following Ollama pattern)
             cat > ./data/memobase/config.yaml << EOF
 # MemoBase Configuration - LM Studio Local Setup (based on Ollama example)
-max_chat_blob_buffer_token_size: 512
-buffer_flush_interval: 3600
+max_chat_blob_buffer_token_size: 50
+buffer_flush_interval: 10
 
 llm_api_key: lm-studio
-llm_base_url: $DOCKER_LLM_URL
-best_llm_model: ${DEFAULT_LLM_MODEL:-qwen2.5-7b-instruct}
+llm_base_url: $MEMO_LLM_URL
+best_llm_model: $MEMO_MODEL_NAME
 
 # Embedding configuration for LM Studio (768 dimensions)
 embedding_provider: openai
 embedding_api_key: lm-studio
-embedding_base_url: $DOCKER_LLM_URL
+embedding_base_url: $MEMO_LLM_URL
 embedding_dim: 768
 embedding_model: text-embedding-nomic-embed-text-v1.5
 
@@ -452,7 +597,142 @@ else
     echo "🤖 MCP integration disabled - using local tools only"
 fi
 
-# Run the bot with all arguments passed through
+# LM Studio Model Management - Auto-load memo model if specified
+echo ""
+echo "📊 LM Studio Model Management"
+
+# Parse arguments to extract memo model (preserve original args)
+MEMO_MODEL=""
+MAIN_LLM_MODEL=""
+MEMO_PORT="1235"  # Default port for memory model
+MAIN_PORT="1234"  # Default port for main model
+
+# Store original arguments
+ORIGINAL_ARGS=("$@")
+
+# Parse command line arguments to extract models
+for ((i=1; i<=${#ORIGINAL_ARGS[@]}; i++)); do
+    if [[ "${ORIGINAL_ARGS[i]}" == "--memo" && $((i+1)) -le ${#ORIGINAL_ARGS[@]} ]]; then
+        MEMO_MODEL="${ORIGINAL_ARGS[$((i+1))]}"
+    elif [[ "${ORIGINAL_ARGS[i]}" == "--llm" && $((i+1)) -le ${#ORIGINAL_ARGS[@]} ]]; then
+        MAIN_LLM_MODEL="${ORIGINAL_ARGS[$((i+1))]}"
+    fi
+done
+
+# Function to check if LM Studio is running and get loaded models
+check_lmstudio_models() {
+    local port=$1
+    if curl -s --connect-timeout 3 "http://localhost:$port/v1/models" 2>/dev/null | grep -q "object.*list"; then
+        curl -s "http://localhost:$port/v1/models" | grep -o '"id":"[^"]*"' | sed 's/"id":"//g' | sed 's/"//g'
+    else
+        echo ""
+    fi
+}
+
+# Function to load model in LM Studio headless
+load_model_headless() {
+    local model_name=$1
+    local port=$2
+    
+    echo "🚀 Starting LM Studio headless for model: $model_name on port $port"
+    
+    # Check if LM Studio CLI is available
+    if ! command -v lms >/dev/null 2>&1; then
+        echo "❌ LM Studio CLI (lms) not found - cannot auto-load models"
+        echo "💡 Install LM Studio CLI or manually load the model"
+        return 1
+    fi
+    
+    # Start LM Studio server headless with specific model
+    echo "📦 Loading $model_name on port $port..."
+    lms server start --port "$port" --model "$model_name" --headless &
+    
+    # Wait for server to start
+    echo "⏳ Waiting for model to load..."
+    local retries=0
+    while [ $retries -lt 30 ]; do
+        if curl -s --connect-timeout 2 "http://localhost:$port/v1/models" >/dev/null 2>&1; then
+            echo "✅ Model $model_name loaded successfully on port $port"
+            return 0
+        fi
+        sleep 2
+        retries=$((retries + 1))
+        echo "   Retry $retries/30..."
+    done
+    
+    echo "❌ Failed to load model $model_name on port $port"
+    return 1
+}
+
+# Check main LM Studio instance
+echo "🔍 Checking main LM Studio instance on port $MAIN_PORT..."
+MAIN_MODELS=$(check_lmstudio_models $MAIN_PORT)
+if [ -n "$MAIN_MODELS" ]; then
+    echo "✅ Main LM Studio running with models:"
+    echo "$MAIN_MODELS" | sed 's/^/   - /'
+    
+    # Check if specified main model is loaded
+    if [ -n "$MAIN_LLM_MODEL" ]; then
+        if echo "$MAIN_MODELS" | grep -q "$MAIN_LLM_MODEL"; then
+            echo "✅ Main model '$MAIN_LLM_MODEL' is already loaded"
+        else
+            echo "⚠️ Main model '$MAIN_LLM_MODEL' not loaded, but LM Studio is running"
+            echo "💡 You may need to manually switch to the desired model"
+        fi
+    fi
+else
+    echo "❌ Main LM Studio not running on port $MAIN_PORT"
+    echo "💡 Please start LM Studio and load your main conversation model"
+fi
+
+# Check memo model if specified
+if [ -n "$MEMO_MODEL" ]; then
+    echo ""
+    echo "🧠 Checking memo model: $MEMO_MODEL"
+    
+    # First check if it's already loaded on main port
+    if echo "$MAIN_MODELS" | grep -q "$MEMO_MODEL"; then
+        echo "✅ Memo model '$MEMO_MODEL' found on main LM Studio instance"
+        echo "💡 Will use main instance for both conversation and memory"
+    else
+        # Check memo port
+        echo "🔍 Checking dedicated memo port $MEMO_PORT..."
+        MEMO_MODELS=$(check_lmstudio_models $MEMO_PORT)
+        
+        if [ -n "$MEMO_MODELS" ]; then
+            echo "✅ LM Studio running on memo port $MEMO_PORT with models:"
+            echo "$MEMO_MODELS" | sed 's/^/   - /'
+            
+            if echo "$MEMO_MODELS" | grep -q "$MEMO_MODEL"; then
+                echo "✅ Memo model '$MEMO_MODEL' is already loaded on port $MEMO_PORT"
+            else
+                echo "⚠️ Memo model '$MEMO_MODEL' not found on port $MEMO_PORT"
+                echo "💡 Available models don't include the requested memo model"
+            fi
+        else
+            echo "🚀 No LM Studio instance on memo port $MEMO_PORT"
+            echo "🤖 Attempting to auto-load memo model..."
+            
+            # Try to load memo model headless
+            if load_model_headless "$MEMO_MODEL" "$MEMO_PORT"; then
+                echo "✅ Memo model auto-loaded successfully"
+                # Update environment for MemoBase to use memo port
+                export MEMO_LLM_BASE_URL="http://localhost:$MEMO_PORT/v1"
+                echo "🔗 Set MEMO_LLM_BASE_URL=$MEMO_LLM_BASE_URL"
+            else
+                echo "❌ Failed to auto-load memo model"
+                echo "💡 Will fall back to using main LM Studio instance"
+            fi
+        fi
+    fi
+else
+    echo "🧠 No separate memo model specified - using main LLM for memory operations"
+fi
+
+echo ""
+echo "🚀 Model configuration complete - starting bot..."
+
+# Run the bot with all original arguments passed through
 echo "Starting bot with environment fixes..."
-echo "Arguments: $@"
-python bot_v2.py "$@"
+echo "Arguments: ${ORIGINAL_ARGS[*]}"
+python bot_v2.py "${ORIGINAL_ARGS[@]}"
