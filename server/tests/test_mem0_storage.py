@@ -55,7 +55,7 @@ def test_memory_storage():
         
         # Add some test conversations
         test_conversations = [
-            "User said: 'My dog's name is Potola' and I responded: 'That's a wonderful name for a dog!'",
+            "User said: 'My dog's name is Bobby' and I responded: 'That's a wonderful name for a dog!'",
             "User said: 'She is five years old' and I responded: 'That's awesome! Five years old - she must be full of energy!'",
             "User said: 'I live in Serramanna' and I responded: 'Serramanna sounds like a beautiful place!'"
         ]
@@ -69,7 +69,7 @@ def test_memory_storage():
                 print(f"❌ Failed to add memory {i}: {e}")
         
         print("\n🔍 Testing searches...")
-        test_searches = ["Potola", "dog", "five years", "Serramanna"]
+        test_searches = ["Bobby", "dog", "five years", "Serramanna"]
         
         for query in test_searches:
             try:
@@ -109,7 +109,7 @@ if __name__ == "__main__":
     
     if success:
         print("\n✅ Mem0 storage is working!")
-        print("💡 Now try talking to your voice agent about Potola")
+        print("💡 Now try talking to your voice agent about Bobby")
     else:
         print("\n❌ Mem0 storage test failed")
         print("💡 Check that LM Studio is running with both models loaded")

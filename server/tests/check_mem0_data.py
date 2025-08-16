@@ -85,7 +85,7 @@ def check_mem0_data():
         
         # Test search functionality
         print("\n🔍 Testing memory search...")
-        search_queries = ["Potola", "dog", "name", "five", "years"]
+        search_queries = ["Bobby", "dog", "name", "five", "years"]
         
         for query in search_queries:
             try:

@@ -88,7 +88,7 @@ def check_memories_simple():
                             print(f"{i}. {content}")
                             
                             # Check for dog name specifically
-                            if any(word in content.lower() for word in ['potola', 'dog', 'pet']):
+                            if any(word in content.lower() for word in ['Bobby', 'dog', 'pet']):
                                 print(f"   🐕 DOG INFO FOUND: {content}")
                         else:
                             print(f"{i}. {str(memory_item)}")
@@ -103,7 +103,7 @@ def check_memories_simple():
             
             # Try searching for dog-related info
             print("\n🔍 Searching for dog-related memories...")
-            search_terms = ["Potola", "dog", "pet", "name", "five", "years"]
+            search_terms = ["Bobby", "dog", "pet", "name", "five", "years"]
             
             for term in search_terms:
                 try:

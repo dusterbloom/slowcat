@@ -36,7 +36,7 @@ def test_memory_compression():
     # Memory
     Unless the user has relevant queries, do not actively mention those memories in the conversation.
     ## User Current Profile:
-    - interest::pet: user has a dog named Potola [mention 2025/08/15]; the dog is orangey, five years old, and very active [mention 2025/08/15]; the dog weighs around six to seven kilos [mention 2025/08/15]; the dog sometimes goes lethargic [mention 2025/08/15]; the dog is sleeping because it's very late [mention 2025/08/15];user has a dog named [mention 2025/08/16]
+    - interest::pet: user has a dog named Bobby [mention 2025/08/15]; the dog is orangey, five years old, and very active [mention 2025/08/15]; the dog weighs around six to seven kilos [mention 2025/08/15]; the dog sometimes goes lethargic [mention 2025/08/15]; the dog is sleeping because it's very late [mention 2025/08/15];user has a dog named [mention 2025/08/16]
     - life_event::thinking: user was thinking about life in general.[mention 2025/08/15]
     - interest::movie: user was frustrated about a movie.[mention 2025/08/15]
     - preference::food: user likes Italian food and pasta dishes [mention 2025/08/15]
@@ -53,7 +53,7 @@ def test_memory_compression():
     - user was frustrated about a movie.[mention 2025/08/15] // event
     - user was thinking about life in general.[mention 2025/08/15] // event
     - user mentioned her dog is very active. [mention 2025/08/15, dog is very active in 2025/08/15]
-    - user mentioned her dog's name is Potola. [mention 2025/08/15, dog named Potola in 2025/08/15]
+    - user mentioned her dog's name is Bobby. [mention 2025/08/15, dog named Bobby in 2025/08/15]
     - user mentioned her dog is orangey and five years old. [mention 2025/08/15, dog is five years old in 2025/08/15]
     - user mentioned her dog weighs around six to seven kilos. [mention 2025/08/15, dog weighs around six to seven kilos in 2025/08/15]
     - user discussed cooking pasta with tomato sauce last week [mention 2025/08/08]
@@ -105,7 +105,7 @@ def test_memory_compression():
         assert compressed_tokens <= processor.max_token_limit, f"Compressed memory still too large: {compressed_tokens} > {processor.max_token_limit}"
         
         # Should preserve important information (recent dates, names)
-        assert "Potola" in compressed, "Dog name should be preserved"
+        assert "Bobby" in compressed, "Dog name should be preserved"
         assert "2025" in compressed, "Recent dates should be preserved"
         
         print("\n✅ Memory compression tests passed!")
