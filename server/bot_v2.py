@@ -128,8 +128,8 @@ def setup_ollama_memobase():
     models = response.json().get('models', [])
     model_names = [model['name'] for model in models]
     
-    # Check for memory LLM model
-    memory_model = "llama3.2:1b"
+    # Check for memory LLM model from environment
+    memory_model = os.getenv('MEMOBASE_LLM_MODEL', 'llama3.2:1b')
     if not any(memory_model in name for name in model_names):
         logger.info(f"📦 Pulling memory model: {memory_model}")
         try:
@@ -147,8 +147,8 @@ def setup_ollama_memobase():
     else:
         logger.info(f"✅ Memory model {memory_model} already available")
     
-    # Check for embedding model
-    embedding_model = "nomic-embed-text"
+    # Check for embedding model from environment
+    embedding_model = os.getenv('MEMOBASE_EMBEDDING_MODEL', 'nomic-embed-text')
     if not any(embedding_model in name for name in model_names):
         logger.info(f"📦 Pulling embedding model: {embedding_model}")
         try:
@@ -164,6 +164,7 @@ def setup_ollama_memobase():
         logger.info(f"✅ Embedding model {embedding_model} already available")
     
     # Set environment variables for MemoBase to use Ollama
+    os.environ['ENABLE_MEMOBASE'] = "true"  # CRITICAL: Enable MemoBase!
     os.environ['MEMOBASE_LLM_BASE_URL'] = "http://localhost:11434/v1"
     os.environ['MEMOBASE_LLM_MODEL'] = memory_model
     os.environ['MEMOBASE_LLM_API_KEY'] = "not-needed"

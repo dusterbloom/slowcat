@@ -284,7 +284,7 @@ if [ "$USE_OLLAMA_MEMO" = "true" ]; then
     ollama list | tail -n +2 | awk '{print "   - " $1}'
     
     # Check for recommended models
-    MEMORY_MODEL="llama3.2:1b"
+    MEMORY_MODEL="${MEMOBASE_LLM_MODEL:-llama3.2:1b}"
     if ollama list | grep -q "$MEMORY_MODEL"; then
         echo "✅ Memory model '$MEMORY_MODEL' found"
     else
@@ -303,7 +303,7 @@ if [ "$USE_OLLAMA_MEMO" = "true" ]; then
         fi
     fi
     
-    EMBEDDING_MODEL_OLLAMA="nomic-embed-text"
+    EMBEDDING_MODEL_OLLAMA="${MEMOBASE_EMBEDDING_MODEL:-nomic-embed-text}"
     if ollama list | grep -q "$EMBEDDING_MODEL_OLLAMA"; then
         echo "✅ Embedding model '$EMBEDDING_MODEL_OLLAMA' found"
     else
@@ -317,6 +317,7 @@ if [ "$USE_OLLAMA_MEMO" = "true" ]; then
     fi
     
     # Set environment variables for MemoBase to use Ollama
+    export ENABLE_MEMOBASE="true"  # CRITICAL: Enable MemoBase!
     export MEMOBASE_LLM_BASE_URL="http://localhost:11434/v1"
     export MEMOBASE_LLM_MODEL="$MEMORY_MODEL"
     export MEMOBASE_LLM_API_KEY="not-needed"

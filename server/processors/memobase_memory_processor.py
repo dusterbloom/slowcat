@@ -1,10 +1,19 @@
 import asyncio
 import os
 import sys
+import hashlib
+import json
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import re
+
+try:
+    import redis.asyncio as redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
 
 # Add parent directory to path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -67,6 +76,22 @@ class MemobaseMemoryProcessor(FrameProcessor):
         self._conversation_buffer: List[Dict[str, str]] = []
         self._buffer_token_count = 0
         self._lock = asyncio.Lock()
+        
+        # Redis-based memory caching and injection tracking
+        self._redis_client = None
+        self._cache_ttl = 300  # 5 minutes TTL for memory cache
+        self._injection_cache = {}  # Fallback for when Redis unavailable
+        
+        # Initialize Redis connection if available
+        if REDIS_AVAILABLE:
+            try:
+                self._redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+                logger.info("🔗 Redis connection initialized for MemoBase caching")
+            except Exception as e:
+                logger.warning(f"⚠️ Redis connection failed, using in-memory cache: {e}")
+                self._redis_client = None
+        else:
+            logger.warning("⚠️ Redis not available, using in-memory cache")
         
         # MemoBase clients - hybrid approach
         self.mb_client: Optional[Any] = None
@@ -159,6 +184,96 @@ class MemobaseMemoryProcessor(FrameProcessor):
         """Rough token estimation (1 token ≈ 4 characters for English)"""
         return len(text) // 4
     
+    def _generate_cache_key(self, user_message: str, cache_type: str = "memory") -> str:
+        """Generate cache key for Redis storage"""
+        # Skip caching for very short or unclear queries
+        if len(user_message.strip()) <= 3 or user_message.strip() in ['?', '??', '...', 'hmm', 'ok']:
+            # Return a unique key that won't match anything to force fresh retrieval
+            return f"memobase:{cache_type}:{self.user_id}:no_cache_{int(time.time())}"
+        
+        message_hash = hashlib.md5(user_message.encode()).hexdigest()[:12]
+        return f"memobase:{cache_type}:{self.user_id}:{message_hash}"
+    
+    def _generate_injection_key(self) -> str:
+        """Generate injection tracking key for Redis"""
+        return f"memobase:injection:{self.user_id}"
+    
+    async def _get_cached_memory(self, user_message: str) -> Optional[str]:
+        """Get cached memory context from Redis"""
+        if not self._redis_client:
+            # Fallback to in-memory cache
+            cache_key = self._generate_cache_key(user_message)
+            return self._injection_cache.get(cache_key)
+        
+        try:
+            cache_key = self._generate_cache_key(user_message)
+            cached_data = await self._redis_client.get(cache_key)
+            if cached_data:
+                data = json.loads(cached_data)
+                logger.debug(f"🎯 Cache hit for memory context: {cache_key}")
+                return data.get('memory_context')
+        except Exception as e:
+            logger.warning(f"⚠️ Redis cache read failed: {e}")
+        
+        return None
+    
+    async def _cache_memory(self, user_message: str, memory_context: str):
+        """Cache memory context in Redis with TTL"""
+        if not self._redis_client:
+            # Fallback to in-memory cache (limited size)
+            cache_key = self._generate_cache_key(user_message)
+            self._injection_cache[cache_key] = memory_context
+            # Keep only last 10 entries to prevent memory bloat
+            if len(self._injection_cache) > 10:
+                oldest_key = next(iter(self._injection_cache))
+                del self._injection_cache[oldest_key]
+            return
+        
+        try:
+            cache_key = self._generate_cache_key(user_message)
+            cache_data = {
+                'memory_context': memory_context,
+                'timestamp': time.time(),
+                'user_id': self.user_id
+            }
+            await self._redis_client.setex(cache_key, self._cache_ttl, json.dumps(cache_data))
+            logger.debug(f"💾 Cached memory context: {cache_key}")
+        except Exception as e:
+            logger.warning(f"⚠️ Redis cache write failed: {e}")
+    
+    async def _should_inject_memory(self, user_message: str) -> bool:
+        """Check if memory should be injected (prevent duplicates)"""
+        if not self._redis_client:
+            # Simple in-memory duplicate prevention
+            return user_message != getattr(self, '_last_user_message', None)
+        
+        try:
+            injection_key = self._generate_injection_key()
+            last_injection_data = await self._redis_client.get(injection_key)
+            
+            if last_injection_data:
+                data = json.loads(last_injection_data)
+                last_message = data.get('last_message')
+                last_time = data.get('timestamp', 0)
+                
+                # Don't inject if same message within 30 seconds
+                if last_message == user_message and (time.time() - last_time) < 30:
+                    logger.debug(f"🚫 Skipping duplicate memory injection for: {user_message[:30]}...")
+                    return False
+            
+            # Update injection tracking
+            injection_data = {
+                'last_message': user_message,
+                'timestamp': time.time(),
+                'user_id': self.user_id
+            }
+            await self._redis_client.setex(injection_key, 60, json.dumps(injection_data))  # 1 minute TTL
+            return True
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Redis injection tracking failed: {e}")
+            return True  # Default to allowing injection if Redis fails
+    
     async def _check_and_flush_buffer(self):
         """Check if buffer needs flushing based on token count"""
         if self._buffer_token_count >= self.auto_flush_threshold:
@@ -184,20 +299,22 @@ class MemobaseMemoryProcessor(FrameProcessor):
             })
             self._buffer_token_count += content_tokens
             
-        # Auto-flush if buffer is getting large
-        await self._check_and_flush_buffer()
+        # Auto-flush if buffer is getting large (async, non-blocking)
+        asyncio.create_task(self._check_and_flush_buffer())
             
-        # Store individual messages in MemoBase immediately
+        # Store individual messages in MemoBase immediately (BLOCKING to ensure storage)
         try:
             await self._store_message_in_memobase(role, content)
         except Exception as e:
-            logger.error(f"❌ Failed to store message in MemoBase: {e}")
+            logger.error(f"❌ Critical: Failed to store message in MemoBase: {e}")
+            # Continue execution even if storage fails
             
         logger.info(f"🧠 Added to MemoBase: {role} - {content[:50]}... ({content_tokens} tokens, buffer: {self._buffer_token_count})")
 
     async def _store_message_in_memobase(self, role: str, content: str):
-        """Store a single message in MemoBase using the patched client."""
+        """Store a single message in MemoBase using the patched client - BLOCKING to ensure storage."""
         if not self.patched_sync_client:
+            logger.warning(f"⚠️ No patched sync client available for storing {role} message")
             return
             
         try:
@@ -210,16 +327,25 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 ]
                 
                 # Use the patched client to make a minimal call that triggers MemoBase storage
-                logger.debug(f"🔍 Storing {role} message with user_id: {self.user_id}")
-                await asyncio.to_thread(
-                    self.patched_sync_client.chat.completions.create,
-                    model=getattr(self, 'memory_model', config.models.default_llm_model),
-                    messages=messages,
-                    user_id=self.user_id,
-                    max_tokens=1,  # Minimal response 
-                    temperature=0.0  # Deterministic
-                )
-                logger.debug(f"🧠 Stored {role} message in MemoBase: {content[:30]}...")
+                logger.info(f"🔍 Storing {role} message with user_id: {self.user_id}")
+                
+                try:
+                    # CRITICAL FIX: Make this blocking to ensure storage happens
+                    await asyncio.to_thread(
+                        self.patched_sync_client.chat.completions.create,
+                        model=getattr(self, 'memory_model', config.models.default_llm_model),
+                        messages=messages,
+                        user_id=self.user_id,
+                        max_tokens=1,  # Minimal response 
+                        temperature=0.0  # Deterministic
+                    )
+                    logger.info(f"✅ Successfully stored {role} message in MemoBase: {content[:30]}...")
+                except Exception as e:
+                    logger.error(f"❌ Failed to store {role} message in MemoBase: {e}")
+                    logger.error(f"   Model: {getattr(self, 'memory_model', 'unknown')}")
+                    logger.error(f"   User ID: {self.user_id}")
+                    logger.error(f"   Error details: {str(e)}")
+                    raise
             
             # For assistant messages, we'll use a different approach 
             # since MemoBase expects user+assistant pairs
@@ -233,24 +359,80 @@ class MemobaseMemoryProcessor(FrameProcessor):
                         {"role": "assistant", "content": content}
                     ]
                     
-                    # Store the conversation pair
-                    logger.debug(f"🔍 Storing conversation pair with user_id: {self.user_id}")
-                    await asyncio.to_thread(
-                        self.patched_sync_client.chat.completions.create,
-                        model=getattr(self, 'memory_model', config.models.default_llm_model),
-                        messages=messages,
-                        user_id=self.user_id,
-                        max_tokens=1,
-                        temperature=0.0
-                    )
-                    logger.debug(f"🧠 Stored conversation pair in MemoBase: user+assistant")
+                    logger.info(f"🔍 Storing conversation pair with user_id: {self.user_id}")
+                    try:
+                        # CRITICAL FIX: Make this blocking to ensure storage happens
+                        await asyncio.to_thread(
+                            self.patched_sync_client.chat.completions.create,
+                            model=getattr(self, 'memory_model', config.models.default_llm_model),
+                            messages=messages,
+                            user_id=self.user_id,
+                            max_tokens=1,
+                            temperature=0.0
+                        )
+                        logger.info(f"✅ Successfully stored conversation pair in MemoBase")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to store conversation pair in MemoBase: {e}")
+                        logger.error(f"   Model: {getattr(self, 'memory_model', 'unknown')}")
+                        logger.error(f"   User ID: {self.user_id}")
+                        logger.error(f"   Error details: {str(e)}")
+                        raise
+                else:
+                    logger.warning(f"⚠️ No recent user message found to pair with assistant message")
                     
         except Exception as e:
             logger.error(f"❌ Failed to store {role} message in MemoBase: {e}")
-            logger.error(f"❌ Error details: {str(e)}")
+            # Don't re-raise here to avoid breaking the pipeline
+
+    def _deduplicate_memory_content(self, memory_prompt: str) -> str:
+        """Remove duplicate content blocks from memory while preserving user aliases"""
+        if not memory_prompt or not memory_prompt.strip():
+            return memory_prompt
+            
+        lines = memory_prompt.split('\n')
+        seen_content = set()
+        deduplicated_lines = []
+        
+        # Track different types of content
+        user_alias_patterns = [r'User\'s alias:', r'User alias:', r'Speaker:', r'Name:']
+        important_patterns = [r'important', r'preference', r'name', r'alias']
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                deduplicated_lines.append(line)
+                continue
+                
+            # Always preserve user alias information (critical for voice recognition)
+            if any(re.search(pattern, line, re.IGNORECASE) for pattern in user_alias_patterns):
+                if line not in deduplicated_lines:  # Avoid exact duplicates
+                    deduplicated_lines.append(line)
+                    logger.debug(f"🏷️ Preserving user alias: {line[:50]}...")
+                continue
+                
+            # For other content, check for semantic duplicates
+            content_hash = hashlib.md5(line_stripped.lower().encode()).hexdigest()
+            
+            if content_hash not in seen_content:
+                seen_content.add(content_hash)
+                deduplicated_lines.append(line)
+            else:
+                logger.debug(f"🗑️ Removing duplicate content: {line[:50]}...")
+        
+        deduplicated = '\n'.join(deduplicated_lines)
+        original_tokens = self._estimate_tokens(memory_prompt)
+        deduplicated_tokens = self._estimate_tokens(deduplicated)
+        
+        if deduplicated_tokens < original_tokens:
+            logger.info(f"🔄 Deduplicated memory: {original_tokens} → {deduplicated_tokens} tokens ({original_tokens - deduplicated_tokens} saved)")
+        
+        return deduplicated
 
     def _compress_memory_content(self, memory_prompt: str) -> str:
         """Compress memory content when it exceeds token limits"""
+        # First apply deduplication
+        memory_prompt = self._deduplicate_memory_content(memory_prompt)
+        
         if not self.enable_compression:
             return memory_prompt
             
@@ -268,10 +450,10 @@ class MemobaseMemoryProcessor(FrameProcessor):
         compressed_lines = []
         char_count = 0
         
-        # Prioritize lines with recent dates and important keywords
-        priority_patterns = [r'2025', r'today', r'recently', r'important', r'name', r'preference']
+        # Prioritize lines with recent dates, important keywords, and user aliases
+        priority_patterns = [r'2025', r'today', r'recently', r'important', r'name', r'preference', r'alias', r'speaker']
         
-        # First pass: high priority lines
+        # First pass: high priority lines (including user aliases)
         for line in lines:
             if any(re.search(pattern, line, re.IGNORECASE) for pattern in priority_patterns):
                 if char_count + len(line) <= target_chars:
@@ -288,66 +470,113 @@ class MemobaseMemoryProcessor(FrameProcessor):
         logger.info(f"🗜️ Compressed memory from {current_tokens} to {self._estimate_tokens(compressed)} tokens")
         return compressed
     
+    def _fix_memory_instructions(self, memory_content: str) -> str:
+        """Fix memory instructions to be helpful instead of restrictive"""
+        return memory_content.replace(
+            "Unless the user has relevant queries, do not actively mention those memories in the conversation.",
+            "When users ask about information in your memory, provide helpful answers using that information."
+        )
+    
     async def _get_contextual_memory(self, user_message: str) -> Optional[str]:
-        """Get contextual memory using MemoBase's context() API with relevance filtering"""
-        if not self.patched_sync_client or not hasattr(self.patched_sync_client, 'context'):
-            # Fallback to old method
-            return await asyncio.to_thread(
-                self.patched_sync_client.get_memory_prompt,
-                self.user_id
-            )
-            
+        """Get contextual memory using MemoBase's User.context() API with proper temporal filtering"""
         try:
-            # Use MemoBase context API for targeted memory retrieval
-            context_params = {
-                'user_id': self.user_id,
-                'max_tokens': min(self.max_context_size, self.max_token_limit),
-                'query': user_message  # Use current message for relevance
-            }
+            # Import MemoBase utilities
+            from memobase.utils import string_to_uuid
+            from memobase import MemoBaseClient
             
-            if self.enable_relevance_filtering:
-                context_params['threshold'] = self.relevance_threshold
-                
-            memory_context = await asyncio.to_thread(
-                self.patched_sync_client.context,
-                **context_params
+            # Get MemoBase client and user
+            mb_client = MemoBaseClient(
+                project_url=config.memobase.project_url,
+                api_key=config.memobase.api_key
             )
             
+            uuid_for_user = string_to_uuid(self.user_id)
+            user = mb_client.get_user(uuid_for_user, no_get=True)
+            
+            # CRITICAL DEBUG: Log the actual user_id being used
+            logger.error(f"🔍 CRITICAL DEBUG - Using user_id: '{self.user_id}' -> UUID: {uuid_for_user}")
+            logger.error(f"🔍 Expected UUID for 'default_user': {string_to_uuid('default_user')}")
+            
+            # Use the proper context() API with temporal-friendly parameters
+            memory_context = await asyncio.to_thread(
+                user.context,
+                max_token_size=min(self.max_context_size, self.max_token_limit),
+                chats=[{"role": "user", "content": user_message}],  # Context-aware retrieval
+                event_similarity_threshold=0.1,  # Very low threshold for maximum recall
+                fill_window_with_events=True,  # Fill remaining space with events
+                profile_event_ratio=0.9,  # 90% profile, 10% events - prioritize profile data
+                require_event_summary=False  # Don't require event summaries to save space
+            )
+            
+            logger.error(f"🧠 Retrieved memory length: {len(memory_context)} chars")
+            logger.error(f"🐕 Contains dog info: {'Bobby' in memory_context.lower() or 'dog' in memory_context.lower()}")
             return memory_context
             
         except Exception as e:
-            logger.warning(f"⚠️ Context API failed, falling back to get_memory_prompt: {e}")
+            logger.warning(f"⚠️ User.context() API failed, falling back to patched client: {e}")
+            
+            # Fallback to patched client method
+            if not self.patched_sync_client:
+                return None
+                
             return await asyncio.to_thread(
                 self.patched_sync_client.get_memory_prompt,
                 self.user_id
             )
     
     async def _inject_memory_context(self, context, user_message: str):
-        """Retrieve relevant memories from MemoBase and inject into context with smart compression."""
+        """Retrieve relevant memories from MemoBase and inject into context with smart compression and Redis caching."""
         if not self.is_enabled or not self.patched_sync_client:
+            return
+        
+        # Check if we should inject memory (prevent duplicates)
+        if not await self._should_inject_memory(user_message):
             return
             
         try:
-            # Get contextual memory
-            logger.debug(f"🔍 Retrieving contextual memory for user_id: {self.user_id}")
-            memory_prompt = await self._get_contextual_memory(user_message)
-            logger.debug(f"🔍 Raw memory prompt: {repr(memory_prompt)[:200]}...")
+            # Try to get cached memory first
+            cached_memory = await self._get_cached_memory(user_message)
             
-            if memory_prompt and memory_prompt.strip():
+            if cached_memory:
+                logger.debug(f"🎯 Using cached memory for: {user_message[:30]}...")
+                compressed_memory = cached_memory
+            else:
+                # Get fresh memory from MemoBase
+                logger.debug(f"🔍 Retrieving fresh memory for user_id: {self.user_id}")
+                memory_prompt = await self._get_contextual_memory(user_message)
+                logger.debug(f"🔍 Raw memory prompt: {repr(memory_prompt)[:200]}...")
+                
+                if not memory_prompt or not memory_prompt.strip():
+                    return
+                
                 # Apply compression if needed
                 compressed_memory = self._compress_memory_content(memory_prompt)
                 
-                # Insert memory context before the last user message
-                memory_msg = {
-                    "role": "system",
-                    "content": compressed_memory
-                }
+                # Fix the memory instruction to be more helpful
+                compressed_memory = self._fix_memory_instructions(compressed_memory)
                 
-                # Insert into context messages before the last user message
-                if len(context._messages) >= 1:
-                    context._messages.insert(-1, memory_msg)
-                    token_count = self._estimate_tokens(compressed_memory)
-                    logger.info(f"🧠 Injected MemoBase memories ({token_count} tokens) for: {user_message[:50]}...")
+                # Cache the compressed memory for future use
+                await self._cache_memory(user_message, compressed_memory)
+            
+            # Insert memory context before the last user message
+            memory_msg = {
+                "role": "system",
+                "content": compressed_memory
+            }
+            
+            # Insert into context messages before the last user message
+            if len(context._messages) >= 1:
+                context._messages.insert(-1, memory_msg)
+                token_count = self._estimate_tokens(compressed_memory)
+                cache_status = "🎯 cached" if cached_memory else "🔍 fresh"
+                logger.info(f"🧠 Injected MemoBase memories ({token_count} tokens, {cache_status}) for: {user_message[:50]}...")
+                
+                # Debug: Log if dog info is present in injected memory
+                has_dog_info = any(word in compressed_memory.lower() for word in ['Bobby', 'dog named', 'pet'])
+                logger.info(f"🐕 Dog info in injected memory: {has_dog_info}")
+                
+                # Store for fallback tracking
+                self._last_user_message = user_message
                     
         except Exception as e:
             logger.error(f"❌ Failed to retrieve memories from MemoBase: {e}")
