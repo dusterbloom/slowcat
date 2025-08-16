@@ -222,6 +222,10 @@ class ServiceFactory:
             dedup_openai_module = importlib.import_module("services.dedup_openai_llm")
             modules['DedupOpenAILLMService'] = dedup_openai_module.DedupOpenAILLMService
             
+            # Load MemoBase-enabled OpenAI service
+            memobase_llm_module = importlib.import_module("services.memobase_openai_llm")
+            modules['MemoBaseOpenAILLMService'] = memobase_llm_module.MemoBaseOpenAILLMService
+            
             # Load voice recognition
             voice_module = importlib.import_module("voice_recognition")
             modules['AutoEnrollVoiceRecognition'] = voice_module.AutoEnrollVoiceRecognition
@@ -483,7 +487,30 @@ class ServiceFactory:
         else:
             logger.info("🔒 LLM streaming mode DISABLED")
         
-        # Create the base LLM service
+        # Check if MemoBase is enabled for automatic memory
+        if config.memobase.enabled:
+            logger.info("🧠 MemoBase automatic memory ENABLED - will create patched LLM service")
+            # Get memory service to access patched client
+            memory_service = await self.get_service("memory_service")
+            if memory_service and hasattr(memory_service, 'get_patched_client'):
+                patched_client = memory_service.get_patched_client()
+                user_id = memory_service.get_user_id()
+                
+                if patched_client:
+                    logger.info("✨ Using MemoBase patched client for automatic memory")
+                    # Create MemoBase-enabled LLM service
+                    llm_service = ml_modules['MemoBaseOpenAILLMService'](
+                        patched_client=patched_client,
+                        user_id=user_id,
+                        **llm_params
+                    )
+                    return llm_service
+                else:
+                    logger.warning("⚠️ MemoBase enabled but no patched client available, falling back to standard LLM")
+            else:
+                logger.warning("⚠️ MemoBase enabled but memory service not available, falling back to standard LLM")
+        
+        # Create the base LLM service (fallback)
         if config.mcp.enabled:
             logger.info("🔧 Tool-enabled LLM service initialized (MCP via LM Studio)")
             llm_service = ml_modules['LLMWithToolsService'](**llm_params)
@@ -491,11 +518,6 @@ class ServiceFactory:
             logger.info("🚫 Dedup OpenAI LLM service initialized - filtering LLMTextFrames")
             # Use custom dedup service that filters LLMTextFrames like Realtime Beta
             llm_service = ml_modules['DedupOpenAILLMService'](**llm_params)
-        
-        # MemoBase integration will be handled via the MemobaseMemoryProcessor
-        # due to AsyncOpenAI compatibility limitations with direct client patching
-        if config.memobase.enabled:
-            logger.info("🧠 MemoBase integration will be handled by MemobaseMemoryProcessor")
         
         return llm_service
     

@@ -108,11 +108,19 @@ class MemobaseMemoryProcessor(FrameProcessor):
             self._initialize_memobase_hybrid()
         else:
             logger.info("🧠 MemoBase memory processor disabled or unavailable")
+    
+    def get_patched_client(self):
+        """Get the patched OpenAI client for use by LLM services"""
+        return self.patched_sync_client if self.is_enabled else None
+    
+    def get_user_id(self):
+        """Get the current user_id for memory operations"""
+        return self.user_id
 
     def _initialize_memobase_hybrid(self):
-        """Initialize MemoBase with flexible provider architecture."""
+        """Initialize MemoBase with automatic memory handling via openai_memory patch."""
         try:
-            # Create MemoBase client (using keyword arguments for local connection)
+            # Create MemoBase client
             self.mb_client = MemoBaseClient(
                 project_url=config.memobase.project_url,
                 api_key=config.memobase.api_key
@@ -120,38 +128,15 @@ class MemobaseMemoryProcessor(FrameProcessor):
             
             # Test connection
             if self.mb_client.ping():
-                # Determine which client configuration to use
-                use_separate_memory_llm = (
-                    config.memobase.memory_llm.base_url != config.network.llm_base_url or
-                    config.memobase.memory_llm.model != config.models.default_llm_model
+                # Use main LLM for memory operations (simplified)
+                logger.info(f"🔄 Using main LLM for automatic memory: {config.network.llm_base_url}")
+                self.sync_openai_client = OpenAI(
+                    api_key=config.memobase.main_llm.api_key,
+                    base_url=config.network.llm_base_url
                 )
+                self.memory_model = config.models.default_llm_model
                 
-                if use_separate_memory_llm:
-                    # Use separate Memory LLM provider (Option 1: Different provider for memory)
-                    logger.info(f"🔄 Using separate Memory LLM: {config.memobase.memory_llm.provider_name}")
-                    self.sync_openai_client = OpenAI(
-                        api_key=config.memobase.memory_llm.api_key,
-                        base_url=config.memobase.memory_llm.base_url
-                    )
-                    # Set the model for memory operations
-                    self.memory_model = config.memobase.memory_llm.model
-                    logger.info(f"   📍 Memory LLM: {config.memobase.memory_llm.base_url}")
-                    logger.info(f"   🤖 Memory Model: {self.memory_model}")
-                else:
-                    # Use same LLM as main conversation (Option 2: Simple setup)
-                    logger.info(f"🔄 Using main LLM for memory: {config.network.llm_base_url}")
-                    self.sync_openai_client = OpenAI(
-                        api_key=config.memobase.main_llm.api_key,
-                        base_url=config.network.llm_base_url
-                    )
-                    self.memory_model = config.models.default_llm_model
-                
-                # Log embedding provider info
-                logger.info(f"🔍 Embedding provider: {config.memobase.embedding.provider_name}")
-                logger.info(f"   📍 Embedding URL: {config.memobase.embedding.base_url}")
-                logger.info(f"   🧲 Embedding Model: {config.memobase.embedding.model}")
-                
-                # Apply MemoBase patching to the sync client with smart limits
+                # Apply MemoBase patching for automatic memory handling
                 self.patched_sync_client = openai_memory(
                     self.sync_openai_client, 
                     self.mb_client,
@@ -159,14 +144,15 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 )
                 
                 self.is_enabled = True
-                logger.info(f"🧠 MemoBase multi-provider architecture initialized")
-                logger.info(f"🔧 Main LLM: {config.network.llm_base_url} | Memory LLM: {config.memobase.memory_llm.base_url}")
-                logger.info(f"🎛️ Context limits: max_size={self.max_context_size}, token_limit={self.max_token_limit}, compression={self.enable_compression}")
+                logger.info(f"🧠 MemoBase automatic memory initialized")
+                logger.info(f"🔍 Using default user_id: '{self.user_id}'")
+                logger.info(f"🎛️ Max context size: {min(self.max_context_size, self.max_token_limit)} tokens")
+                logger.info(f"✨ Memory will be handled automatically by openai_memory patch")
                 
-                # Debug: Check actual UUID mapping
+                # Debug: Check UUID mapping for default user
                 from memobase.utils import string_to_uuid
                 uuid_for_user = string_to_uuid(self.user_id)
-                logger.info(f"🔍 MemoBase user_id '{self.user_id}' maps to UUID: {uuid_for_user}")
+                logger.info(f"🔍 Default user_id '{self.user_id}' maps to UUID: {uuid_for_user}")
             else:
                 logger.error("❌ MemoBase connection failed")
                 self._handle_fallback()
@@ -285,112 +271,27 @@ class MemobaseMemoryProcessor(FrameProcessor):
             await self.flush_memory()
     
     async def _add_to_conversation_buffer(self, role: str, content: str, metadata: Optional[Dict] = None):
-        """Add conversation to buffer and store in MemoBase with smart token management."""
-        if not self.is_enabled or not self.patched_sync_client:
-            logger.debug(f"🔄 MemoBase disabled, skipping: {content[:50]}...")
+        """DISABLED: Patched client handles all storage automatically."""
+        if not self.is_enabled:
             return
             
-        # Estimate token cost
-        content_tokens = self._estimate_tokens(content)
-        
-        async with self._lock:
-            self._conversation_buffer.append({
-                "role": role,
-                "content": content,
-                "metadata": metadata or {},
-                "timestamp": datetime.now().isoformat(),
-                "tokens": content_tokens
-            })
-            self._buffer_token_count += content_tokens
-            
-        # Auto-flush if buffer is getting large (async, non-blocking)
-        asyncio.create_task(self._check_and_flush_buffer())
-            
-        # Store individual messages in MemoBase immediately (BLOCKING to ensure storage)
-        try:
-            await self._store_message_in_memobase(role, content)
-        except Exception as e:
-            logger.error(f"❌ Critical: Failed to store message in MemoBase: {e}")
-            # Continue execution even if storage fails
-            
-        logger.info(f"🧠 Added to MemoBase: {role} - {content[:50]}... ({content_tokens} tokens, buffer: {self._buffer_token_count})")
+        # The openai_memory patch handles ALL conversation storage automatically
+        # No manual buffering or storage needed
+        logger.debug(f"🧠 Patched client will handle: {role} - {content[:50]}... automatically")
 
-    async def _store_message_in_memobase(self, role: str, content: str):
-        """Store a single message in MemoBase using the patched client - BLOCKING to ensure storage."""
-        if not self.patched_sync_client:
-            logger.warning(f"⚠️ No patched sync client available for storing {role} message")
-            return
-            
-        try:
-            # Create a minimal conversation with just the new message
-            # The patched client expects a conversation format
-            if role == "user":
-                # For user messages, create a minimal conversation that triggers storage
-                messages = [
-                    {"role": "user", "content": content}
-                ]
-                
-                # Use the patched client to make a minimal call that triggers MemoBase storage
-                logger.info(f"🔍 Storing {role} message with user_id: {self.user_id}")
-                
-                try:
-                    # FULL ASYNC: Use shared executor for storage
-                    await asyncio.get_event_loop().run_in_executor(
-                        self._memory_executor,
-                        lambda: self.patched_sync_client.chat.completions.create(
-                            model=getattr(self, 'memory_model', config.models.default_llm_model),
-                            messages=messages,
-                            user_id=self.user_id,
-                            max_tokens=1,  # Minimal response 
-                            temperature=0.0  # Deterministic
-                        )
-                    )
-                    logger.info(f"✅ Successfully stored {role} message in MemoBase: {content[:30]}...")
-                except Exception as e:
-                    logger.error(f"❌ Failed to store {role} message in MemoBase: {e}")
-                    logger.error(f"   Model: {getattr(self, 'memory_model', 'unknown')}")
-                    logger.error(f"   User ID: {self.user_id}")
-                    logger.error(f"   Error details: {str(e)}")
-                    raise
-            
-            # For assistant messages, we'll use a different approach 
-            # since MemoBase expects user+assistant pairs
-            elif role == "assistant":
-                # Only store if we have a recent user message to pair with
-                recent_user_messages = [msg for msg in self._conversation_buffer[-5:] if msg["role"] == "user"]
-                if recent_user_messages:
-                    user_content = recent_user_messages[-1]["content"]
-                    messages = [
-                        {"role": "user", "content": user_content},
-                        {"role": "assistant", "content": content}
-                    ]
-                    
-                    logger.info(f"🔍 Storing conversation pair with user_id: {self.user_id}")
-                    try:
-                        # FULL ASYNC: Use shared executor for conversation pair storage
-                        await asyncio.get_event_loop().run_in_executor(
-                            self._memory_executor,
-                            lambda: self.patched_sync_client.chat.completions.create(
-                                model=getattr(self, 'memory_model', config.models.default_llm_model),
-                                messages=messages,
-                                user_id=self.user_id,
-                                max_tokens=1,
-                                temperature=0.0
-                            )
-                        )
-                        logger.info(f"✅ Successfully stored conversation pair in MemoBase")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to store conversation pair in MemoBase: {e}")
-                        logger.error(f"   Model: {getattr(self, 'memory_model', 'unknown')}")
-                        logger.error(f"   User ID: {self.user_id}")
-                        logger.error(f"   Error details: {str(e)}")
-                        raise
-                else:
-                    logger.warning(f"⚠️ No recent user message found to pair with assistant message")
-                    
-        except Exception as e:
-            logger.error(f"❌ Failed to store {role} message in MemoBase: {e}")
-            # Don't re-raise here to avoid breaking the pipeline
+    async def _store_message_in_memobase_DISABLED(self, role: str, content: str):
+        """DISABLED: Manual storage no longer needed - openai_memory patch handles this automatically.
+        
+        The openai_memory patch automatically:
+        1. Retrieves memory context before each LLM call
+        2. Injects it into the conversation
+        3. Saves the conversation after completion
+        
+        This happens when the main LLM call includes user_id parameter.
+        Manual storage creates duplicates and conflicts.
+        """
+        logger.debug(f"🚫 Manual storage disabled - openai_memory patch handles storage automatically")
+        return
 
     def _deduplicate_memory_content(self, memory_prompt: str) -> str:
         """Remove duplicate content blocks from memory while preserving user aliases"""
@@ -437,56 +338,15 @@ class MemobaseMemoryProcessor(FrameProcessor):
         return deduplicated
 
     def _compress_memory_content(self, memory_prompt: str) -> str:
-        """Compress memory content when it exceeds token limits"""
-        # First apply deduplication
-        memory_prompt = self._deduplicate_memory_content(memory_prompt)
-        
-        if not self.enable_compression:
-            return memory_prompt
-            
-        current_tokens = self._estimate_tokens(memory_prompt)
-        if current_tokens <= self.max_token_limit:
-            return memory_prompt
-            
-        target_tokens = int(self.max_token_limit * self.compression_ratio)
-        target_chars = target_tokens * 4  # Rough conversion
-        
-        # Simple compression: keep most recent and most relevant parts
-        lines = memory_prompt.split('\n')
-        
-        # Keep header and summary lines
-        compressed_lines = []
-        char_count = 0
-        
-        # Prioritize lines with recent dates, important keywords, and user aliases
-        priority_patterns = [r'2025', r'today', r'recently', r'important', r'name', r'preference', r'alias', r'speaker']
-        
-        # First pass: high priority lines (including user aliases)
-        for line in lines:
-            if any(re.search(pattern, line, re.IGNORECASE) for pattern in priority_patterns):
-                if char_count + len(line) <= target_chars:
-                    compressed_lines.append(line)
-                    char_count += len(line)
-        
-        # Second pass: fill remaining space with other lines
-        for line in lines:
-            if line not in compressed_lines and char_count + len(line) <= target_chars:
-                compressed_lines.append(line)
-                char_count += len(line)
-                
-        compressed = '\n'.join(compressed_lines)
-        logger.info(f"🗜️ Compressed memory from {current_tokens} to {self._estimate_tokens(compressed)} tokens")
-        return compressed
+        """Simple memory compression - trust MemoBase to provide properly sized context"""
+        # MemoBase already handles token limits via max_token_size parameter
+        # Just apply basic deduplication and return as-is
+        return self._deduplicate_memory_content(memory_prompt)
     
-    def _fix_memory_instructions(self, memory_content: str) -> str:
-        """Fix memory instructions to be helpful instead of restrictive"""
-        return memory_content.replace(
-            "Unless the user has relevant queries, do not actively mention those memories in the conversation.",
-            "When users ask about information in your memory, provide helpful answers using that information."
-        )
+    
     
     async def _get_contextual_memory(self, user_message: str) -> Optional[str]:
-        """Get contextual memory using MemoBase's User.context() API with proper temporal filtering"""
+        """Get contextual memory using MemoBase's User.context() API following best practices"""
         try:
             # Import MemoBase utilities
             from memobase.utils import string_to_uuid
@@ -501,42 +361,41 @@ class MemobaseMemoryProcessor(FrameProcessor):
             uuid_for_user = string_to_uuid(self.user_id)
             user = mb_client.get_user(uuid_for_user, no_get=True)
             
-            # CRITICAL DEBUG: Log the actual user_id being used
-            logger.error(f"🔍 CRITICAL DEBUG - Using user_id: '{self.user_id}' -> UUID: {uuid_for_user}")
-            logger.error(f"🔍 Expected UUID for 'default_user': {string_to_uuid('default_user')}")
+            logger.debug(f"🔍 Retrieving memory for user_id: '{self.user_id}' -> UUID: {uuid_for_user}")
             
-            # Use the proper context() API with temporal-friendly parameters (FULL ASYNC)
+            # Simple API call following MemoBase best practices (no over-engineering)
             memory_context = await asyncio.get_event_loop().run_in_executor(
                 self._memory_executor,
                 lambda: user.context(
-                    max_token_size=min(self.max_context_size, self.max_token_limit),
-                    chats=[{"role": "user", "content": user_message}],  # Context-aware retrieval
-                    event_similarity_threshold=0.1,  # Very low threshold for maximum recall
-                    fill_window_with_events=True,  # Fill remaining space with events
-                    profile_event_ratio=0.9,  # 90% profile, 10% events - prioritize profile data
-                    require_event_summary=False  # Don't require event summaries to save space
+                    max_token_size=1000,  # MemoBase default from best practices
+                    chats_str=[{"role": "user", "content": user_message}]  # Simple context
+                    # NO complex filtering - trust MemoBase defaults
                 )
             )
             
-            logger.error(f"🧠 Retrieved memory length: {len(memory_context)} chars")
-            logger.error(f"🐕 Contains dog info: {'Bobby' in memory_context.lower() or 'dog' in memory_context.lower()}")
+            logger.info(f"🧠 Retrieved memory: {len(memory_context)} chars")
+            # Check for dog info (Potola specifically)
+            has_dog_info = 'potola' in memory_context.lower() or 'dog' in memory_context.lower()
+            logger.info(f"🐕 Contains dog info: {has_dog_info}")
+            
             return memory_context
             
         except Exception as e:
-            logger.warning(f"⚠️ User.context() API failed, falling back to patched client: {e}")
+            logger.warning(f"⚠️ MemoBase context API failed: {e}")
             
             # Fallback to patched client method
             if not self.patched_sync_client:
                 return None
                 
-            # Fallback with shared async executor
             return await asyncio.get_event_loop().run_in_executor(
                 self._memory_executor,
                 lambda: self.patched_sync_client.get_memory_prompt(self.user_id)
             )
     
-    async def _inject_memory_context(self, context, user_message: str):
-        """Retrieve relevant memories from MemoBase and inject into context with smart compression and Redis caching."""
+    # DISABLED: Manual memory injection no longer needed 
+    # The openai_memory patch handles this automatically
+    async def _inject_memory_context_DISABLED(self, context, user_message: str):
+        """DISABLED: Retrieve relevant memories from MemoBase and inject into context with smart compression and Redis caching."""
         if not self.is_enabled or not self.patched_sync_client:
             return
         
@@ -560,11 +419,8 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 if not memory_prompt or not memory_prompt.strip():
                     return
                 
-                # Apply compression if needed
+                # Use MemoBase output with minimal processing
                 compressed_memory = self._compress_memory_content(memory_prompt)
-                
-                # Fix the memory instruction to be more helpful
-                compressed_memory = self._fix_memory_instructions(compressed_memory)
                 
                 # Cache the compressed memory for future use
                 await self._cache_memory(user_message, compressed_memory)
@@ -582,9 +438,9 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 cache_status = "🎯 cached" if cached_memory else "🔍 fresh"
                 logger.info(f"🧠 Injected MemoBase memories ({token_count} tokens, {cache_status}) for: {user_message[:50]}...")
                 
-                # Debug: Log if dog info is present in injected memory
-                has_dog_info = any(word in compressed_memory.lower() for word in ['Bobby', 'dog named', 'pet'])
-                logger.info(f"🐕 Dog info in injected memory: {has_dog_info}")
+                # Debug: Log if Potola is present in injected memory
+                has_potola = 'potola' in compressed_memory.lower()
+                logger.info(f"🐕 Potola in injected memory: {has_potola}")
                 
                 # Store for fallback tracking
                 self._last_user_message = user_message
@@ -706,46 +562,23 @@ class MemobaseMemoryProcessor(FrameProcessor):
                 if user_messages:
                     latest_user_msg = user_messages[-1].get('content', '')
                     if latest_user_msg and latest_user_msg.strip():
-                        # FIRST: Retrieve and inject relevant memories from MemoBase (MUST be synchronous)
-                        await self._inject_memory_context(frame.context, latest_user_msg)
-                        
-                        # THEN: Store the user message in MemoBase (async, non-blocking)
-                        asyncio.create_task(
-                            self._add_to_conversation_buffer(
-                                'user', 
-                                latest_user_msg, 
-                                {'user_id': self.user_id, 'frame_type': 'llm_context'}
-                            )
-                        )
-                        logger.info(f"🧠 Added user message to MemoBase: {latest_user_msg[:50]}...")
+                        # REMOVED: Manual processing - openai_memory patch handles everything automatically
+                        # The main LLM call in bot.py should include user_id to trigger automatic memory
+                        logger.debug(f"🧠 Detected user message (automatic memory will handle): {latest_user_msg[:50]}...")
 
-        # Handle transcriptions (user input) - fallback
+        # Handle transcriptions (user input) - minimal logging only
         elif isinstance(frame, TranscriptionFrame) and frame.text:
-            # Fire and forget - don't block on memory operations
-            asyncio.create_task(
-                self._add_to_conversation_buffer(
-                    'user', 
-                    frame.text, 
-                    {'user_id': getattr(frame, 'user_id', self.user_id), 'frame_type': 'transcription'}
-                )
-            )
-            logger.info(f"🧠 Added user transcription to MemoBase buffer: {frame.text[:50]}...")
+            # REMOVED: Manual storage - automatic memory handles this via LLM calls
+            logger.debug(f"🧠 Detected transcription (automatic memory will handle): {frame.text[:50]}...")
 
-        # Handle text frames (assistant output) 
+        # Handle text frames (assistant output) - minimal logging only
         elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame) and frame.text:
             # Skip if this looks like a tool call
             if frame.text.strip().startswith('[') and ']' in frame.text:
                 logger.debug(f"🔧 Skipping tool call from MemoBase memory: {frame.text[:50]}...")
             else:
-                # Fire and forget - don't block on memory operations
-                asyncio.create_task(
-                    self._add_to_conversation_buffer(
-                        'assistant', 
-                        frame.text,
-                        {'frame_type': 'text'}
-                    )
-                )
-                logger.info(f"🧠 Added assistant text to MemoBase buffer: {frame.text[:50]}...")
+                # REMOVED: Manual storage - automatic memory handles this via LLM calls
+                logger.debug(f"🧠 Detected assistant text (automatic memory will handle): {frame.text[:50]}...")
 
         await self.push_frame(frame, direction)
 

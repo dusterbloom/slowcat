@@ -179,6 +179,16 @@ class MemoBaseConfig:
     enable_compression: bool = field(default_factory=lambda: os.getenv("MEMOBASE_ENABLE_COMPRESSION", "true").lower() == "true")
     compression_ratio: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_COMPRESSION_RATIO", "0.5")))
     
+    # Query-adaptive retrieval strategy
+    enable_adaptive_retrieval: bool = field(default_factory=lambda: os.getenv("MEMOBASE_ADAPTIVE_RETRIEVAL", "true").lower() == "true")
+    focused_query_token_limit: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_FOCUSED_QUERY_LIMIT", "100")))
+    focused_similarity_threshold: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_FOCUSED_SIMILARITY", "0.4")))
+    general_similarity_threshold: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_GENERAL_SIMILARITY", "0.1")))
+    
+    # Profile vs events ratio configuration
+    focused_profile_ratio: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_FOCUSED_PROFILE_RATIO", "0.95")))
+    general_profile_ratio: float = field(default_factory=lambda: float(os.getenv("MEMOBASE_GENERAL_PROFILE_RATIO", "0.9")))
+    
     # Buffer management
     auto_flush_threshold: int = field(default_factory=lambda: int(os.getenv("MEMOBASE_AUTO_FLUSH_THRESHOLD", "512")))
     flush_on_session_end: bool = field(default_factory=lambda: os.getenv("MEMOBASE_FLUSH_ON_SESSION_END", "true").lower() == "true")
