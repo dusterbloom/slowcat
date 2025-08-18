@@ -139,6 +139,14 @@ python tests/test_file_tools.py       # File operation tests
 python test_tts_sanitization.py       # TTS text processing tests
 ```
 
+## Critical Code Quality Rules
+
+**NEVER use hardcoded values in search or logic:**
+- No hardcoded search terms like "Potola" 
+- No hardcoded user data in algorithms
+- All searches must be generic and data-driven
+- Fix root causes, not symptoms with hardcoded workarounds
+
 ## Debugging and Troubleshooting
 
 **Debug Scripts**:

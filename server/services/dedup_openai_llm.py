@@ -77,13 +77,32 @@ class DedupOpenAILLMService(OpenAILLMService):
     def create_context_aggregator(self, context: OpenAILLMContext) -> OpenAIContextAggregatorPair:
         """Create context aggregator with deduplication for assistant responses"""
         
+        logger.info(f"🔍 DedupOpenAILLMService.create_context_aggregator called with context type: {type(context)}")
+        
         # Set the LLM adapter like the parent class does
         context.set_llm_adapter(self.get_llm_adapter())
         
-        # Create user aggregator (standard) - no expect_stripped_words parameter
+        # Check if this is a memory-aware context and create appropriate aggregator
         user_params = LLMUserAggregatorParams()
-        from pipecat.services.openai.llm import OpenAIUserContextAggregator
-        user_aggregator = OpenAIUserContextAggregator(context, params=user_params)
+        
+        # Import memory aggregator
+        try:
+            from processors.memory_context_aggregator import MemoryAwareOpenAILLMContext, MemoryUserContextAggregator
+            
+            logger.info(f"🔍 Checking if context is MemoryAwareOpenAILLMContext: {isinstance(context, MemoryAwareOpenAILLMContext)}")
+            
+            if isinstance(context, MemoryAwareOpenAILLMContext):
+                logger.info("🧠 Creating memory-aware user aggregator")
+                user_aggregator = MemoryUserContextAggregator(context, params=user_params)
+            else:
+                logger.info("📝 Creating standard user aggregator")
+                from pipecat.services.openai.llm import OpenAIUserContextAggregator
+                user_aggregator = OpenAIUserContextAggregator(context, params=user_params)
+                
+        except ImportError as e:
+            logger.warning(f"⚠️ Memory aggregator not available: {e}, using standard")
+            from pipecat.services.openai.llm import OpenAIUserContextAggregator
+            user_aggregator = OpenAIUserContextAggregator(context, params=user_params)
         
         # Create DEDUP assistant aggregator (custom) - does have expect_stripped_words
         assistant_params = LLMAssistantAggregatorParams(

@@ -19,8 +19,7 @@ from enum import Enum
 
 from pipecat.frames.frames import (
     Frame, StartFrame, EndFrame, TextFrame, LLMMessagesFrame,
-    UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TranscriptionFrame,
-    LLMMessagesAppendFrame
+    UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TranscriptionFrame
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from loguru import logger
@@ -94,9 +93,9 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
     def __init__(self, 
                  db_path: str = "data/enhanced_memory",
                  max_context_tokens: int = 1024,
-                 hot_tier_size: int = 10,
-                 warm_tier_size: int = 100,
-                 cold_tier_size: int = 1000,
+                 hot_tier_size: int = 200,  # Increased from 10 to 200 (100 conversation turns)
+                 warm_tier_size: int = 500,  # Increased proportionally
+                 cold_tier_size: int = 2000,  # Increased proportionally
                  degradation_interval: int = 300,  # 5 minutes
                  **kwargs):
         # CRITICAL: Always call parent init first
@@ -132,6 +131,9 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
         
         # Initialize storage
         self._init_storage()
+        
+        # Initialize BM25 search index
+        self._init_bm25_index()
         
         logger.info(f"🧠 ENHANCED MEMORY INITIALIZED")
         logger.info(f"   Hot tier: {hot_tier_size} items (perfect recall)")
@@ -242,9 +244,6 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
                 
                 # Store user message immediately (don't wait for assistant response)
                 await self._store_user_message_immediately(self.current_user_message)
-                
-                # Inject memory context using three-tier retrieval
-                await self._inject_memory_for_transcription(self.current_user_message)
             return
         
         # Handle text frames for response storage
@@ -318,59 +317,6 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
             
         except Exception as e:
             logger.error(f"Failed to store user message immediately: {e}")
-    
-    async def _inject_memory_for_transcription(self, user_message: str):
-        """Inject memory context using three-tier retrieval"""
-        
-        # Prevent duplicate injections
-        if user_message == self.last_injected_message:
-            logger.debug(f"🧠 ENHANCED: ⚠️ Skipping duplicate injection for: '{user_message[:50]}...'")
-            return
-        
-        start_time = time.perf_counter()
-        
-        try:
-            logger.info(f"🧠 ENHANCED: Three-tier memory retrieval for: '{user_message[:50]}...'")
-            
-            # Get memories from all three tiers
-            memories = await self._get_relevant_memories_three_tier(
-                user_message, 
-                self.current_speaker
-            )
-            
-            if memories:
-                context = self._build_enhanced_context_string(memories)
-                
-                memory_message = {
-                    'role': 'system',
-                    'content': f"IMPORTANT: Use the following conversation history to answer the user's questions. The user has shared information with you in previous messages that you should remember and use:\n\n{context}\n\nIf the user asks about something mentioned in the conversation history above, use that information to answer them."
-                }
-                
-                # Create and push LLMMessagesAppendFrame
-                append_frame = LLMMessagesAppendFrame([memory_message])
-                await self.push_frame(append_frame, FrameDirection.DOWNSTREAM)
-                
-                self.last_injected_message = user_message
-                
-                logger.info(f"🧠 ENHANCED: ✅ Injected {len(memories)} memories from three-tier system!")
-                
-                # Update access patterns
-                await self._update_access_patterns(memories)
-                
-            else:
-                logger.info(f"🧠 ENHANCED: No relevant memories found in any tier")
-                self.last_injected_message = user_message
-        
-        except Exception as e:
-            logger.error(f"Enhanced memory injection failed: {e}")
-        
-        finally:
-            # Track performance
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            self.retrieval_times.append(elapsed_ms)
-            
-            if elapsed_ms > 15:
-                logger.warning(f"⏰ Slow three-tier memory retrieval: {elapsed_ms:.2f}ms")
     
     async def _get_relevant_memories_three_tier(self, query: str, speaker_id: str, max_tokens: int = None) -> List[MemoryItem]:
         """Enhanced memory retrieval across all three tiers"""
@@ -650,6 +596,10 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
             
             # Add to hot tier (will trigger degradation if full)
             self.hot_tier.extend([user_memory, assistant_memory])
+            
+            # Update BM25 index with new memories
+            self._update_bm25_index(user_memory)
+            self._update_bm25_index(assistant_memory)
             
             # Update statistics
             self.stats.hot_tier_items = len(self.hot_tier)
@@ -1185,3 +1135,233 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
                 'compression_available': STORAGE_AVAILABLE and ZSTD_AVAILABLE,
             }
         }
+    
+    def _init_bm25_index(self):
+        """Initialize persistent BM25 search index"""
+        try:
+            import bm25s
+            
+            # BM25 configuration
+            self.bm25_index_path = self.db_path / "bm25_index"
+            self.bm25_corpus_path = self.db_path / "bm25_corpus.json"
+            self.bm25_retriever = None
+            self.bm25_corpus = []
+            self.bm25_memory_ids = []  # Maps corpus index to memory
+            
+            # Create index directory
+            self.bm25_index_path.mkdir(parents=True, exist_ok=True)
+            
+            # Try to load existing index
+            if self._load_bm25_index():
+                logger.info(f"📚 Loaded existing BM25 index with {len(self.bm25_corpus)} documents")
+            else:
+                # Build fresh index from existing memories
+                self._rebuild_bm25_index()
+                logger.info(f"🏗️ Built new BM25 index with {len(self.bm25_corpus)} documents")
+                
+        except ImportError:
+            logger.warning("⚠️ BM25s not available - search will use fallback methods")
+            self.bm25_retriever = None
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize BM25 index: {e}")
+            self.bm25_retriever = None
+    
+    def _load_bm25_index(self) -> bool:
+        """Load existing BM25 index from disk"""
+        try:
+            import bm25s
+            import json
+            
+            index_file = self.bm25_index_path / "index.npz"
+            vocab_file = self.bm25_index_path / "vocab.txt"
+            
+            if not (index_file.exists() and vocab_file.exists() and self.bm25_corpus_path.exists()):
+                return False
+            
+            # Load corpus metadata
+            with open(self.bm25_corpus_path, 'r', encoding='utf-8') as f:
+                corpus_data = json.load(f)
+                self.bm25_corpus = corpus_data['corpus']
+                self.bm25_memory_ids = corpus_data['memory_ids']
+            
+            # Load BM25 index
+            self.bm25_retriever = bm25s.BM25()
+            self.bm25_retriever.load(str(self.bm25_index_path), mmap=True)
+            
+            return True
+            
+        except Exception as e:
+            logger.debug(f"Could not load BM25 index: {e}")
+            return False
+    
+    def _rebuild_bm25_index(self):
+        """Rebuild BM25 index from all existing memories"""
+        try:
+            import bm25s
+            import json
+            
+            # Collect all memories from all tiers
+            all_memories = []
+            
+            # Hot tier (in memory)
+            for memory in self.hot_tier:
+                all_memories.append(memory)
+            
+            # Warm and cold tiers (LMDB)
+            if hasattr(self, 'env'):
+                for tier_name in ['warm', 'cold']:
+                    tier_db = getattr(self, f'{tier_name}_db', None)
+                    if tier_db:
+                        with self.env.begin(db=tier_db) as txn:
+                            cursor = txn.cursor()
+                            for key, value in cursor:
+                                try:
+                                    memory = self._quick_deserialize_memory(value)
+                                    if memory:
+                                        all_memories.append(memory)
+                                except:
+                                    continue
+            
+            if not all_memories:
+                logger.info("No memories found to index")
+                return
+            
+            # Build corpus and memory mapping
+            self.bm25_corpus = []
+            self.bm25_memory_ids = []
+            
+            for i, memory in enumerate(all_memories):
+                self.bm25_corpus.append(memory.content)
+                # Store memory identifier (timestamp + speaker)
+                memory_id = f"{memory.speaker_id}:{memory.timestamp}"
+                self.bm25_memory_ids.append(memory_id)
+            
+            # Create and train BM25 index
+            self.bm25_retriever = bm25s.BM25()
+            
+            # Tokenize and index corpus
+            tokenized_corpus = bm25s.tokenize(self.bm25_corpus)
+            self.bm25_retriever.index(tokenized_corpus)
+            
+            # Save index to disk with memory mapping
+            self.bm25_retriever.save(str(self.bm25_index_path), mmap=True)
+            
+            # Save corpus metadata
+            corpus_data = {
+                'corpus': self.bm25_corpus,
+                'memory_ids': self.bm25_memory_ids
+            }
+            
+            with open(self.bm25_corpus_path, 'w', encoding='utf-8') as f:
+                json.dump(corpus_data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"✅ BM25 index built and saved with {len(self.bm25_corpus)} documents")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to rebuild BM25 index: {e}")
+            self.bm25_retriever = None
+    
+    def _update_bm25_index(self, new_memory: MemoryItem):
+        """Incrementally update BM25 index with new memory"""
+        try:
+            if not self.bm25_retriever:
+                return
+            
+            # Add to corpus
+            self.bm25_corpus.append(new_memory.content)
+            memory_id = f"{new_memory.speaker_id}:{new_memory.timestamp}"
+            self.bm25_memory_ids.append(memory_id)
+            
+            # For now, rebuild index (TODO: implement incremental update)
+            # BM25s doesn't support true incremental updates yet
+            self._rebuild_bm25_index()
+            
+        except Exception as e:
+            logger.debug(f"Failed to update BM25 index: {e}")
+    
+    def search_memories_bm25(self, query: str, max_results: int = 5) -> List[MemoryItem]:
+        """Search memories using persistent BM25 index"""
+        if not self.bm25_retriever or not self.bm25_corpus:
+            logger.debug("BM25 index not available, falling back to tier search")
+            return []
+        
+        try:
+            import bm25s
+            
+            # Tokenize query
+            query_tokens = bm25s.tokenize([query])
+            
+            # Search with BM25
+            results, scores = self.bm25_retriever.retrieve(
+                query_tokens, 
+                k=min(max_results, len(self.bm25_corpus))
+            )
+            
+            # Convert results back to MemoryItem objects
+            found_memories = []
+            
+            for idx, score in zip(results[0], scores[0]):
+                if score > 0.1:  # Minimum relevance threshold
+                    memory_id = self.bm25_memory_ids[idx]
+                    content = self.bm25_corpus[idx]
+                    
+                    # Parse memory_id to get speaker and timestamp
+                    speaker_id, timestamp_str = memory_id.split(':', 1)
+                    timestamp = float(timestamp_str)
+                    
+                    # Create memory item (simplified - could enhance with full metadata)
+                    memory = MemoryItem(
+                        content=content,
+                        timestamp=timestamp,
+                        speaker_id=speaker_id,
+                        tier=MemoryTier.WARM,  # Default tier
+                        importance_score=float(score)  # Use BM25 score as importance
+                    )
+                    
+                    found_memories.append(memory)
+                    logger.debug(f"BM25 found: {content[:60]}... (score: {score:.3f})")
+            
+            logger.info(f"🎯 BM25 search found {len(found_memories)} results for '{query[:30]}...'")
+            return found_memories
+            
+        except Exception as e:
+            logger.error(f"BM25 search failed: {e}")
+            return []
+    
+    def _quick_deserialize_memory(self, compressed_data: bytes) -> Optional[MemoryItem]:
+        """Quick memory deserialization for BM25 indexing"""
+        try:
+            import json
+            
+            # Try LZ4 decompression first
+            try:
+                import lz4.frame
+                data = lz4.frame.decompress(compressed_data)
+            except:
+                try:
+                    import gzip
+                    data = gzip.decompress(compressed_data)
+                except:
+                    data = compressed_data
+            
+            # Decode to string
+            try:
+                json_str = data.decode('utf-8')
+            except UnicodeDecodeError:
+                json_str = data.decode('latin-1', errors='ignore')
+            
+            # Parse JSON
+            memory_dict = json.loads(json_str)
+            
+            return MemoryItem(
+                content=memory_dict['content'],
+                timestamp=memory_dict['timestamp'],
+                speaker_id=memory_dict['speaker_id'],
+                tier=MemoryTier(memory_dict.get('tier', 'warm')),
+                access_count=memory_dict.get('access_count', 0),
+                last_accessed=memory_dict.get('last_accessed', 0),
+                importance_score=memory_dict.get('importance_score', 1.0)
+            )
+            
+        except Exception:
+            return None
