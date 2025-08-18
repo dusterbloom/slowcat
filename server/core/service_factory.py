@@ -475,8 +475,10 @@ class ServiceFactory:
             logger.info("🔧 Tool-enabled LLM service initialized (MCP via LM Studio)")
             return ml_modules['LLMWithToolsService'](**llm_params)
         else:
-            logger.info("🤖 Standard LLM service initialized")
-            return ml_modules['OpenAILLMService'](**llm_params)
+            logger.info("🤖 Standard LLM service initialized with DEDUP")
+            # Use DedupOpenAILLMService instead of regular OpenAILLMService to prevent context corruption
+            from services.dedup_openai_llm import DedupOpenAILLMService
+            return DedupOpenAILLMService(**llm_params)
     
     async def _create_voice_recognition(self, ml_modules: Dict[str, Any], vr_config: VoiceRecognitionConfig = None):
         """Create voice recognition service"""
@@ -492,11 +494,39 @@ class ServiceFactory:
         return voice_recognition
     
     def _create_memory_service(self):
-        """Create memory service"""
+        """Create memory service - stateless or traditional based on configuration"""
         if not config.memory.enabled:
             return None
-            
-        logger.info("🧠 Memory is ENABLED")
+        
+        # Check if stateless memory is enabled
+        if config.stateless_memory.enabled:
+            logger.info("🧠 Stateless Memory is ENABLED")
+            try:
+                from processors.stateless_memory import StatelessMemoryProcessor
+                return StatelessMemoryProcessor(
+                    db_path=config.stateless_memory.db_path,
+                    max_context_tokens=config.stateless_memory.max_context_tokens,
+                    enable_compression=config.stateless_memory.enable_compression,
+                    perfect_recall_window=config.stateless_memory.perfect_recall_window,
+                    enable_semantic_validation=config.stateless_memory.enable_semantic_validation,
+                    min_similarity_threshold=config.stateless_memory.min_similarity_threshold
+                )
+            except ImportError as e:
+                logger.error(f"Failed to import stateless memory: {e}")
+                if config.stateless_memory.fallback_to_traditional:
+                    logger.warning("Falling back to traditional memory system")
+                else:
+                    logger.error("Stateless memory import failed and fallback disabled")
+                    return None
+            except Exception as e:
+                logger.error(f"Failed to initialize stateless memory: {e}")
+                if config.stateless_memory.fallback_to_traditional:
+                    logger.warning("Falling back to traditional memory system")
+                else:
+                    raise
+        
+        # Use traditional memory system (fallback or explicitly configured)
+        logger.info("📝 Traditional Memory is ENABLED")
         from processors import LocalMemoryProcessor
         return LocalMemoryProcessor(
             data_dir=config.memory.data_dir,

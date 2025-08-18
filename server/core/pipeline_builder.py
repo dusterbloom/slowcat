@@ -154,14 +154,23 @@ class PipelineBuilder:
             from tools import set_memory_processor
             set_memory_processor(memory_processor)
             
-            from processors import MemoryContextInjector
-            memory_injector = MemoryContextInjector(
-                memory_processor=memory_processor,
-                system_prompt=config.memory.context_system_prompt,
-                inject_as_system=True
-            )
-            processors['memory_processor'] = memory_processor
-            processors['memory_injector'] = memory_injector
+            # Check if this is a stateless memory processor by class name to avoid import issues
+            if memory_processor.__class__.__name__ == 'StatelessMemoryProcessor':
+                # Stateless memory handles injection internally, no separate injector needed
+                logger.info(f"🧠 Using stateless memory processor (self-injecting): {type(memory_processor)}")
+                processors['memory_processor'] = memory_processor
+                processors['memory_injector'] = None
+            else:
+                # Traditional memory needs a separate context injector
+                logger.info("📝 Using traditional memory with context injector")
+                from processors import MemoryContextInjector
+                memory_injector = MemoryContextInjector(
+                    memory_processor=memory_processor,
+                    system_prompt=config.memory.context_system_prompt,
+                    inject_as_system=True
+                )
+                processors['memory_processor'] = memory_processor
+                processors['memory_injector'] = memory_injector
         else:
             processors['memory_processor'] = None
             processors['memory_injector'] = None
@@ -192,9 +201,16 @@ class PipelineBuilder:
             })
         
         # Other processors
-        from processors import GreetingFilterProcessor, MessageDeduplicator
+        from processors import GreetingFilterProcessor, MessageDeduplicator, ContextFilter, StreamingDeduplicator
         processors['greeting_filter'] = GreetingFilterProcessor(greeting_text="Hello, I'm Slowcat!")
         processors['message_deduplicator'] = MessageDeduplicator()
+        processors['context_filter'] = ContextFilter()
+        processors['streaming_deduplicator'] = StreamingDeduplicator()
+        
+        # Final frame filter to prevent duplications in context
+        from processors.final_frame_filter import FinalFrameFilter
+        processors['final_frame_filter'] = FinalFrameFilter()
+        logger.info("🎯 Final frame filter enabled to prevent context duplications")
         
         # Response formatter - fix markdown links from stubborn Qwen2.5  
         from processors.response_formatter import ResponseFormatterProcessor
@@ -472,6 +488,11 @@ class PipelineBuilder:
         logger.info("🔧 Building pipeline components...")
         
         from pipecat.processors.frameworks.rtvi import RTVIProcessor
+        
+        # Apply proper RTVIProcessor fix for message queue initialization
+        from fix_rtvi_proper import fix_rtvi_processor
+        fix_rtvi_processor()
+        
         rtvi = RTVIProcessor()
         
         components = [
@@ -480,29 +501,43 @@ class PipelineBuilder:
             processors['audio_tee'],
             processors['vad_bridge'],
             services['stt'],
+            processors['memory_processor'],  # Stateless memory processor - MOVED RIGHT AFTER STT
             processors['dictation_mode'],  # Must be after STT but before LLM
             processors['music_mode'],  # Music mode filtering (after STT, before LLM)
             processors['dj_config_handler'],  # Handle DJ mode voice/prompt changes
             processors['audio_player'],  # Music player with ducking
             processors['time_executor'],  # Time-aware task execution
-            processors['memory_processor'],
             processors['speaker_context'],
-            rtvi,
+            rtvi,  # ORIGINAL POSITION: between speaker_context and speaker_name_manager
             processors['speaker_name_manager'],
             context_aggregator.user(),
-            processors['memory_injector'],
-            processors['message_deduplicator'],
+            processors['memory_injector'],  # Traditional memory injector (None for stateless)
+            # processors['message_deduplicator'],  # DISABLED - causing assistant stuttering
             services['llm'],
             services['tts'],
             transport.output(),
             processors['greeting_filter'],
-            context_aggregator.assistant(),
+            # processors['final_frame_filter'],  # DISABLED - was making duplications worse
+            processors['streaming_deduplicator'],  # FIX cumulative duplication patterns
+            processors['context_filter'],  # FILTER streaming frames RIGHT BEFORE context
+            context_aggregator.assistant(),  # MOVED to end after filtering
         ]
         
         # Filter out None components
         filtered_components = [comp for comp in components if comp is not None]
         
-        logger.info(f"✅ Built pipeline with {len(filtered_components)} components")
+        # Log which components are actually in the pipeline
+        component_names = []
+        for comp in filtered_components:
+            if hasattr(comp, '__class__'):
+                component_names.append(comp.__class__.__name__)
+            else:
+                component_names.append(str(type(comp)))
+        
+        logger.info(f"✅ Built pipeline with {len(filtered_components)} components:")
+        for i, name in enumerate(component_names):
+            logger.info(f"   {i+1}. {name}")
+        
         return filtered_components
     
     def _create_pipeline(self, components: List[Any]) -> Pipeline:
