@@ -29,6 +29,8 @@ from dotenv import load_dotenv
 # Load environment variables BEFORE importing config
 load_dotenv(override=True)
 
+# RTVIProcessor fix is now applied in pipeline_builder.py
+
 # Enable offline mode for HuggingFace transformers (conditional)
 if os.getenv("HF_HUB_OFFLINE", "0") == "1":
     os.environ["HF_HUB_OFFLINE"] = "1"

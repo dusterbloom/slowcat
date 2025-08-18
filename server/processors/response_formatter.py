@@ -4,9 +4,8 @@ Converts markdown links to clickable HTML automatically - Qwen2.5 workaround
 """
 
 import re
-from typing import AsyncGenerator
 from pipecat.frames.frames import Frame, TextFrame
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from loguru import logger
 
 
@@ -18,8 +17,11 @@ class ResponseFormatterProcessor(FrameProcessor):
         # Regex to match markdown links [text](url)
         self._markdown_link_pattern = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
     
-    async def process_frame(self, frame: Frame) -> AsyncGenerator[Frame, None]:
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Convert markdown links to HTML in text frames"""
+        
+        # Call parent first (required for Pipecat)
+        await super().process_frame(frame, direction)
         
         if isinstance(frame, TextFrame):
             original_text = frame.text
@@ -35,11 +37,12 @@ class ResponseFormatterProcessor(FrameProcessor):
                 link_count = len(self._markdown_link_pattern.findall(original_text))
                 logger.debug(f"🔗 Converted {link_count} markdown links to HTML")
                 
-                # Create new frame with converted text
-                yield TextFrame(converted_text)
+                # Create new frame with converted text and forward it
+                converted_frame = TextFrame(converted_text)
+                await self.push_frame(converted_frame, direction)
             else:
-                # No conversion needed
-                yield frame
+                # No conversion needed, forward original frame
+                await self.push_frame(frame, direction)
         else:
             # Pass through non-text frames unchanged
-            yield frame
+            await self.push_frame(frame, direction)

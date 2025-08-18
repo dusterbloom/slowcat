@@ -118,6 +118,47 @@ class MemoryConfig:
 
 
 @dataclass
+class StatelessMemoryConfig:
+    """Enhanced stateless memory configuration for constant performance"""
+    # Enable stateless memory system
+    enabled: bool = field(default_factory=lambda: os.getenv("USE_STATELESS_MEMORY", "false").lower() == "true")
+    
+    # Storage configuration
+    db_path: str = "data/stateless_memory"
+    max_context_tokens: int = 1024  # Maximum tokens for memory injection
+    enable_compression: bool = True
+    
+    # Perfect recall window (recent conversations always perfect)
+    perfect_recall_window: int = 10  # Number of recent exchanges to keep perfect
+    
+    # Semantic validation
+    enable_semantic_validation: bool = True
+    min_similarity_threshold: float = 0.7  # Minimum similarity for reconstruction
+    
+    # Memory degradation settings
+    half_life_days: float = 7.0  # Base forgetting curve half-life
+    reinforcement_factor: float = 1.3  # Boost for frequently accessed memories
+    
+    # Performance tuning
+    hot_storage_size: int = 100  # Max items in hot storage
+    warm_storage_size: int = 1000  # Max items in warm storage
+    compression_threshold: int = 100  # Compress items larger than this (bytes)
+    
+    # Quality thresholds for different compression levels
+    compression_levels: Dict[str, float] = field(default_factory=lambda: {
+        "full": 0.9,        # Full retention threshold
+        "light": 0.7,       # Light compression threshold  
+        "entities": 0.4,    # Entity extraction threshold
+        "trace": 0.1        # Minimal trace threshold
+    })
+    
+    # User experience features
+    enable_user_flagging: bool = True  # Allow "remember this" commands
+    announce_confidence: bool = False  # Announce reconstruction confidence
+    fallback_to_traditional: bool = True  # Fall back to local_memory if errors
+
+
+@dataclass
 class ConversationTimerConfig:
     """Configuration for conversation timer and transcript saving"""
     enabled: bool = True
@@ -608,6 +649,7 @@ class Config:
     models: ModelConfig = field(default_factory=ModelConfig)
     voice_recognition: VoiceRecognitionConfig = field(default_factory=VoiceRecognitionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    stateless_memory: StatelessMemoryConfig = field(default_factory=StatelessMemoryConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     conversation_timer: ConversationTimerConfig = field(default_factory=ConversationTimerConfig)
     dictation_mode: DictationModeConfig = field(default_factory=DictationModeConfig)

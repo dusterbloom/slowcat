@@ -210,7 +210,7 @@ class SherpaStreamingSTTService(STTService):
                 self._return_recognizer(recognizer)
 
     @traced_stt
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def run_stt(self, audio: bytes, is_final: bool = False) -> AsyncGenerator[Frame, None]:
         """
         🔥 STREAMING STT: Process audio chunks and emit interim results!
         """
@@ -316,7 +316,15 @@ class SherpaStreamingSTTService(STTService):
         logger.info("✅ Sherpa streaming pool cleaned up")
 
     def __del__(self):
+        """Cleanup when service is destroyed - synchronous cleanup only"""
         try:
-            self.cleanup()
+            # Synchronous cleanup only - can't await in __del__
+            logger.debug("🧹 Synchronous cleanup of Sherpa streaming recognizer pool")
+            while not self._recognizer_pool.empty():
+                try:
+                    recognizer = self._recognizer_pool.get_nowait()
+                    del recognizer
+                except Empty:
+                    break
         except:
             pass

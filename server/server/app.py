@@ -68,7 +68,7 @@ def create_app(language: str = None, llm_model: str = None, stt_model: str = Non
                 )
                 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
                 context = OpenAILLMContext([{"role": "user", "content": "Hi"}])
-                stream = llm_service._stream_chat_completions(context)
+                stream = await llm_service._stream_chat_completions(context)
                 async for _ in stream:
                     break
                 logger.info("✅ LLM service pre-warmed")

@@ -278,6 +278,7 @@ class KokoroTTSService(TTSService):
         
         logger.debug(f"{self}: Generating TTS [{sanitized_text}]")
 
+        generation_task = None
         try:
             await self.start_ttfb_metrics()
             await self.start_tts_usage_metrics(sanitized_text)
@@ -375,6 +376,17 @@ class KokoroTTSService(TTSService):
                 yield TTSTextFrame(text=partial_text)
                 text_chunks_sent += 1
 
+        except GeneratorExit:
+            # Handle generator cleanup (e.g., when client disconnects)
+            logger.debug(f"{self}: TTS generator stopped early")
+            if generation_task and not generation_task.done():
+                generation_task.cancel()
+                try:
+                    await generation_task
+                except asyncio.CancelledError:
+                    pass
+            await self.stop_processing_metrics()
+            raise  # Re-raise GeneratorExit
         except Exception as e:
             logger.error(f"Error in run_tts: {e}")
             # For empty text errors, provide a gentler response
@@ -384,6 +396,13 @@ class KokoroTTSService(TTSService):
             else:
                 yield ErrorFrame(error=str(e))
         finally:
+            # Ensure background task is cleaned up
+            if generation_task and not generation_task.done():
+                generation_task.cancel()
+                try:
+                    await generation_task
+                except asyncio.CancelledError:
+                    pass
             logger.debug(f"{self}: Finished TTS [{sanitized_text}]")
             await self.stop_processing_metrics()
             yield TTSStoppedFrame()

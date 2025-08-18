@@ -9,6 +9,7 @@ import asyncio
 from loguru import logger
 from openai import NOT_GIVEN
 from pipecat.services.openai.llm import OpenAILLMService
+from .dedup_openai_llm import DedupOpenAILLMService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -27,7 +28,7 @@ from pipecat.frames.frames import (
     FunctionCallInProgressFrame,
 )
 from .custom_tool_parser import CustomToolParser
-class LLMWithToolsService(OpenAILLMService):
+class LLMWithToolsService(DedupOpenAILLMService):
     """
     Unified LLM service with proper Pipecat function calling support.
     Extends OpenAILLMService to handle tool calls with LM Studio.
@@ -38,6 +39,7 @@ class LLMWithToolsService(OpenAILLMService):
         super().__init__(**kwargs)
         
         logger.info("🚀 Initializing LLMWithToolsService")
+        logger.info("🚨 LLMWithToolsService now extends DedupOpenAILLMService!")
         logger.info(f"📍 Base URL: {kwargs.get('base_url')}")
         logger.info(f"🤖 Model: {kwargs.get('model')}")
         

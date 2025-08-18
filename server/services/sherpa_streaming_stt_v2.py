@@ -304,10 +304,14 @@ class SherpaOnlineSTTService(STTService):
             self._recognizer = None
             return self._ensure_recognizer_initialized()
 
-    @traced_stt
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    # @traced_stt
+    async def run_stt(self, audio: bytes, is_final: bool = False) -> AsyncGenerator[Frame, None]:
         """
         🚀 TRUE STREAMING STT: Process audio continuously with OnlineRecognizer!
+        
+        Args:
+            audio: Raw audio bytes in 16-bit PCM format
+            is_final: Whether this is the final audio chunk (required by Pipecat framework)
         """
         if not audio or len(audio) == 0:
             return
@@ -451,7 +455,30 @@ class SherpaOnlineSTTService(STTService):
         logger.info("✅ Sherpa OnlineRecognizer cleaned up")
 
     def __del__(self):
+        """Cleanup when service is destroyed - synchronous cleanup only"""
         try:
-            self.cleanup()
+            # Synchronous cleanup only - can't await in __del__
+            logger.debug("🧹 Synchronous cleanup of Sherpa OnlineRecognizer")
+            with self._processing_lock:
+                # Clear buffer first
+                self._audio_buffer.clear()
+                
+                # Cleanup stream
+                if self._stream:
+                    try:
+                        del self._stream
+                    except:
+                        pass
+                    finally:
+                        self._stream = None
+                
+                # Cleanup recognizer
+                if self._recognizer and self._recognizer != "FAILED":
+                    try:
+                        del self._recognizer
+                    except:
+                        pass
+                    finally:
+                        self._recognizer = None
         except:
             pass

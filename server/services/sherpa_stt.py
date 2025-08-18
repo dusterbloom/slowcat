@@ -198,7 +198,7 @@ class SherpaONNXSTTService(SegmentedSTTService):
             logger.warning("⚠️ Could not return recognizer to pool (full)")
 
     # ---------- SegmentedSTTService interface ----------
-    async def run_stt(self, audio: bytes):
+    async def run_stt(self, audio: bytes, is_final: bool = False):
         """
         Process complete audio segment and yield transcription frames.
         SegmentedSTTService handles VAD events and provides complete utterances.
@@ -309,8 +309,15 @@ class SherpaONNXSTTService(SegmentedSTTService):
         logger.info("✅ Sherpa recognizer pool cleaned up")
 
     def __del__(self):
-        """Cleanup when service is destroyed"""
+        """Cleanup when service is destroyed - synchronous cleanup only"""
         try:
-            self.cleanup()
+            # Synchronous cleanup only - can't await in __del__
+            logger.debug("🧹 Synchronous cleanup of Sherpa recognizer pool")
+            while not self._recognizer_pool.empty():
+                try:
+                    recognizer = self._recognizer_pool.get_nowait()
+                    del recognizer
+                except Empty:
+                    break
         except:
             pass
