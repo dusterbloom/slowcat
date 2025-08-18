@@ -108,7 +108,7 @@ class VoiceRecognitionConfig:
 class MemoryConfig:
     """Conversation memory configuration"""
     enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MEMORY", "true").lower() == "true")
-    data_dir: str = "data/memory"
+    data_dir: str = field(default_factory=lambda: str(Path(__file__).parent / "data" / "memory"))
     default_user_id: str = "default_user"
     max_history_items: int = 200
     include_in_context: int = 10
@@ -124,7 +124,7 @@ class StatelessMemoryConfig:
     enabled: bool = field(default_factory=lambda: os.getenv("USE_STATELESS_MEMORY", "false").lower() == "true")
     
     # Storage configuration
-    db_path: str = "data/stateless_memory"
+    db_path: str = field(default_factory=lambda: str(Path(__file__).parent / "data" / "stateless_memory"))
     max_context_tokens: int = 1024  # Maximum tokens for memory injection
     enable_compression: bool = True
     
@@ -156,6 +156,13 @@ class StatelessMemoryConfig:
     enable_user_flagging: bool = True  # Allow "remember this" commands
     announce_confidence: bool = False  # Announce reconstruction confidence
     fallback_to_traditional: bool = True  # Fall back to local_memory if errors
+    
+    # Enhanced three-tier memory system
+    use_enhanced: bool = field(default_factory=lambda: os.getenv("USE_ENHANCED_MEMORY", "false").lower() == "true")
+    hot_tier_size: int = 10        # Perfect recall items (no compression)
+    warm_tier_size: int = 100      # LZ4 compressed items
+    cold_tier_size: int = 1000     # Zstd compressed + importance filtered
+    degradation_interval: int = 300  # Degradation cycle interval in seconds
 
 
 @dataclass

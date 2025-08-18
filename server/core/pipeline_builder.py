@@ -53,7 +53,7 @@ class PipelineBuilder:
         transport = await self._setup_transport(webrtc_connection)
         
         # 5. Build context and aggregator
-        context, context_aggregator = await self._build_context(lang_config, services['llm'], language)
+        context, context_aggregator = await self._build_context(lang_config, services['llm'], language, processors)
         
         # 5a. Configure DJ mode handler with actual services
         if processors.get('music_mode'): # Check if music mode is enabled
@@ -155,7 +155,7 @@ class PipelineBuilder:
             set_memory_processor(memory_processor)
             
             # Check if this is a stateless memory processor by class name to avoid import issues
-            if memory_processor.__class__.__name__ == 'StatelessMemoryProcessor':
+            if memory_processor.__class__.__name__ in ['StatelessMemoryProcessor', 'EnhancedStatelessMemoryProcessor']:
                 # Stateless memory handles injection internally, no separate injector needed
                 logger.info(f"🧠 Using stateless memory processor (self-injecting): {type(memory_processor)}")
                 processors['memory_processor'] = memory_processor
@@ -375,7 +375,7 @@ class PipelineBuilder:
         logger.info("✅ Transport setup complete")
         return transport
     
-    async def _build_context(self, lang_config: dict, llm_service: Any, language: str) -> Tuple[Any, Any]:
+    async def _build_context(self, lang_config: dict, llm_service: Any, language: str, processors: Dict[str, Any] = None) -> Tuple[Any, Any]:
         """Build LLM context and aggregator"""
         logger.info("🔧 Building context...")
 
@@ -471,10 +471,25 @@ class PipelineBuilder:
                 mcp_tools=mcp_function_schemas
             )
 
-            context = OpenAILLMContext(
-                [{"role": "system", "content": final_system_prompt}],
-                tools=tools_schema
-            )
+            # Get memory processor for context integration
+            memory_processor = processors.get('memory_processor')
+            
+            # Use memory-aware context if memory processor is available (standard or enhanced)
+            if memory_processor and memory_processor.__class__.__name__ in ['StatelessMemoryProcessor', 'EnhancedStatelessMemoryProcessor']:
+                logger.info("🧠 Using memory-aware context with integrated injection")
+                from processors.memory_context_aggregator import create_memory_context
+                context = create_memory_context(
+                    initial_messages=[{"role": "system", "content": final_system_prompt}],
+                    memory_processor=memory_processor,
+                    max_context_tokens=memory_processor.max_context_tokens * 4,  # Allow for larger context
+                    tools=tools_schema
+                )
+            else:
+                logger.info("📝 Using standard context (no memory integration)")
+                context = OpenAILLMContext(
+                    [{"role": "system", "content": final_system_prompt}],
+                    tools=tools_schema
+                )
         
         logger.debug(f"Final System Prompt:\n{final_system_prompt}")
         context_aggregator = llm_service.create_context_aggregator(context)
@@ -512,12 +527,10 @@ class PipelineBuilder:
             processors['speaker_name_manager'],
             context_aggregator.user(),
             processors['memory_injector'],  # Traditional memory injector (None for stateless)
-            # processors['message_deduplicator'],  # DISABLED - causing assistant stuttering
-            services['llm'],
-            services['tts'],
+            services['llm'], # Main LLM
+            services['tts'], # Kokoro TTS
             transport.output(),
             processors['greeting_filter'],
-            # processors['final_frame_filter'],  # DISABLED - was making duplications worse
             processors['streaming_deduplicator'],  # FIX cumulative duplication patterns
             processors['context_filter'],  # FILTER streaming frames RIGHT BEFORE context
             context_aggregator.assistant(),  # MOVED to end after filtering

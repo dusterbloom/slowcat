@@ -591,6 +591,66 @@ class ServiceFactory:
         ml_modules = await self.get_service("ml_loader")
         return self._create_tts_service(ml_modules, language)
 
+    def _create_memory_service(self):
+        """Create memory service based on configuration"""
+        
+        # Check if enhanced stateless memory is enabled (new three-tier system)
+        if getattr(config.stateless_memory, 'use_enhanced', False):
+            logger.info("🧠 Enhanced Stateless Memory is ENABLED (three-tier system)")
+            try:
+                from processors.enhanced_stateless_memory import EnhancedStatelessMemoryProcessor
+                return EnhancedStatelessMemoryProcessor(
+                    db_path=config.stateless_memory.db_path,
+                    max_context_tokens=config.stateless_memory.max_context_tokens,
+                    hot_tier_size=getattr(config.stateless_memory, 'hot_tier_size', 10),
+                    warm_tier_size=getattr(config.stateless_memory, 'warm_tier_size', 100),
+                    cold_tier_size=getattr(config.stateless_memory, 'cold_tier_size', 1000),
+                    degradation_interval=getattr(config.stateless_memory, 'degradation_interval', 300)
+                )
+            except ImportError as e:
+                logger.error(f"Failed to import enhanced stateless memory: {e}")
+                logger.warning("Falling back to standard stateless memory")
+            except Exception as e:
+                logger.error(f"Failed to initialize enhanced stateless memory: {e}")
+                logger.warning("Falling back to standard stateless memory")
+        
+        # Check if stateless memory is enabled
+        if config.stateless_memory.enabled:
+            logger.info("🧠 Stateless Memory is ENABLED")
+            try:
+                from processors.stateless_memory import StatelessMemoryProcessor
+                return StatelessMemoryProcessor(
+                    db_path=config.stateless_memory.db_path,
+                    max_context_tokens=config.stateless_memory.max_context_tokens,
+                    enable_compression=config.stateless_memory.enable_compression,
+                    perfect_recall_window=config.stateless_memory.perfect_recall_window,
+                    enable_semantic_validation=config.stateless_memory.enable_semantic_validation,
+                    min_similarity_threshold=config.stateless_memory.min_similarity_threshold
+                )
+            except ImportError as e:
+                logger.error(f"Failed to import stateless memory: {e}")
+                if config.stateless_memory.fallback_to_traditional:
+                    logger.warning("Falling back to traditional memory system")
+                else:
+                    logger.error("Stateless memory import failed and fallback disabled")
+                    return None
+            except Exception as e:
+                logger.error(f"Failed to initialize stateless memory: {e}")
+                if config.stateless_memory.fallback_to_traditional:
+                    logger.warning("Falling back to traditional memory system")
+                else:
+                    raise
+        
+        # Use traditional memory system (fallback or explicitly configured)
+        logger.info("📝 Traditional Memory is ENABLED")
+        from processors import LocalMemoryProcessor
+        return LocalMemoryProcessor(
+            data_dir=config.memory.data_dir,
+            user_id=config.memory.default_user_id,
+            max_history_items=config.memory.max_history_items,
+            include_in_context=config.memory.include_in_context
+        )
+
 
 # Global service factory instance
 service_factory = ServiceFactory()

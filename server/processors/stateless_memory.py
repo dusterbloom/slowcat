@@ -78,6 +78,9 @@ class StatelessMemoryProcessor(FrameProcessor):
         self.total_conversations = 0
         self.injection_times = deque(maxlen=100)
         
+        # Background task tracking
+        self._startup_logged = False
+        
         # Initialize storage (don't fail if LMDB unavailable)
         self._init_storage(db_path)
         
@@ -85,9 +88,6 @@ class StatelessMemoryProcessor(FrameProcessor):
         logger.info(f"🧠 Storage: {'LMDB' if STORAGE_AVAILABLE and hasattr(self, 'env') else 'in-memory'}")
         logger.info(f"🧠 Current speaker: {self.current_speaker}")
         logger.info(f"🧠 Max context tokens: {self.max_context_tokens}")
-        
-        # Log existing memory count on startup for persistence debugging
-        asyncio.create_task(self._log_startup_memory_stats())
     
     def _init_storage(self, db_path: str):
         """Initialize storage with graceful fallback"""
@@ -134,7 +134,12 @@ class StatelessMemoryProcessor(FrameProcessor):
         if isinstance(frame, StartFrame):
             # Push StartFrame downstream IMMEDIATELY
             await self.push_frame(frame, direction)
-            # Initialize processor-specific logic here if needed
+            
+            # Log startup stats once TaskManager is available
+            if not self._startup_logged:
+                self.get_event_loop().create_task(self._log_startup_memory_stats())
+                self._startup_logged = True
+            
             logger.debug("StatelessMemory: StartFrame processed and forwarded")
             return
         
@@ -455,39 +460,62 @@ class StatelessMemoryProcessor(FrameProcessor):
             if elapsed_ms > 10:
                 logger.warning(f"Slow memory injection: {elapsed_ms:.2f}ms")
     
-    async def _get_relevant_memories(self, query: str, speaker_id: str) -> List[MemoryItem]:
-        """Get relevant memories (simplified version)"""
+    async def _get_relevant_memories(self, query: str, speaker_id: str, max_tokens: int = None) -> List[MemoryItem]:
+        """Get relevant memories with proper token budgeting"""
+        
+        # Import token counter
+        try:
+            from .token_counter import get_token_counter
+            token_counter = get_token_counter()
+        except ImportError:
+            logger.warning("Token counter not available, using fallback estimation")
+            token_counter = None
         
         memories = []
         token_count = 0
-        max_tokens = self.max_context_tokens // 2  # Use half for memory
+        
+        # Use provided budget or default to half of max context
+        if max_tokens is None:
+            max_tokens = self.max_context_tokens // 2
+        
+        logger.debug(f"🔍 Searching memories for '{query[:50]}...' (budget: {max_tokens} tokens)")
         
         try:
-            # 1. Get from perfect recall cache (most recent)
+            # 1. Perfect recall cache (most recent conversations)
+            cache_memories = []
             for item in reversed(self.perfect_recall_cache):
-                if token_count >= max_tokens:
-                    break
-                
                 if isinstance(item, MemoryItem) and item.speaker_id == speaker_id:
-                    item_tokens = len(item.content.split()) * 1.3
+                    # Use accurate token counting if available
+                    if token_counter:
+                        item_tokens = token_counter.count_tokens(item.content)
+                    else:
+                        item_tokens = len(item.content.split()) * 1.3  # Fallback
+                    
                     if token_count + item_tokens <= max_tokens:
-                        memories.append(item)
+                        cache_memories.append(item)
                         token_count += item_tokens
+                    else:
+                        break
             
-            # 2. Get from persistent storage if needed
+            memories.extend(cache_memories)
+            logger.debug(f"📋 Added {len(cache_memories)} memories from perfect recall cache ({token_count} tokens)")
+            
+            # 2. Search persistent storage if budget remains
             remaining_tokens = max_tokens - token_count
-            if remaining_tokens > 100:
+            if remaining_tokens > 50:  # Need at least 50 tokens for meaningful retrieval
                 stored_memories = await self._search_persistent_memory(
-                    query, speaker_id, remaining_tokens
+                    query, speaker_id, remaining_tokens, token_counter
                 )
                 memories.extend(stored_memories)
+                logger.debug(f"💾 Added {len(stored_memories)} memories from persistent storage")
         
         except Exception as e:
             logger.error(f"Memory retrieval failed: {e}")
         
+        logger.info(f"🧠 Retrieved {len(memories)} relevant memories for '{query[:30]}...'")
         return memories
     
-    async def _search_persistent_memory(self, query: str, speaker_id: str, max_tokens: int) -> List[MemoryItem]:
+    async def _search_persistent_memory(self, query: str, speaker_id: str, max_tokens: int, token_counter=None) -> List[MemoryItem]:
         """Search persistent memory storage"""
         
         memories = []

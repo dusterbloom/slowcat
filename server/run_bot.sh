@@ -54,7 +54,7 @@ export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 export no_proxy="${NO_PROXY:-localhost,127.0.0.1}"
 
 # Memory system configuration
-USE_STATELESS_MEMORY=${USE_STATELESS_MEMORY:-true}  # Default to true now
+export USE_STATELESS_MEMORY=${USE_STATELESS_MEMORY:-true}  # Default to true now
 
 # Check Python version (must be 3.12 or earlier for MLX)
 PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
