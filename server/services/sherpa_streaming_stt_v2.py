@@ -29,6 +29,14 @@ def _require_sherpa():
     except ImportError as e:
         raise RuntimeError(f"sherpa_onnx not available: {e}") from e
 
+def _require_punctuation():
+    """Import sherpa_onnx punctuation safely"""
+    try:
+        import sherpa_onnx
+        return sherpa_onnx
+    except ImportError:
+        return None
+
 
 class SherpaOnlineSTTService(STTService):
     """
@@ -56,6 +64,13 @@ class SherpaOnlineSTTService(STTService):
         emit_partial_results: bool = False,
         hotwords_file: str = "",
         hotwords_score: float = 1.5,
+        # Punctuation model params
+        enable_punctuation: bool = False,
+        punctuation_model_dir: Optional[str] = None,
+        # Endpoint detection fine-tuning
+        rule1_min_trailing_silence: float = 1.5,
+        rule2_min_trailing_silence: float = 0.8,
+        rule3_min_utterance_length: int = 300,
         **kwargs,
     ):
         super().__init__(sample_rate=sample_rate, **kwargs)
@@ -69,6 +84,11 @@ class SherpaOnlineSTTService(STTService):
         self.emit_partial_results = emit_partial_results
         self.hotwords_file = hotwords_file
         self.hotwords_score = hotwords_score
+        self.enable_punctuation = enable_punctuation
+        self.punctuation_model_dir = punctuation_model_dir
+        self.rule1_min_trailing_silence = rule1_min_trailing_silence
+        self.rule2_min_trailing_silence = rule2_min_trailing_silence
+        self.rule3_min_utterance_length = rule3_min_utterance_length
         
         # Calculate chunk size in samples (ensure minimum size)
         self.chunk_size = max(int(sample_rate * chunk_size_ms / 1000), 1600)  # At least 100ms
@@ -76,6 +96,7 @@ class SherpaOnlineSTTService(STTService):
         # Streaming state
         self._recognizer = None  # Will be initialized lazily
         self._stream = None
+        self._punctuation = None  # Lazy initialization
         self._audio_buffer = bytearray()
         self._last_result = ""
         self._processing_lock = threading.RLock()  # Use RLock for nested locking
@@ -153,9 +174,9 @@ class SherpaOnlineSTTService(STTService):
                     feature_dim=80,
                     # Endpoint detection parameters (optimized)
                     enable_endpoint_detection=self.enable_endpoint_detection,
-                    rule1_min_trailing_silence=1.5,
-                    rule2_min_trailing_silence=0.8, 
-                    rule3_min_utterance_length=300,
+                    rule1_min_trailing_silence=self.rule1_min_trailing_silence,
+                    rule2_min_trailing_silence=self.rule2_min_trailing_silence, 
+                    rule3_min_utterance_length=self.rule3_min_utterance_length,
                     # Decoding parameters  
                     decoding_method=self.decoding_method,
                     max_active_paths=min(self.max_active_paths, 8),  # Allow more paths for better accuracy
@@ -209,6 +230,63 @@ class SherpaOnlineSTTService(STTService):
         except Exception as e:
             logger.error(f"❌ Failed to create OnlineRecognizer: {e}")
             raise
+
+    def _init_punctuation(self):
+        """Initialize punctuation model if enabled"""
+        if not self.enable_punctuation or not self.punctuation_model_dir:
+            return
+            
+        sherpa = _require_punctuation()
+        if not sherpa:
+            logger.warning("sherpa_onnx not available for punctuation")
+            return
+            
+        try:
+            model_path = Path(self.punctuation_model_dir) / "model.onnx"
+            if not model_path.exists():
+                logger.error(f"Punctuation model not found: {model_path}")
+                return
+                
+            config = sherpa.OfflinePunctuationConfig(
+                model=sherpa.OfflinePunctuationModelConfig(
+                    ct_transformer=str(model_path)
+                )
+            )
+            self._punctuation = sherpa.OfflinePunctuation(config)
+            logger.info(f"✅ Punctuation model initialized: {model_path.parent.name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize punctuation model: {e}")
+            self._punctuation = None
+
+    def _add_punctuation(self, text: str) -> str:
+        """Add punctuation to text if punctuation model is available"""
+        if not self._punctuation or not text.strip():
+            return text
+            
+        try:
+            punctuated = self._punctuation.add_punctuation(text)
+            
+            # Convert Chinese punctuation to English for English text
+            if self.language == "en":
+                # Chinese -> English punctuation mapping
+                punctuation_map = {
+                    '。': '.',    # Chinese period -> English period
+                    '，': ',',    # Chinese comma -> English comma  
+                    '？': '?',    # Chinese question mark -> English question mark
+                    '！': '!',    # Chinese exclamation -> English exclamation
+                    '：': ':',    # Chinese colon -> English colon
+                    '；': ';',    # Chinese semicolon -> English semicolon
+                }
+                
+                for chinese_punct, english_punct in punctuation_map.items():
+                    punctuated = punctuated.replace(chinese_punct, english_punct)
+            
+            logger.debug(f"Punctuation: '{text}' -> '{punctuated}'")
+            return punctuated
+        except Exception as e:
+            logger.debug(f"Punctuation failed: {e}")
+            return text  # Fallback to original text
 
     def _create_stream(self):
         """Create a new recognition stream with error handling"""
@@ -270,6 +348,10 @@ class SherpaOnlineSTTService(STTService):
             result_obj = self._recognizer.get_result(self._stream)
             result = result_obj.text if hasattr(result_obj, 'text') else str(result_obj)
             
+            # Add punctuation for final results only
+            if is_endpoint and result.strip():
+                result = self._add_punctuation(result)
+            
             # Log and handle endpoint
             if is_endpoint:
                 if result.strip():
@@ -293,6 +375,8 @@ class SherpaOnlineSTTService(STTService):
                 logger.info("🔄 Initializing Sherpa OnlineRecognizer...")
                 self._init_recognizer()
                 logger.info("✅ Sherpa OnlineRecognizer initialized successfully")
+                # Initialize punctuation if enabled
+                self._init_punctuation()
             except Exception as e:
                 logger.error(f"❌ Failed to initialize recognizer: {e}")
                 # Don't keep trying if it fails
@@ -442,6 +526,15 @@ class SherpaOnlineSTTService(STTService):
                 finally:
                     self._stream = None
             
+            # Cleanup punctuation
+            if self._punctuation:
+                try:
+                    del self._punctuation
+                except Exception as e:
+                    logger.debug(f"Punctuation cleanup warning: {e}")
+                finally:
+                    self._punctuation = None
+            
             # Cleanup recognizer
             if self._recognizer and self._recognizer != "FAILED":
                 try:
@@ -471,6 +564,15 @@ class SherpaOnlineSTTService(STTService):
                         pass
                     finally:
                         self._stream = None
+                
+                # Cleanup punctuation
+                if self._punctuation:
+                    try:
+                        del self._punctuation
+                    except:
+                        pass
+                    finally:
+                        self._punctuation = None
                 
                 # Cleanup recognizer
                 if self._recognizer and self._recognizer != "FAILED":

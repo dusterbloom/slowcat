@@ -295,11 +295,15 @@ class ServiceFactory:
                 logger.info("🔄 Pre-warming Sherpa STT model...")
                 SherpaOnlineSTTService = ml_modules['SherpaOnlineSTTService']
                 model_dir = os.getenv("SHERPA_ONNX_MODEL_DIR", "./models/kroko-asr-en")
+                punctuation_model_dir = os.getenv("SHERPA_PUNCTUATION_MODEL_DIR", "./models/sherpa/punctuation/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12")
+                enable_punctuation = os.getenv("SHERPA_ENABLE_PUNCTUATION", "true").lower() == "true"
                 sherpa_stt = SherpaOnlineSTTService(
                     model_dir=model_dir,
                     language="en",
                     chunk_size_ms=100,  # Ultra-fast chunks
-                    enable_endpoint_detection=True
+                    enable_endpoint_detection=True,
+                    enable_punctuation=enable_punctuation,
+                    punctuation_model_dir=punctuation_model_dir
                 )
                 # Initialize recognizer immediately
                 sherpa_stt._ensure_recognizer_initialized()
@@ -370,6 +374,8 @@ class ServiceFactory:
             if online_streaming:
                 # 🚀 ONLINE STREAMING CONFIG (OnlineRecognizer)
                 hotwords_file = os.getenv("SHERPA_HOTWORDS_FILE", "").strip() or ""
+                punctuation_model_dir = os.getenv("SHERPA_PUNCTUATION_MODEL_DIR", "./models/sherpa/punctuation/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12")
+                enable_punctuation = os.getenv("SHERPA_ENABLE_PUNCTUATION", "true").lower() == "true"
                 sherpa_config.update({
                     "enable_endpoint_detection": os.getenv("SHERPA_ENDPOINT_DETECTION", "true").lower() == "true",
                     "chunk_size_ms": int(os.getenv("SHERPA_CHUNK_MS", "200")),
@@ -378,8 +384,14 @@ class ServiceFactory:
                     "num_threads": int(os.getenv("SHERPA_THREADS", "1")),
                     "hotwords_file": hotwords_file,
                     "hotwords_score": float(os.getenv("SHERPA_HOTWORDS_SCORE", "1.5")),
+                    "enable_punctuation": enable_punctuation,
+                    "punctuation_model_dir": punctuation_model_dir,
+                    # Endpoint detection fine-tuning
+                    "rule1_min_trailing_silence": float(os.getenv("SHERPA_RULE1_MIN_TRAILING_SILENCE", "1.5")),
+                    "rule2_min_trailing_silence": float(os.getenv("SHERPA_RULE2_MIN_TRAILING_SILENCE", "0.8")),
+                    "rule3_min_utterance_length": int(os.getenv("SHERPA_RULE3_MIN_UTTERANCE_LENGTH", "300")),
                 })
-                logger.info(f"🚀 Online streaming config: chunk={sherpa_config['chunk_size_ms']}ms, endpoint_detection={sherpa_config['enable_endpoint_detection']}")
+                logger.info(f"🚀 Online streaming config: chunk={sherpa_config['chunk_size_ms']}ms, endpoint_detection={sherpa_config['enable_endpoint_detection']}, punctuation={enable_punctuation}")
             elif streaming_mode:
                 # 🔥 STREAMING CONFIG (OfflineRecognizer hack)
                 sherpa_config.update({
