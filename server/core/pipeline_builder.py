@@ -16,6 +16,7 @@ from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
 from openai import NOT_GIVEN
 
 from .service_factory import ServiceFactory
+from processors.smart_context_manager import create_smart_context_manager
 
 
 class PipelineBuilder:
@@ -71,7 +72,7 @@ class PipelineBuilder:
         
         # 6. Build pipeline components
         pipeline_components = await self._build_pipeline_components(
-            transport, services, processors, context_aggregator
+            transport, services, processors, context_aggregator, context
         )
         
         # 7. Create pipeline
@@ -498,7 +499,7 @@ class PipelineBuilder:
         return context, context_aggregator
     
     async def _build_pipeline_components(self, transport, services: Dict[str, Any], 
-                                       processors: Dict[str, Any], context_aggregator) -> List[Any]:
+                                       processors: Dict[str, Any], context_aggregator, context) -> List[Any]:
         """Build ordered list of pipeline components"""
         logger.info("🔧 Building pipeline components...")
         
@@ -510,6 +511,11 @@ class PipelineBuilder:
         
         rtvi = RTVIProcessor()
         
+        # Create smart context manager instance first (we need a reference later)
+        smart_ctx = self._create_smart_context_manager(context, processors.get('memory_processor'))
+        # Keep a reference for initial context on client_ready
+        self._smart_ctx_ref = smart_ctx
+
         components = [
             transport.input(),
             processors['video_sampler'],
@@ -525,9 +531,14 @@ class PipelineBuilder:
             processors['speaker_context'],
             rtvi,  # ORIGINAL POSITION: between speaker_context and speaker_name_manager
             processors['speaker_name_manager'],
-            context_aggregator.user(),
+            # context_aggregator.user(),  # REPLACED with SmartContextManager
+            smart_ctx,
             # processors['memory_injector'],  # Traditional memory injector (None for stateless)
             services['llm'], # Main LLM using memory aware context
+            # Do NOT place ContextFilter here; it blocks streaming TextFrames
+            # needed by downstream TTS. Keep the LLM stream intact to audio.
+            # Add response tap to feed assistant text back to SmartContextManager and TapeStore
+            self._create_response_tap(smart_ctx),
             services['tts'], # Kokoro TTS
             transport.output(),
             # processors['greeting_filter'],
@@ -586,6 +597,32 @@ class PipelineBuilder:
         @rtvi_processor.event_handler("on_client_ready")
         async def on_client_ready(rtvi_proc):
             await rtvi_proc.set_bot_ready()
-            await task.queue_frames([context_aggregator.user().get_context_frame()])
+            try:
+                # Prefer SmartContextManager initial context for richer status + facts
+                if hasattr(self, '_smart_ctx_ref') and self._smart_ctx_ref is not None:
+                    init_frame = await self._smart_ctx_ref.get_initial_context_frame()
+                    await task.queue_frames([init_frame])
+                else:
+                    await task.queue_frames([context_aggregator.user().get_context_frame()])
+            except Exception:
+                # Fallback to legacy aggregator on any error
+                await task.queue_frames([context_aggregator.user().get_context_frame()])
         
         return task
+    
+    def _create_smart_context_manager(self, context, memory_processor):
+        """Create Smart Context Manager to replace context_aggregator.user()"""
+        return create_smart_context_manager(
+            context=context,
+            facts_db_path=config.memory.facts_db_path,
+            max_tokens=4096
+        )
+
+    def _create_response_tap(self, smart_context_manager):
+        try:
+            from processors.response_tap import ResponseTap
+            return ResponseTap(smart_context_manager)
+        except Exception as e:
+            from loguru import logger
+            logger.warning(f"ResponseTap unavailable: {e}")
+            return None

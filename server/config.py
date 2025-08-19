@@ -109,6 +109,7 @@ class MemoryConfig:
     """Conversation memory configuration"""
     enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_MEMORY", "true").lower() == "true")
     data_dir: str = field(default_factory=lambda: str(Path(__file__).parent / "data" / "memory"))
+    facts_db_path: str = field(default_factory=lambda: str(Path(__file__).parent / "data" / "facts.db"))  # NEW: Facts graph
     default_user_id: str = "default_user"
     max_history_items: int = 200
     include_in_context: int = 10

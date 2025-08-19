@@ -1,38 +1,33 @@
-2025-08-18 22:13:34,089 - INFO - Starting MCPO Server...
-2025-08-18 22:13:34,090 - INFO -   Name: mcpo-proxy
-2025-08-18 22:13:34,090 - INFO -   Version: 1.0
-2025-08-18 22:13:34,090 - INFO -   Description: Automatically generated API from MCP Tool Schemas
-2025-08-18 22:13:34,090 - INFO -   Hostname: MacBook.local
-2025-08-18 22:13:34,090 - INFO -   Port: 3001
-2025-08-18 22:13:34,090 - INFO -   API Key: Provided
-2025-08-18 22:13:34,090 - INFO -   CORS Allowed Origins: ['*']
-2025-08-18 22:13:34,090 - INFO -   Path Prefix: /
-2025-08-18 22:13:34,090 - INFO - Loading MCP server configurations from: mcp.json
-2025-08-18 22:13:34,090 - INFO - Configuring MCP Servers:
-2025-08-18 22:13:34,090 - INFO - Uvicorn server starting...
-INFO:     Started server process [9970]
+2025-08-19 22:33:30,791 - INFO - Starting MCPO Server...
+2025-08-19 22:33:30,791 - INFO -   Name: mcpo-proxy
+2025-08-19 22:33:30,791 - INFO -   Version: 1.0
+2025-08-19 22:33:30,791 - INFO -   Description: Automatically generated API from MCP Tool Schemas
+2025-08-19 22:33:30,791 - INFO -   Hostname: MacBook.local
+2025-08-19 22:33:30,791 - INFO -   Port: 3001
+2025-08-19 22:33:30,791 - INFO -   API Key: Provided
+2025-08-19 22:33:30,791 - INFO -   CORS Allowed Origins: ['*']
+2025-08-19 22:33:30,791 - INFO -   Path Prefix: /
+2025-08-19 22:33:30,791 - INFO - Loading MCP server configurations from: mcp.json
+2025-08-19 22:33:30,791 - INFO - Configuring MCP Servers:
+2025-08-19 22:33:30,791 - INFO - Uvicorn server starting...
+INFO:     Started server process [57884]
 INFO:     Waiting for application startup.
-2025-08-18 22:13:34,102 - INFO - Initiating connection for server: 'memory'...
+2025-08-19 22:33:30,802 - INFO - Initiating connection for server: 'memory'...
 Knowledge Graph MCP Server running on stdio
-2025-08-18 22:13:35,185 - INFO - Successfully connected to 'memory'.
-2025-08-18 22:13:35,185 - INFO - Initiating connection for server: 'filesystem'...
+2025-08-19 22:33:31,649 - INFO - Successfully connected to 'memory'.
+2025-08-19 22:33:31,649 - INFO - Initiating connection for server: 'filesystem'...
 Secure MCP Filesystem Server running on stdio
 Client does not support MCP Roots, using allowed directories set from server args: [ '/Users/peppi/Documents' ]
-2025-08-18 22:13:35,989 - INFO - Successfully connected to 'filesystem'.
-2025-08-18 22:13:35,989 - INFO - Initiating connection for server: 'browser-text'...
-2025-08-18 22:13:37,050 - INFO - Successfully connected to 'browser-text'.
-2025-08-18 22:13:37,050 - INFO - 
+2025-08-19 22:33:32,401 - INFO - Successfully connected to 'filesystem'.
+2025-08-19 22:33:32,401 - INFO - Initiating connection for server: 'browser-text'...
+2025-08-19 22:33:33,221 - INFO - Successfully connected to 'browser-text'.
+2025-08-19 22:33:33,221 - INFO - 
 --- Server Startup Summary ---
-2025-08-18 22:13:37,050 - INFO - Successfully connected to:
-2025-08-18 22:13:37,050 - INFO -   - memory
-2025-08-18 22:13:37,050 - INFO -   - filesystem
-2025-08-18 22:13:37,050 - INFO -   - browser-text
-2025-08-18 22:13:37,050 - INFO - --------------------------
+2025-08-19 22:33:33,221 - INFO - Successfully connected to:
+2025-08-19 22:33:33,221 - INFO -   - memory
+2025-08-19 22:33:33,221 - INFO -   - filesystem
+2025-08-19 22:33:33,222 - INFO -   - browser-text
+2025-08-19 22:33:33,222 - INFO - --------------------------
 
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:3001 (Press CTRL+C to quit)
-2025-08-18 22:28:14,696 - INFO - 
-Received SIGINT, initiating graceful shutdown...
-2025-08-18 22:28:14,697 - INFO - Initiating server shutdown...
-2025-08-18 22:28:14,698 - INFO - Server shutdown complete
-Starting MCP OpenAPI Proxy with config file: mcp.json
