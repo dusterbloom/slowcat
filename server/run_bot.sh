@@ -52,6 +52,10 @@ echo "✅ Virtual environment activated: $VIRTUAL_ENV"
 # Set environment variables to help with multiprocessing on macOS
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 export no_proxy="${NO_PROXY:-localhost,127.0.0.1}"
+# Reduce noisy warnings/logs by default (overridable)
+export LOGURU_LEVEL="${LOGURU_LEVEL:-INFO}"
+# Suppress deprecation about LLMMessagesFrame until we migrate frames
+export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:LLMMessagesFrame is deprecated:DeprecationWarning}"
 
 # Memory system configuration
 export USE_STATELESS_MEMORY=${USE_STATELESS_MEMORY:-true}  # Default to true now

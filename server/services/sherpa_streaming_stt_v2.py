@@ -6,6 +6,7 @@ This is the REAL streaming implementation - no more OfflineRecognizer hacks!
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Optional, AsyncGenerator
 import threading
@@ -102,6 +103,15 @@ class SherpaOnlineSTTService(STTService):
         self._processing_lock = threading.RLock()  # Use RLock for nested locking
         self._initialization_attempted = False
         self._metrics_started = False  # Track if metrics are currently active
+
+        # Endpoint/latency tuning (env-configurable)
+        # Debounce tiny pauses to avoid mid-thought finals without losing low-latency
+        self._min_final_words = int(os.getenv("SHERPA_MIN_FINAL_WORDS", "4"))
+        self._endpoint_debounce_ms = int(os.getenv("SHERPA_ENDPOINT_DEBOUNCE_MS", "350"))
+
+        # Hold state for tentative endpoints (don’t reset stream until committed)
+        self._pending_text: Optional[str] = None
+        self._pending_since_ms: Optional[float] = None
 
         # Validate model directory
         if not self.model_dir.exists():
@@ -352,12 +362,10 @@ class SherpaOnlineSTTService(STTService):
             if is_endpoint and result.strip():
                 result = self._add_punctuation(result)
             
-            # Log and handle endpoint
+            # Log endpoint (do not reset here; defer reset until we actually emit)
             if is_endpoint:
                 if result.strip():
-                    logger.debug(f"🎯 Sherpa FINAL: '{result}' (endpoint detected)")
-                self._recognizer.reset(self._stream)
-                # logger.debug("🔄 Stream reset after endpoint")
+                    logger.debug(f"🎯 Sherpa endpoint text: '{result}' (endpoint detected)")
             elif result:
                 logger.debug(f"🔄 Sherpa interim: '{result}'")
             
@@ -469,28 +477,99 @@ class SherpaOnlineSTTService(STTService):
                         self._metrics_started = False
                     return
                 
-                # Emit frames based on results
+                # Emit frames based on results with debounce + min-word guard
+                now_ms = time.time() * 1000.0
+                if is_endpoint and self._pending_text is not None and (not result_text or result_text.strip() == ""):
+                    # Endpoint again during hold window without new text: check timer and flush if due
+                    if now_ms - (self._pending_since_ms or now_ms) >= self._endpoint_debounce_ms:
+                        final_text = self._pending_text
+                        logger.info(f"✅ Sherpa final (debounced silence): '{final_text}'")
+                        yield TranscriptionFrame(
+                            text=final_text,
+                            user_id="default_user",
+                            timestamp=time_now_iso8601(),
+                            language=self.language,
+                        )
+                        self._last_result = final_text
+                        self._pending_text = None
+                        self._pending_since_ms = None
+                        try:
+                            self._recognizer.reset(self._stream)
+                        except Exception:
+                            pass
+                        if self._metrics_started:
+                            await self.stop_ttfb_metrics()
+                            await self.stop_processing_metrics()
+                            self._metrics_started = False
+
                 if result_text and is_endpoint:
-                    # 🎯 FINAL TRANSCRIPTION - Always emit on endpoint
-                    logger.info(f"✅ Sherpa final: '{result_text}' (endpoint detected)")
-                    
-                    yield TranscriptionFrame(
-                        text=result_text,
-                        user_id="default_user",
-                        timestamp=time_now_iso8601(),
-                        language=self.language,
-                    )
-                    self._last_result = result_text
-                    
-                    # Stop metrics after successful transcription
-                    if self._metrics_started:
-                        await self.stop_ttfb_metrics()
-                        await self.stop_processing_metrics()
-                        self._metrics_started = False
+                    clean = self._normalize_transcript(result_text)
+
+                    # If we already have a pending endpoint and transcript grew, clear hold
+                    if self._pending_text and clean != self._pending_text:
+                        logger.debug("🟡 Endpoint hold continued with more text; clearing pending hold")
+                        self._pending_text = None
+                        self._pending_since_ms = None
+
+                    # Count words for small-fragment suppression
+                    word_count = len([w for w in clean.split() if any(ch.isalnum() for ch in w)])
+                    ends_with_strong = clean.endswith("?") or clean.endswith("!")
+                    small_fragment = (word_count < self._min_final_words) and not ends_with_strong
+
+                    if small_fragment and self._pending_text is None:
+                        # Start hold window; don’t emit yet, don’t reset stream
+                        self._pending_text = clean
+                        self._pending_since_ms = now_ms
+                        logger.debug(f"⏳ Holding short endpoint '{clean}' ({word_count} words) for {self._endpoint_debounce_ms}ms")
+                        # keep metrics running
+                    elif self._pending_text is not None:
+                        # We are in hold window; if time exceeded, emit pending
+                        if now_ms - (self._pending_since_ms or now_ms) >= self._endpoint_debounce_ms:
+                            final_text = self._pending_text
+                            logger.info(f"✅ Sherpa final (debounced): '{final_text}'")
+                            yield TranscriptionFrame(
+                                text=final_text,
+                                user_id="default_user",
+                                timestamp=time_now_iso8601(),
+                                language=self.language,
+                            )
+                            self._last_result = final_text
+                            self._pending_text = None
+                            self._pending_since_ms = None
+                            # Now it’s safe to reset the stream after committing
+                            try:
+                                self._recognizer.reset(self._stream)
+                            except Exception:
+                                pass
+                            # Stop metrics after successful transcription
+                            if self._metrics_started:
+                                await self.stop_ttfb_metrics()
+                                await self.stop_processing_metrics()
+                                self._metrics_started = False
+                    else:
+                        # Not a small fragment, emit immediately
+                        logger.info(f"✅ Sherpa final: '{clean}' (endpoint detected)")
+                        yield TranscriptionFrame(
+                            text=clean,
+                            user_id="default_user",
+                            timestamp=time_now_iso8601(),
+                            language=self.language,
+                        )
+                        self._last_result = clean
+                        try:
+                            self._recognizer.reset(self._stream)
+                        except Exception:
+                            pass
+                        # Stop metrics after successful transcription
+                        if self._metrics_started:
+                            await self.stop_ttfb_metrics()
+                            await self.stop_processing_metrics()
+                            self._metrics_started = False
                         
                 elif result_text and self.emit_partial_results and result_text != self._last_result and len(result_text.split()) >= 1:
                     # 🔄 INTERIM TRANSCRIPTION - Only if text changed
-                    logger.debug(f"🔄 Sherpa interim: '{result_text}'")
+                    if os.getenv('SHERPA_LOG_INTERIM', 'false').lower() == 'true':
+                        logger.debug(f"🔄 Sherpa interim: '{result_text}'")
                     
                     yield InterimTranscriptionFrame(
                         text=result_text,
@@ -500,6 +579,24 @@ class SherpaOnlineSTTService(STTService):
                     )
                     self._last_result = result_text
                     # Keep metrics running for interim results
+
+    def _normalize_transcript(self, text: str) -> str:
+        try:
+            s = (text or "").strip()
+            s = re.sub(r"[,]{2,}", ",", s)
+            s = re.sub(r"[?]{2,}", "?", s)
+            s = re.sub(r"[!]{2,}", "!", s)
+            s = re.sub(r"[.]{3,}", "..", s)
+            s = re.sub(r"\s+", " ", s)
+            # Remove spaces before punctuation like ". ! ? ; :"
+            s = re.sub(r"\s+([\.!\?;:])", r"\1", s)
+            s = re.sub(r"\s*,\s*", ", ", s)
+            s = s.replace(" ,", ",")
+            # Remove leading stray punctuation introduced by punctuator (e.g., ". What ...")
+            s = re.sub(r"^[\s\.,;:!\?-]+", "", s)
+            return s.strip()
+        except Exception:
+            return text
 
     async def cleanup(self):
         """Cleanup recognizer resources safely"""

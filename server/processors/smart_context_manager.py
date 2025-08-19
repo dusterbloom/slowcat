@@ -134,6 +134,15 @@ class SmartContextManager(FrameProcessor):
             except Exception as e:
                 logger.debug(f"TapeStore write (user) failed: {e}")
             
+            # 1c. Record user turn for recent sliding window so the next
+            # assistant response can pair with it. This enables short replies
+            # like "Yes, please" to pick up prior assistant question.
+            try:
+                if self._has_semantic_content(user_text):
+                    self._record_user_turn(user_text)
+            except Exception as e:
+                logger.debug(f"Recent window update failed: {e}")
+            
             # 2. Update session in memory system
             try:
                 self.memory_system.update_session(self.session.speaker_id or 'default_user')
@@ -161,6 +170,14 @@ class SmartContextManager(FrameProcessor):
             
         # Forward all other frames normally
         await self.push_frame(frame, direction)
+
+    def _record_user_turn(self, user_text: str):
+        """Append a new user turn to recent_exchanges with sliding window cap."""
+        # Store as a 1-tuple to be completed by add_assistant_response
+        self.recent_exchanges.append((user_text,))
+        # Enforce sliding window size
+        while len(self.recent_exchanges) > self.max_recent_exchanges:
+            self.recent_exchanges.pop(0)
     
     async def _build_fixed_context(self, user_input: str) -> List[Dict]:
         """
@@ -209,8 +226,9 @@ class SmartContextManager(FrameProcessor):
         # Recent conversation
         messages.extend(recent_context)
         
-        # Current user input
-        messages.append(current_user)
+        # Current user input (only if non-empty)
+        if user_input and user_input.strip():
+            messages.append(current_user)
         
         # 6. Verify token count
         total_tokens = (system_tokens + facts_tokens + 
@@ -259,6 +277,11 @@ class SmartContextManager(FrameProcessor):
 
     async def get_initial_context_frame(self) -> LLMMessagesFrame:
         """Build an initial context frame using current facts and session status."""
+        # Ensure session is registered so session counters are available
+        try:
+            self.memory_system.update_session(self.session.speaker_id or 'default_user')
+        except Exception:
+            pass
         messages = await self._build_fixed_context("")
         return LLMMessagesFrame(messages)
 
@@ -281,6 +304,7 @@ class SmartContextManager(FrameProcessor):
     def _generate_dynamic_prompt(self) -> str:
         """
         Generate evolving system prompt based on session metadata
+        Always includes a Session Info block and relationship cues.
         """
         base_prompt = "You are Slowcat, a helpful AI assistant."
         # Current local time for clarity
@@ -290,24 +314,49 @@ class SmartContextManager(FrameProcessor):
             base_prompt += f"\nTime: {now}"
         except Exception:
             pass
+
+        # Add session information (always show)
+        session_info = f"\n\n[Session Info]"
+        turn_display = max(1, self.session.turn_count + 1)
+        session_info += f"\nTurn: {turn_display}"
         
-        # Add session information
-        if self.session.turn_count > 0:
-            session_info = f"\n\n[Session Info]"
-            session_info += f"\nTurn: {self.session.turn_count}"
+        # Calculate session duration
+        duration_s = int(time.time() - self.session.session_start)
+        if duration_s > 60:
+            session_info += f"\nDuration: {duration_s//60}m {duration_s%60}s"
+        else:
+            session_info += f"\nDuration: {duration_s}s"
             
-            # Calculate session duration
-            duration_s = int(time.time() - self.session.session_start)
-            if duration_s > 60:
-                session_info += f"\nDuration: {duration_s//60}m {duration_s%60}s"
-            else:
-                session_info += f"\nDuration: {duration_s}s"
-                
-            # Speaker information
-            if self.session.speaker_id != "unknown":
-                session_info += f"\nSpeaker: {self.session.speaker_id}"
-                
-            base_prompt += session_info
+        # Speaker information
+        spk = self.session.speaker_id if self.session.speaker_id and self.session.speaker_id != "unknown" else "default_user"
+        session_info += f"\nSpeaker: {spk}"
+
+        # Total sessions (lifetime) from facts graph, if available
+        sessions_total = None
+        try:
+            if hasattr(self.memory_system, 'facts_graph'):
+                info = self.memory_system.facts_graph.get_session_info(spk)
+                sessions_total = info.get('session_count', 0)
+        except Exception:
+            sessions_total = None
+
+        if sessions_total is not None:
+            session_info += f"\nSessions: {sessions_total}"
+
+        base_prompt += session_info
+
+        # Relationship-aware tone guidance
+        relationship = "first-time" if not sessions_total or sessions_total <= 1 else ("returning" if sessions_total <= 10 else ("regular" if sessions_total <= 50 else "long-term"))
+        tone_block = (
+            "\n\n[Tone Guidance]\n"
+            f"Relationship: {relationship}\n"
+            "- First-time: be welcoming, explain briefly when asked, avoid assumptions.\n"
+            "- Returning: be concise and slightly familiar; reuse known facts.\n"
+            "- Long-term: be efficient and comfortable; prioritize direct answers."
+        )
+        base_prompt += tone_block
+        
+        base_prompt += session_info
         
         # Add memory instructions
         memory_instructions = """
@@ -408,15 +457,20 @@ class SmartContextManager(FrameProcessor):
         token_count = 0
         
         # Add exchanges from most recent backwards until budget exhausted
-        for user_msg, assistant_msg in reversed(self.recent_exchanges):
-            # Calculate tokens for this exchange
-            exchange_tokens = (self.token_counter.count_tokens(user_msg) +
-                             self.token_counter.count_tokens(assistant_msg))
+        for exch in reversed(self.recent_exchanges):
+            user_msg = exch[0] if len(exch) >= 1 else ""
+            assistant_msg = exch[1] if len(exch) >= 2 else ""
+            # Calculate tokens for this exchange (handle missing assistant)
+            exchange_tokens = self.token_counter.count_tokens(user_msg)
+            if assistant_msg:
+                exchange_tokens += self.token_counter.count_tokens(assistant_msg)
             
             if token_count + exchange_tokens <= token_budget:
                 # Insert at beginning to maintain chronological order
-                messages.insert(0, {"role": "assistant", "content": assistant_msg})
-                messages.insert(0, {"role": "user", "content": user_msg})
+                if assistant_msg:
+                    messages.insert(0, {"role": "assistant", "content": assistant_msg})
+                if user_msg:
+                    messages.insert(0, {"role": "user", "content": user_msg})
                 token_count += exchange_tokens
             else:
                 break
@@ -457,9 +511,12 @@ class SmartContextManager(FrameProcessor):
                 # Add assistant response to complete the exchange
                 self.recent_exchanges[-1] = (last_exchange[0], response)
             else:
-                # Start new exchange with user message (shouldn't happen)
-                logger.warning("Unexpected assistant response without user message")
-        
+                # Start a new exchange pairing assistant-only (rare but possible)
+                self.recent_exchanges.append(("", response))
+        else:
+            # No prior user turn recorded; still keep assistant to avoid losing context
+            self.recent_exchanges.append(("", response))
+
         # Maintain sliding window
         if len(self.recent_exchanges) > self.max_recent_exchanges:
             self.recent_exchanges.pop(0)

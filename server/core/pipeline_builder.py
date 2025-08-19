@@ -607,6 +607,41 @@ class PipelineBuilder:
             except Exception:
                 # Fallback to legacy aggregator on any error
                 await task.queue_frames([context_aggregator.user().get_context_frame()])
+
+        # Summarize session on disconnect and store in TapeStore
+        @rtvi_processor.event_handler("on_client_disconnected")
+        async def on_client_disconnected(rtvi_proc):
+            try:
+                smart_ctx = getattr(self, '_smart_ctx_ref', None)
+                if not smart_ctx:
+                    return
+                tape = getattr(smart_ctx, 'tape_store', None)
+                if not tape:
+                    return
+                # Compute session window
+                start_ts = getattr(smart_ctx.session, 'session_start', None)
+                if not start_ts:
+                    return
+                entries = tape.get_entries_since(start_ts)
+                if not entries:
+                    return
+                # Build heuristic summary (placeholder for LLM-based summarization)
+                turns = len(entries)
+                duration_s = int(time.time() - start_ts)
+                # Extract last few turns and any lines mentioning key facts
+                key_lines = []
+                for e in entries[-6:]:
+                    key_lines.append(f"[{e.role}] {e.content}")
+                summary_text = (
+                    "Session summary (heuristic):\n" +
+                    "\n".join(key_lines)
+                )[:1200]
+                # TODO: If SC_SUMMARY_USE_LLM=true, call LLM for a refined summary
+                session_id = f"{getattr(smart_ctx.session, 'speaker_id','default_user')}:{int(start_ts)}"
+                tape.add_summary(session_id, summary_text, keywords_json='[]', turns=turns, duration_s=duration_s)
+            except Exception as e:
+                from loguru import logger
+                logger.debug(f"Session summarization skipped: {e}")
         
         return task
     

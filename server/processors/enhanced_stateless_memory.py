@@ -23,6 +23,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from loguru import logger
+import warnings
 
 # Define MemoryItem and tier enums
 class MemoryTier(Enum):
@@ -1140,6 +1141,16 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
         """Initialize persistent BM25 search index"""
         try:
             import bm25s
+            # Suppress noisy sklearn matmul runtime warnings during small-corpus operations
+            try:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r".*encountered in matmul.*",
+                    category=RuntimeWarning,
+                    module="sklearn.utils.extmath",
+                )
+            except Exception:
+                pass
             
             # BM25 configuration
             self.bm25_index_path = self.db_path / "bm25_index"
@@ -1248,6 +1259,12 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
             except ImportError:
                 logger.debug("Stemmer not available, using basic tokenization")
             
+            # Skip building if corpus too small to avoid numerical warnings/noise
+            if len(corpus) < 5:
+                logger.debug("BM25: corpus < 5 documents, skipping index build for now")
+                self.bm25_retriever = None
+                return
+
             # Tokenize corpus following BM25s pattern
             corpus_tokens = bm25s.tokenize(corpus, stemmer=stemmer, show_progress=False)
             
