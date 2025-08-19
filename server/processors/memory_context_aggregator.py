@@ -27,25 +27,31 @@ class MemoryAwareOpenAILLMContext(OpenAILLMContext):
     def __init__(self, 
                  messages: List[Dict[str, str]], 
                  memory_processor: Optional[StatelessMemoryProcessor] = None,
-                 max_context_tokens: int = 4096,
-                 memory_budget_ratio: float = 0.3,
+                 max_context_tokens: int = 1500,  # Reduced from 4096
+                 memory_token_budget: int = 1000,  # Fixed budget for memory
                  **kwargs):
         super().__init__(messages, **kwargs)
         
         self.memory_processor = memory_processor
         self.max_context_tokens = max_context_tokens
-        self.memory_budget_ratio = memory_budget_ratio  # % of context for memory
+        self.memory_token_budget = memory_token_budget  # Fixed 1000 tokens for memory
         self.token_counter = get_token_counter()
+        
+        # Query cache for performance (last 1000 queries)
+        self.query_cache = {}
+        self.cache_max_size = 1000
         
         # Performance metrics
         self.injection_count = 0
         self.total_injection_time_ms = 0.0
         self.context_overflows = 0
         self.memory_hits = 0
+        self.cache_hits = 0
         
-        logger.info(f"🧠 Memory-aware context initialized:")
-        logger.info(f"   Max tokens: {max_context_tokens}")
-        logger.info(f"   Memory budget: {memory_budget_ratio:.0%} ({int(max_context_tokens * memory_budget_ratio)} tokens)")
+        logger.info(f"🧠 Smart memory-aware context initialized:")
+        logger.info(f"   Max total tokens: {max_context_tokens}")
+        logger.info(f"   Memory budget: {memory_token_budget} tokens")
+        logger.info(f"   Query cache size: {self.cache_max_size}")
     
     async def _inject_memory_if_needed(self, current_messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
@@ -173,96 +179,171 @@ class MemoryAwareOpenAILLMContext(OpenAILLMContext):
         return enhanced_messages
     
     def _build_context_with_memory_sync(self, current_messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """Synchronous version of memory injection"""
+        """Smart context building with controlled memory injection"""
         if not self.memory_processor:
             return current_messages
         
         try:
-            # Extract meaningful user query for memory search
-            user_query = ""
-            for msg in reversed(current_messages):
-                if msg.get('role') == 'user':
-                    content = msg.get('content', '').strip()
-                    # Skip short/meaningless queries like "?", ".", "ok"
-                    if len(content) > 2 and content not in ['?', '.', 'ok', 'yes', 'no']:
-                        user_query = content
-                        break
-                    # If it's short, keep looking for a longer query
-                    elif not user_query:  # Only set if we don't have a better query yet
-                        user_query = content
+            # STEP 1: Get exactly last 5 exchanges (10 messages max)
+            base_context = self._get_last_5_exchanges(current_messages)
             
-            if not user_query or len(user_query.strip()) <= 2:
-                logger.debug(f"⚠️ No meaningful query found for memory search")
-                return current_messages
+            # STEP 2: Extract meaningful user query
+            user_query = self._extract_user_query(current_messages)
+            if not user_query:
+                logger.debug("⚠️ No meaningful query found")
+                return base_context
             
-            # Use sync wrapper for memory retrieval
-            logger.info(f"🔍 Searching memories for query: '{user_query}'")
-            memories = self._get_memories_sync(user_query)
+            # STEP 3: Check if this query needs memory retrieval
+            if not self._needs_memory_search(user_query):
+                logger.debug(f"🚫 Query doesn't need memory: '{user_query[:30]}...'")
+                return base_context
             
-            logger.info(f"🔍 Memory search returned {len(memories) if memories else 0} memories")
-            if memories:
-                for i, memory in enumerate(memories):
-                    logger.info(f"   Memory {i+1}: [{memory.speaker_id}] {memory.content[:50]}...")
-            
-            # CRITICAL FIX: If the main search only finds repetitive queries, 
-            # search for key terms from the query to find actual content
-            is_repetitive = self._are_memories_repetitive(memories)
-            logger.info(f"🔄 Repetitive check: {is_repetitive}")
-            
-            if memories and is_repetitive:
-                logger.info("🔄 Found repetitive memories, searching for key terms...")
-                key_terms = self._extract_key_terms(user_query)
-                for term in key_terms:
-                    if len(term) > 3:  # Only search meaningful terms
-                        logger.info(f"🔍 Searching for key term: '{term}'")
-                        term_memories = self._get_memories_sync(term, max_memories=3)
-                        if term_memories:
-                            # Add unique memories from key term searches
-                            for tm in term_memories:
-                                if not any(tm.content == m.content for m in memories):
-                                    memories.append(tm)
-                                    logger.info(f"   ✅ Added from '{term}': [{tm.speaker_id}] {tm.content[:60]}...")
-            
-            
+            # STEP 4: Get memories (with caching)
+            memories = self._get_cached_memories(user_query)
             if not memories:
-                logger.info("📭 No memories found, returning original context")
-                return current_messages
+                logger.debug("📭 No relevant memories found")
+                return base_context
             
-            # Build memory context as conversation pairs (not system messages)
-            enhanced_messages = current_messages.copy()
+            # STEP 5: Add memories within token budget
+            enhanced_context = self._add_memories_to_context(base_context, memories)
             
-            # Find insertion point BEFORE the current user query (at the end of conversation history)
-            # This way: System → Conversation History → Relevant Memories → Current Query
-            insertion_point = len(enhanced_messages) - 1 if enhanced_messages else 0
+            logger.info(f"🧠 Smart context: {len(base_context)} base + {len(enhanced_context) - len(base_context)} memory messages")
+            return enhanced_context
             
-            # Add memories as conversation pairs before current user query
-            for memory in memories:
+        except Exception as e:
+            logger.error(f"❌ Smart context building failed: {e}")
+            return current_messages
+    
+    def _get_last_5_exchanges(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Get exactly the last 5 exchanges (max 10 messages)"""
+        # Find system message
+        system_msg = None
+        conversation_msgs = []
+        
+        for msg in messages:
+            if msg.get('role') == 'system':
+                system_msg = msg
+            else:
+                conversation_msgs.append(msg)
+        
+        # Take only last 10 conversation messages (5 exchanges)
+        recent_conversation = conversation_msgs[-10:] if len(conversation_msgs) > 10 else conversation_msgs
+        
+        # Build final context
+        base_context = []
+        if system_msg:
+            base_context.append(system_msg)
+        base_context.extend(recent_conversation)
+        
+        logger.debug(f"📝 Base context: {len(base_context)} messages (last 5 exchanges)")
+        return base_context
+    
+    def _extract_user_query(self, messages: List[Dict[str, str]]) -> str:
+        """Extract the most recent meaningful user query"""
+        for msg in reversed(messages):
+            if msg.get('role') == 'user':
+                content = msg.get('content', '').strip()
+                # Skip very short or meaningless queries
+                if len(content) > 2 and content not in ['?', '.', 'ok', 'yes', 'no', '!']:
+                    return content
+        return ""
+    
+    def _needs_memory_search(self, query: str) -> bool:
+        """Determine if a query needs memory retrieval"""
+        query_lower = query.lower()
+        
+        # Memory trigger patterns
+        memory_triggers = [
+            'remember', 'recall', 'what is my', 'what was my', 'my name',
+            'my dog', 'my location', 'where do i', 'do you know',
+            'tell me about', 'what do you know about me', 'location',
+            'dog', 'favorite number'
+        ]
+        
+        # Question words that might need context
+        question_words = ['what', 'where', 'who', 'when', 'how', 'why', 'which']
+        
+        # Check for memory triggers
+        if any(trigger in query_lower for trigger in memory_triggers):
+            return True
+        
+        # Check for questions that might benefit from memory
+        if any(word in query_lower for word in question_words) and len(query) > 10:
+            return True
+        
+        # Don't search for simple conversational responses
+        if len(query) < 5 or query_lower in ['thanks', 'thank you', 'bye', 'goodbye', 'hi', 'hello']:
+            return False
+        
+        return False
+    
+    def _get_cached_memories(self, query: str) -> List:
+        """Get memories with caching for performance"""
+        # Check cache first
+        if query in self.query_cache:
+            self.cache_hits += 1
+            logger.debug(f"💾 Cache hit for query: '{query[:30]}...'")
+            return self.query_cache[query]
+        
+        # Search and cache result
+        memories = self._get_memories_sync(query, max_memories=10)  # Get more candidates
+        
+        # Cache management - keep only last 1000 queries
+        if len(self.query_cache) >= self.cache_max_size:
+            # Remove oldest entries (simple FIFO)
+            oldest_keys = list(self.query_cache.keys())[:100]  # Remove 100 oldest
+            for key in oldest_keys:
+                del self.query_cache[key]
+        
+        self.query_cache[query] = memories
+        logger.debug(f"🔍 Cache miss - searched and cached for: '{query[:30]}...'")
+        return memories
+    
+    def _add_memories_to_context(self, base_context: List[Dict[str, str]], memories: List) -> List[Dict[str, str]]:
+        """Add memories to context within token budget"""
+        enhanced_context = base_context.copy()
+        current_tokens = 0
+        memories_added = 0
+        
+        # Count base context tokens
+        base_tokens = sum(self.token_counter.count_tokens(msg['content']) for msg in base_context)
+        available_tokens = self.memory_token_budget
+        
+        logger.debug(f"🧮 Token budget: {available_tokens} available for memories")
+        
+        # Add memories within budget
+        for memory in memories:
+            memory_tokens = self.token_counter.count_tokens(memory.content)
+            
+            if current_tokens + memory_tokens <= available_tokens:
+                # Add as conversation pair
                 if memory.speaker_id == 'assistant':
-                    enhanced_messages.insert(insertion_point, {
+                    enhanced_context.append({
                         'role': 'assistant',
                         'content': memory.content
                     })
-                    insertion_point += 1
                 else:
-                    enhanced_messages.insert(insertion_point, {
-                        'role': 'user', 
+                    enhanced_context.append({
+                        'role': 'user',
                         'content': memory.content
                     })
-                    insertion_point += 1
-            
-            logger.info(f"🧠 Context built with {len(memories)} memories integrated as conversation")
-            
-            # Debug: Log what's actually being sent to LLM
-            logger.info(f"🔍 FINAL CONTEXT SENT TO LLM ({len(enhanced_messages)} messages):")
-            for i, msg in enumerate(enhanced_messages):
-                content_preview = msg['content'][:100] + "..." if len(msg['content']) > 100 else msg['content']
-                logger.info(f"   {i+1}. {msg['role']}: {content_preview}")
-            
-            return enhanced_messages
-            
-        except Exception as e:
-            logger.error(f"❌ Memory context building failed: {e}")
-            return current_messages
+                
+                current_tokens += memory_tokens
+                memories_added += 1
+                logger.debug(f"   Added memory {memories_added}: {memory.content[:50]}... ({memory_tokens} tokens)")
+            else:
+                logger.debug(f"   Skipping memory - would exceed budget ({memory_tokens} tokens)")
+                break
+        
+        # Add current user query at the end
+        if base_context and base_context[-1].get('role') == 'user':
+            current_query = base_context[-1]
+            enhanced_context.append(current_query)
+        
+        logger.info(f"💰 Token usage: {base_tokens} base + {current_tokens} memory = {base_tokens + current_tokens} total")
+        logger.info(f"🧠 Added {memories_added} memories to context")
+        
+        return enhanced_context
     
     def _get_memories_sync(self, query: str, max_memories: int = 5) -> List:
         """Memory retrieval using persistent BM25 index"""
@@ -635,25 +716,28 @@ class MemoryUserContextAggregator(LLMUserContextAggregator):
 def create_memory_context(
     initial_messages: List[Dict[str, str]],
     memory_processor: Optional[StatelessMemoryProcessor] = None,
-    max_context_tokens: int = 4096,
+    max_context_tokens: int = 1500,
+    memory_token_budget: int = 1000,
     **kwargs
 ) -> MemoryAwareOpenAILLMContext:
     """
-    Factory function to create memory-aware context
+    Factory function to create smart memory-aware context
     
     Args:
         initial_messages: Starting messages (usually system prompt)
         memory_processor: Memory processor instance
-        max_context_tokens: Maximum tokens allowed in context
+        max_context_tokens: Maximum total tokens allowed in context
+        memory_token_budget: Fixed budget for memory retrieval (1000 tokens)
         **kwargs: Additional context parameters
     
     Returns:
-        Memory-aware context that will inject memories before LLM calls
+        Smart memory-aware context with controlled size and caching
     """
     return MemoryAwareOpenAILLMContext(
         messages=initial_messages,
         memory_processor=memory_processor,
         max_context_tokens=max_context_tokens,
+        memory_token_budget=memory_token_budget,
         **kwargs
     )
 

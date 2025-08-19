@@ -1167,27 +1167,30 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
             self.bm25_retriever = None
     
     def _load_bm25_index(self) -> bool:
-        """Load existing BM25 index from disk"""
+        """Load existing BM25 index from disk following BM25s pattern"""
         try:
             import bm25s
-            import json
             
-            index_file = self.bm25_index_path / "index.npz"
-            vocab_file = self.bm25_index_path / "vocab.txt"
-            
-            if not (index_file.exists() and vocab_file.exists() and self.bm25_corpus_path.exists()):
+            # Check if index exists
+            if not self.bm25_index_path.exists():
+                logger.debug("BM25 index directory doesn't exist")
                 return False
             
-            # Load corpus metadata
-            with open(self.bm25_corpus_path, 'r', encoding='utf-8') as f:
-                corpus_data = json.load(f)
-                self.bm25_corpus = corpus_data['corpus']
-                self.bm25_memory_ids = corpus_data['memory_ids']
+            # Load BM25 index with corpus (following BM25s pattern)
+            self.bm25_retriever = bm25s.BM25.load(str(self.bm25_index_path), load_corpus=True)
             
-            # Load BM25 index
-            self.bm25_retriever = bm25s.BM25()
-            self.bm25_retriever.load(str(self.bm25_index_path), mmap=True)
+            # Load memory IDs mapping
+            if self.bm25_corpus_path.exists():
+                import json
+                with open(self.bm25_corpus_path, 'r', encoding='utf-8') as f:
+                    corpus_data = json.load(f)
+                    self.bm25_memory_ids = corpus_data['memory_ids']
+                    logger.debug(f"Loaded {len(self.bm25_memory_ids)} memory ID mappings")
+            else:
+                logger.warning("BM25 memory ID mapping not found")
+                return False
             
+            logger.info(f"✅ BM25 index loaded successfully from {self.bm25_index_path}")
             return True
             
         except Exception as e:
@@ -1195,7 +1198,7 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
             return False
     
     def _rebuild_bm25_index(self):
-        """Rebuild BM25 index from all existing memories"""
+        """Rebuild BM25 index following BM25s quickstart pattern"""
         try:
             import bm25s
             import json
@@ -1226,39 +1229,48 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
                 logger.info("No memories found to index")
                 return
             
-            # Build corpus and memory mapping
-            self.bm25_corpus = []
+            # Build corpus and memory mapping following BM25s pattern
+            corpus = []
             self.bm25_memory_ids = []
             
-            for i, memory in enumerate(all_memories):
-                self.bm25_corpus.append(memory.content)
-                # Store memory identifier (timestamp + speaker)
+            for memory in all_memories:
+                corpus.append(memory.content)
+                # Store memory identifier (timestamp + speaker)  
                 memory_id = f"{memory.speaker_id}:{memory.timestamp}"
                 self.bm25_memory_ids.append(memory_id)
             
-            # Create and train BM25 index
+            # Create stemmer for better search quality (optional but recommended)
+            stemmer = None
+            try:
+                import Stemmer
+                stemmer = Stemmer.Stemmer("english")
+                logger.debug("Using English stemmer for BM25")
+            except ImportError:
+                logger.debug("Stemmer not available, using basic tokenization")
+            
+            # Tokenize corpus following BM25s pattern
+            corpus_tokens = bm25s.tokenize(corpus, stemmer=stemmer, show_progress=False)
+            
+            # Create and index BM25 following BM25s pattern
             self.bm25_retriever = bm25s.BM25()
+            self.bm25_retriever.index(corpus_tokens)
             
-            # Tokenize and index corpus
-            tokenized_corpus = bm25s.tokenize(self.bm25_corpus)
-            self.bm25_retriever.index(tokenized_corpus)
+            # Save index with corpus following BM25s pattern
+            self.bm25_retriever.save(str(self.bm25_index_path), corpus=corpus)
             
-            # Save index to disk with memory mapping
-            self.bm25_retriever.save(str(self.bm25_index_path), mmap=True)
-            
-            # Save corpus metadata
+            # Save memory ID mapping separately
             corpus_data = {
-                'corpus': self.bm25_corpus,
                 'memory_ids': self.bm25_memory_ids
             }
             
             with open(self.bm25_corpus_path, 'w', encoding='utf-8') as f:
                 json.dump(corpus_data, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"✅ BM25 index built and saved with {len(self.bm25_corpus)} documents")
+            logger.info(f"✅ BM25 index built and saved with {len(corpus)} documents using BM25s pattern")
             
         except Exception as e:
             logger.error(f"❌ Failed to rebuild BM25 index: {e}")
+            logger.error(f"   Error details: {str(e)}")
             self.bm25_retriever = None
     
     def _update_bm25_index(self, new_memory: MemoryItem):
@@ -1280,46 +1292,60 @@ class EnhancedStatelessMemoryProcessor(FrameProcessor):
             logger.debug(f"Failed to update BM25 index: {e}")
     
     def search_memories_bm25(self, query: str, max_results: int = 5) -> List[MemoryItem]:
-        """Search memories using persistent BM25 index"""
-        if not self.bm25_retriever or not self.bm25_corpus:
+        """Search memories using persistent BM25 index following BM25s pattern"""
+        if not self.bm25_retriever:
             logger.debug("BM25 index not available, falling back to tier search")
             return []
         
         try:
             import bm25s
             
-            # Tokenize query
-            query_tokens = bm25s.tokenize([query])
+            # Create stemmer (same as used for indexing)
+            stemmer = None
+            try:
+                import Stemmer
+                stemmer = Stemmer.Stemmer("english")
+            except ImportError:
+                pass
             
-            # Search with BM25
+            # Tokenize query following BM25s pattern
+            query_tokens = bm25s.tokenize([query], stemmer=stemmer, show_progress=False)
+            
+            # Search with BM25 following BM25s pattern
             results, scores = self.bm25_retriever.retrieve(
                 query_tokens, 
-                k=min(max_results, len(self.bm25_corpus))
+                k=min(max_results, len(self.bm25_memory_ids)),
+                corpus=self.bm25_retriever.corpus  # Use corpus from loaded index
             )
             
             # Convert results back to MemoryItem objects
             found_memories = []
             
             for idx, score in zip(results[0], scores[0]):
-                if score > 0.1:  # Minimum relevance threshold
-                    memory_id = self.bm25_memory_ids[idx]
-                    content = self.bm25_corpus[idx]
-                    
-                    # Parse memory_id to get speaker and timestamp
-                    speaker_id, timestamp_str = memory_id.split(':', 1)
-                    timestamp = float(timestamp_str)
-                    
-                    # Create memory item (simplified - could enhance with full metadata)
-                    memory = MemoryItem(
-                        content=content,
-                        timestamp=timestamp,
-                        speaker_id=speaker_id,
-                        tier=MemoryTier.WARM,  # Default tier
-                        importance_score=float(score)  # Use BM25 score as importance
-                    )
-                    
-                    found_memories.append(memory)
-                    logger.debug(f"BM25 found: {content[:60]}... (score: {score:.3f})")
+                if score > 0.01:  # Lower threshold for better recall
+                    try:
+                        memory_id = self.bm25_memory_ids[idx]
+                        content = self.bm25_retriever.corpus[idx]  # Get content from loaded corpus
+                        
+                        # Parse memory_id to get speaker and timestamp
+                        speaker_id, timestamp_str = memory_id.split(':', 1)
+                        timestamp = float(timestamp_str)
+                        
+                        # Create memory item
+                        memory = MemoryItem(
+                            content=content,
+                            timestamp=timestamp,
+                            speaker_id=speaker_id,
+                            tier=MemoryTier.WARM,
+                            importance_score=float(score)
+                        )
+                        
+                        found_memories.append(memory)
+                        logger.debug(f"BM25 found: {content[:60]}... (score: {score:.3f})")
+                        
+                    except (IndexError, ValueError) as e:
+                        logger.debug(f"Error processing result {idx}: {e}")
+                        continue
             
             logger.info(f"🎯 BM25 search found {len(found_memories)} results for '{query[:30]}...'")
             return found_memories

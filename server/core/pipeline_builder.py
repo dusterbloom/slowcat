@@ -526,14 +526,14 @@ class PipelineBuilder:
             rtvi,  # ORIGINAL POSITION: between speaker_context and speaker_name_manager
             processors['speaker_name_manager'],
             context_aggregator.user(),
-            processors['memory_injector'],  # Traditional memory injector (None for stateless)
-            services['llm'], # Main LLM
+            # processors['memory_injector'],  # Traditional memory injector (None for stateless)
+            services['llm'], # Main LLM using memory aware context
             services['tts'], # Kokoro TTS
             transport.output(),
-            processors['greeting_filter'],
-            processors['streaming_deduplicator'],  # FIX cumulative duplication patterns
-            processors['context_filter'],  # FILTER streaming frames RIGHT BEFORE context
-            context_aggregator.assistant(),  # MOVED to end after filtering
+            # processors['greeting_filter'],
+            # processors['streaming_deduplicator'],  # FIX cumulative duplication patterns
+            # processors['context_filter'],  # FILTER streaming frames for assistant response RIGHT BEFORE context
+            # context_aggregator.assistant(),  # MOVED to end after filtering
         ]
         
         # Filter out None components
