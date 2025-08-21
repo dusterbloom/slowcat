@@ -45,5 +45,37 @@
 - Extend/Modify:
   - New facts: adapt extractor rules or map additional entities in `spacy_fact_extractor.py`.
   - Decay/retention: tune constants in `facts_graph.py`.
-  - Budgeting: adjust `TokenBudget` in `smart_context_manager.py`.
-  - New stores/routes: plug into `create_query_router()`.
+- Budgeting: adjust `TokenBudget` in `smart_context_manager.py`.
+- New stores/routes: plug into `create_query_router()`.
+
+## Environment Flags (Context, Sessions, STT)
+
+- USER_ID: Optional static user id when speaker recognition is disabled. Empty uses detected speaker id.
+- FACTS_DB_PATH: Absolute path to the facts DB (ensures session/facts persistence across runs).
+- PIPELINE_IDLE_TIMEOUT_SECS: 0 disables idle cancellation; set seconds to enable.
+- SHERPA_RULE2_MIN_TRAILING_SILENCE: Endpoint detector trailing silence (s) for Sherpa; 1.0 recommended.
+- SHERPA_MIN_FINAL_WORDS / SHERPA_ENDPOINT_DEBOUNCE_MS: Short-final debounce (words threshold, hold ms).
+
+### SmartContextManager Feature Toggles
+
+- ENABLE_SPELLING_HINTS (default: false)
+  - Detects spelled-out names (e.g., “S E R R A M A N N A”) and adds a compact hint so the model treats it as a proper name.
+  - Off by default for general deployments.
+
+- ENABLE_LOCATION_SPELLING_HINTS (default: false)
+  - Location-focused variant; when the conversation is about location/town names, applies stronger hints to stop re-asking and treat the spelled sequence as a place name to confirm.
+
+- ENABLE_GREETING_FALLBACK (default: false)
+  - If the previous-session summary is too noisy/empty, injects a simple “Hello!” on connect to reset tone.
+
+### TapeStore Noise Guard (defaults enforce it)
+
+- TAPE_MIN_USEFUL_WORDS (default: 3)
+- TAPE_MIN_USEFUL_LEN (default: 15)
+
+Persist a turn to TapeStore only if any of the following holds:
+- It is a question (ends with “?”), or
+- It contains at least TAPE_MIN_USEFUL_WORDS alpha words, or
+- Its length is at least TAPE_MIN_USEFUL_LEN characters.
+
+Set both to 0 to disable filtering (not recommended).

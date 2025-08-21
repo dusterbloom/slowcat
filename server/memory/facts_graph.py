@@ -388,16 +388,35 @@ class FactsGraph:
         """Update session metadata for speaker"""
         cur = self.conn.cursor()
         now = time.time()
-        
+
         cur.execute("""
         INSERT INTO sessions(speaker_id, session_count, last_interaction, first_seen, total_turns)
         VALUES (?, 1, ?, ?, 1)
         ON CONFLICT(speaker_id) DO UPDATE SET
-            session_count = session_count + 1,
             last_interaction = excluded.last_interaction,
             total_turns = total_turns + 1
         """, (speaker_id, now, now))
         
+        self.conn.commit()
+
+    def start_session(self, speaker_id: str):
+        """Mark the start of a new session for a speaker.
+
+        Increments session_count exactly once per session without affecting
+        total_turns. Also updates last_interaction and first_seen if needed.
+        """
+        cur = self.conn.cursor()
+        now = time.time()
+        cur.execute(
+            """
+            INSERT INTO sessions(speaker_id, session_count, last_interaction, first_seen, total_turns)
+            VALUES (?, 1, ?, ?, 0)
+            ON CONFLICT(speaker_id) DO UPDATE SET
+                session_count = session_count + 1,
+                last_interaction = excluded.last_interaction
+            """,
+            (speaker_id, now, now)
+        )
         self.conn.commit()
     
     def get_session_info(self, speaker_id: str) -> Dict:

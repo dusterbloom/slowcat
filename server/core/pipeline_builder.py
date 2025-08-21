@@ -535,6 +535,8 @@ class PipelineBuilder:
             smart_ctx,
             # processors['memory_injector'],  # Traditional memory injector (None for stateless)
             services['llm'], # Main LLM using memory aware context
+            # Optional greeting filter to suppress redundant introductions
+            processors['greeting_filter'],
             # Do NOT place ContextFilter here; it blocks streaming TextFrames
             # needed by downstream TTS. Keep the LLM stream intact to audio.
             # Add response tap to feed assistant text back to SmartContextManager and TapeStore
@@ -583,33 +585,82 @@ class PipelineBuilder:
         if not rtvi_processor:
             raise RuntimeError("RTVI processor not found in pipeline")
         
+        # Configure idle timeout from env; 0 disables idle cancellation
+        try:
+            idle_env = os.getenv("PIPELINE_IDLE_TIMEOUT_SECS", "0").strip()
+            idle_timeout = int(idle_env) if idle_env.isdigit() else 0
+        except Exception:
+            idle_timeout = 0
+
         task = PipelineTask(
             pipeline,
             params=PipelineParams(
-                enable_metrics=True, 
+                enable_metrics=True,
                 enable_usage_metrics=True,
-                idle_timeout_secs=600  # 10-minute timeout
+                idle_timeout_secs=idle_timeout
             ),
             observers=[RTVIObserver(rtvi_processor)]
         )
+        if idle_timeout <= 0:
+            logger.info("⏳ Pipeline idle timeout disabled (PIPELINE_IDLE_TIMEOUT_SECS=0)")
+        else:
+            logger.info(f"⏳ Pipeline idle timeout set to {idle_timeout}s")
         
-        # Setup RTVI event handler
-        @rtvi_processor.event_handler("on_client_ready")
-        async def on_client_ready(rtvi_proc):
-            await rtvi_proc.set_bot_ready()
+        # Setup RTVI event handlers with auto-ready fallback to avoid race conditions
+        _rtvi_ready_flag = {"ready": False}
+        _initial_sent_flag = {"sent": False}
+
+        async def _send_initial_context():
+            if _initial_sent_flag["sent"]:
+                return
             try:
                 # Prefer SmartContextManager initial context for richer status + facts
                 if hasattr(self, '_smart_ctx_ref') and self._smart_ctx_ref is not None:
                     init_frame = await self._smart_ctx_ref.get_initial_context_frame()
-                    await task.queue_frames([init_frame])
+                    frames = [init_frame]
+                    try:
+                        if hasattr(self._smart_ctx_ref, 'needs_greeting') and self._smart_ctx_ref.needs_greeting():
+                            from pipecat.frames.frames import TextFrame
+                            frames.append(TextFrame("Hello!"))
+                    except Exception:
+                        pass
+                    await task.queue_frames(frames)
                 else:
                     await task.queue_frames([context_aggregator.user().get_context_frame()])
+                _initial_sent_flag["sent"] = True
             except Exception:
                 # Fallback to legacy aggregator on any error
                 await task.queue_frames([context_aggregator.user().get_context_frame()])
+                _initial_sent_flag["sent"] = True
+
+        @rtvi_processor.event_handler("on_client_ready")
+        async def on_client_ready(rtvi_proc):
+            _rtvi_ready_flag["ready"] = True
+            await rtvi_proc.set_bot_ready()
+            await _send_initial_context()
+
+        # Some RTVI implementations emit event name without 'on_' prefix
+        @rtvi_processor.event_handler("client_ready")
+        async def client_ready(rtvi_proc):
+            await on_client_ready(rtvi_proc)
+
+        # Auto-ready fallback in case client_ready is missed during fast reconnects
+        async def _auto_ready_fallback():
+            await asyncio.sleep(2.0)
+            if not _rtvi_ready_flag["ready"]:
+                from loguru import logger as _logger
+                _logger.info("⚙️ RTVI auto-ready fallback engaged (no client_ready received)")
+                try:
+                    await rtvi_processor.set_bot_ready()
+                except Exception:
+                    pass
+                await _send_initial_context()
+
+        asyncio.create_task(_auto_ready_fallback())
 
         # Summarize session on disconnect and store in TapeStore
-        @rtvi_processor.event_handler("on_client_disconnected")
+        # Use generic event name that RTVI exposes
+        @rtvi_processor.event_handler("client_disconnected")
         async def on_client_disconnected(rtvi_proc):
             try:
                 smart_ctx = getattr(self, '_smart_ctx_ref', None)
@@ -625,17 +676,28 @@ class PipelineBuilder:
                 entries = tape.get_entries_since(start_ts)
                 if not entries:
                     return
-                # Build heuristic summary (placeholder for LLM-based summarization)
-                turns = len(entries)
-                duration_s = int(time.time() - start_ts)
-                # Extract last few turns and any lines mentioning key facts
-                key_lines = []
-                for e in entries[-6:]:
-                    key_lines.append(f"[{e.role}] {e.content}")
-                summary_text = (
-                    "Session summary (heuristic):\n" +
-                    "\n".join(key_lines)
-                )[:1200]
+                # Build improved heuristic summary (compact, no greetings)
+                import re
+                def _norm(s: str) -> str:
+                    return re.sub(r"\s+", " ", s or "").strip()
+                def _is_intro(s: str) -> bool:
+                    s2 = _norm(s).lower()
+                    return (
+                        s2.startswith("hello") and ("help" in s2 or "assist" in s2)
+                    ) or ("i'm slow" in s2)
+                # Take last ~10 contentful lines excluding boilerplate
+                recent = []
+                for e in entries[-12:]:
+                    t = _norm(e.content)
+                    if not t:
+                        continue
+                    if e.role == 'assistant' and _is_intro(t):
+                        continue
+                    recent.append(f"[{e.role}] {t}")
+                # Compose a short summary
+                header = "Session summary:\n"
+                body = "\n".join(recent[-6:])
+                summary_text = (header + body)[:900]
                 # TODO: If SC_SUMMARY_USE_LLM=true, call LLM for a refined summary
                 session_id = f"{getattr(smart_ctx.session, 'speaker_id','default_user')}:{int(start_ts)}"
                 tape.add_summary(session_id, summary_text, keywords_json='[]', turns=turns, duration_s=duration_s)

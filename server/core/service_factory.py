@@ -235,6 +235,18 @@ class ServiceFactory:
     def _create_global_analyzers(self, ml_modules: Dict[str, Any]) -> Dict[str, Any]:
         """Create global analyzer instances"""
         logger.info("🔄 Initializing global analyzers...")
+        # Suppress noisy sklearn matmul runtime warnings that clutter logs during
+        # small-corpus vector ops (does not hide real errors)
+        try:
+            import warnings
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*encountered in matmul.*",
+                module="sklearn.utils.extmath",
+                category=RuntimeWarning,
+            )
+        except Exception:
+            pass
         
         # Initialize audio buffer pool for latency optimization
         from utils.audio_pool import initialize_audio_pool
