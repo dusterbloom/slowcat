@@ -66,6 +66,9 @@ class GreetingFilterProcessor(FrameProcessor):
             return
 
         self._buffer += frame.text or ""
+        # Optional: aggressively suppress greetings on any turn
+        import os
+        suppress_all = os.getenv('SC_SUPPRESS_ASSISTANT_GREETINGS', 'true').lower() == 'true'
 
         # Try robust removal using normalization + regex
         normalized = self._normalize(self._buffer)
@@ -90,6 +93,15 @@ class GreetingFilterProcessor(FrameProcessor):
             self._greeting_filtered = True
             self._buffer = ""
         else:
+            # If suppress_all is enabled, attempt to strip greeting prefixes on any turn
+            if suppress_all:
+                # Remove friendly greeting prefixes like "hello [name]!" regardless of case/spaces
+                if normalized.lower().startswith('hello'):
+                    normalized2 = re.sub(r"^\s*hello\s*[,!]*\s*[^.!?]{0,24}[.!?]*\s*", "", normalized, flags=re.IGNORECASE)
+                    if normalized2 != normalized:
+                        await self.push_frame(TextFrame(normalized2 or ""), direction)
+                        self._buffer = ""
+                        return
             # If buffer no longer matches the start of greeting, forward it
             if self._greeting_filtered or not (self._greeting_text and self._greeting_text.startswith(self._buffer)):
                 await self.push_frame(TextFrame(self._buffer), direction)

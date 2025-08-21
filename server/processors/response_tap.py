@@ -50,7 +50,7 @@ class ResponseTap(FrameProcessor):
                 # Not within a declared response; treat this as a final one-off
                 try:
                     if text:
-                        self.smart_context_manager.add_assistant_response(text)
+                        await self.smart_context_manager.add_assistant_response(text)
                 except Exception as e:
                     logger.debug(f"ResponseTap: add_assistant_response (immediate) failed: {e}")
         elif isinstance(frame, LLMFullResponseEndFrame) and direction == FrameDirection.DOWNSTREAM:
@@ -58,7 +58,7 @@ class ResponseTap(FrameProcessor):
                 final_text = (self._buffer or '').strip()
                 if final_text:
                     try:
-                        self.smart_context_manager.add_assistant_response(final_text)
+                        await self.smart_context_manager.add_assistant_response(final_text)
                     except Exception as e:
                         logger.debug(f"ResponseTap: add_assistant_response (final) failed: {e}")
                 # Reset state

@@ -2,7 +2,19 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2025-08-04
+## [Unreleased] - 2025-08-21
+
+### 🚀 SurrealDB Memory System (Revolutionary Upgrade)
+- **Multi-model Database** - Single SurrealDB replaces 3 separate SQLite databases for unified memory management
+- **Drop-in Compatibility** - Seamless replacement maintaining exact same interfaces as existing memory system
+- **JWT Authentication** - Secure authentication with persistent credentials and proper error handling
+- **Time-travel Queries** - Natural language date parsing for conversational history ("what did we discuss last Tuesday?")
+- **Graph Relationships** - Advanced fact storage with natural decay and relationship modeling
+- **Apple Silicon Optimized** - Rust-based SurrealDB provides superior performance on M-series chips
+- **Environment Toggle** - Instant rollback capability via `USE_SURREALDB=true/false` environment variable
+- **Automated Lifecycle** - SurrealDB server automatically started/stopped by `run_bot.sh` with proper cleanup
+- **Comprehensive Testing** - Full test suite covering authentication, data persistence, and performance
+- **Real-time Operations** - Live async connections with concurrent operations and connection pooling
 
 ### 🎵 Music Mode (Major Feature)
 - **Local AI DJ functionality** - Complete voice-controlled music system with local file library integration
@@ -110,6 +122,54 @@ All notable changes to this project will be documented in this file. The format 
 - **Custom STT** - Custom speech-to-text with performance optimization
 - **Auto-enrollment** - Automatic speaker enrollment with performance tuning
 - **Integration tests** - Complete integration testing framework
+
+## [2025-08-20] - Resilient Reconnects, Fixed Context Memory, and Noise Guards
+
+### 🏗️ Architecture & Pipeline
+- Robust RTVI handling: supports both `client_ready` and `on_client_ready`, plus `client_disconnected`; adds 2s auto-ready fallback to prevent stalls after fast reconnects.
+- Initial context delivery is idempotent and sent once per session (via event or fallback), eliminating “silent” pipelines.
+- Idle timeout is env-configurable (`PIPELINE_IDLE_TIMEOUT_SECS`); default disabled to avoid mid-session cancellation.
+- GreetingFilter wired into the pipeline to strip verbose LLM introductions and keep replies concise.
+
+### 🎤 STT / 🔊 TTS
+- Sherpa OnlineRecognizer (true streaming) with optional punctuation; normalized final transcripts (spaces around punctuation, collapsed repeats).
+- Short-final debounce prevents premature replies when punctuation causes early endpoints (`SHERPA_MIN_FINAL_WORDS`, `SHERPA_ENDPOINT_DEBOUNCE_MS`).
+- Sensible defaults for endpoint detection (`SHERPA_RULE2_MIN_TRAILING_SILENCE=1.0`).
+- Streaming Kokoro TTS preserved; subsecond TTFB warm once initialized.
+
+### 🧠 Memory & Context (Fixed Budget)
+- SmartContextManager replaces unbounded context with a fixed token budget and dynamic allocation.
+- Compact system prompt + tone guidance; added Interaction Rules for small models (no verbatim echo, join spelled letters, at most one follow-up, no unsolicited capability lists).
+- Previous session summary injected on connect; running summary updates mid-session.
+- Relevant Facts strictly structured; Conversation Snippets separated and budgeted.
+- Recent-turn pairing tracked; dynamic recent window sized by leftover budget.
+- Session metadata always present; session counting corrected with `start_session()` (increments once per session) and `update_session()` (no longer bumps session count).
+
+### 🗂️ TapeStore & Summaries
+- Noise guard enabled by default: persist a turn only if it’s a question, or has ≥3 alpha words, or length ≥15 chars (tunable via `TAPE_MIN_USEFUL_WORDS`, `TAPE_MIN_USEFUL_LEN`).
+- Disconnect summaries improved: filters boilerplate intros and very low-signal lines for compact orientation on next session.
+
+### 🔌 LLM Streaming & Response Dedup
+- ResponseTap buffers streaming and commits exactly one final assistant message; prevents fragment leaks into context.
+- Dedup OpenAI LLM adapter maintained; no streaming-frame pollution of conversation context.
+
+### 🔧 Configuration Flags & Docs
+- New flags documented in AGENTS.md and added to `server/env.example`:
+  - Identity/Persistence: `USER_ID`, `FACTS_DB_PATH`, `PIPELINE_IDLE_TIMEOUT_SECS`.
+  - Spelling hints (opt-in, generic): `ENABLE_SPELLING_HINTS`, `ENABLE_LOCATION_SPELLING_HINTS`.
+  - TapeStore noise thresholds: `TAPE_MIN_USEFUL_WORDS`, `TAPE_MIN_USEFUL_LEN`.
+  - STT tuning: `SHERPA_RULE2_MIN_TRAILING_SILENCE`, `SHERPA_MIN_FINAL_WORDS`, `SHERPA_ENDPOINT_DEBOUNCE_MS`.
+
+### ⚡ Performance & Stability
+- Eliminated dead-pipeline scenarios after reconnects via RTVI auto-ready.
+- Reduced token usage with compact prompts and separated snippets.
+- Suppressed noisy sklearn matmul runtime warnings for cleaner logs.
+
+### 🐛 Bug Fixes
+- Fixed context duplication (no duplicate “[Session Info]”, no double-inserting current user message).
+- Prevented assistant fragment accumulation in recent context.
+- Corrected session counting (increments once per session).
+- Prevented premature finals and punctuation artifacts from triggering mid-thought replies.
 
 ## [2025-07-26] - Initial Setup & Kokoro Integration
 

@@ -1,0 +1,4 @@
+#V2
+SELECT * FROM facts;
+SELECT * FROM tape;
+INFO FOR TABLE facts;

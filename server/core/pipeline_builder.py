@@ -215,7 +215,14 @@ class PipelineBuilder:
         
         # Response formatter - fix markdown links from stubborn Qwen2.5  
         from processors.response_formatter import ResponseFormatterProcessor
-        processors['response_formatter'] = ResponseFormatterProcessor()
+        import os
+        formatter_mode = os.getenv('RESPONSE_FORMATTER_MODE', 'off').lower()
+        if formatter_mode == 'off':
+            processors['response_formatter'] = None
+            logger.info("🧹 Response formatter: OFF")
+        else:
+            processors['response_formatter'] = ResponseFormatterProcessor(mode=formatter_mode)
+            logger.info(f"🧹 Response formatter: {formatter_mode}")
         
         # Time-aware executor processor
         from processors.time_aware_executor import TimeAwareExecutor
@@ -531,12 +538,15 @@ class PipelineBuilder:
             processors['speaker_context'],
             rtvi,  # ORIGINAL POSITION: between speaker_context and speaker_name_manager
             processors['speaker_name_manager'],
-            # context_aggregator.user(),  # REPLACED with SmartContextManager
+            # SmartContextManager updates context, then context_aggregator triggers LLM
             smart_ctx,
-            # processors['memory_injector'],  # Traditional memory injector (None for stateless)
+            context_aggregator.user(),  # Triggers LLM with SmartContextManager's updated context
+            # processors['memory_injector'],  # Traditional memory injector (None for stateless)  
             services['llm'], # Main LLM using memory aware context
             # Optional greeting filter to suppress redundant introductions
             processors['greeting_filter'],
+            # Normalize spacing and links before feeding to TapeStore and TTS
+            processors['response_formatter'],
             # Do NOT place ContextFilter here; it blocks streaming TextFrames
             # needed by downstream TTS. Keep the LLM stream intact to audio.
             # Add response tap to feed assistant text back to SmartContextManager and TapeStore
@@ -621,7 +631,11 @@ class PipelineBuilder:
                     try:
                         if hasattr(self._smart_ctx_ref, 'needs_greeting') and self._smart_ctx_ref.needs_greeting():
                             from pipecat.frames.frames import TextFrame
-                            frames.append(TextFrame("Hello!"))
+                            if hasattr(self._smart_ctx_ref, 'get_greeting_text'):
+                                greeting = self._smart_ctx_ref.get_greeting_text()
+                            else:
+                                greeting = "Hello!"
+                            frames.append(TextFrame(greeting))
                     except Exception:
                         pass
                     await task.queue_frames(frames)

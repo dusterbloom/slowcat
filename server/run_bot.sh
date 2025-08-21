@@ -2,13 +2,20 @@
 
 # Production-ready run_bot.sh with comprehensive error handling
 
-# Store MCPO process PID for cleanup
+# Store process PIDs for cleanup
 MCPO_PID=""
+SURREALDB_STARTED_BY_US=false
 
 # Function to handle script exit
 on_exit() {
     echo ""
     echo "🛑 Shutting down..."
+    
+    # Stop SurrealDB if we started it
+    if [ "$SURREALDB_STARTED_BY_US" = true ]; then
+        echo "🗄️  Stopping SurrealDB server..."
+        ./scripts/stop_surrealdb.sh >/dev/null 2>&1 || true
+    fi
     
     # Kill MCPO server if running
     if [ ! -z "$MCPO_PID" ]; then
@@ -48,6 +55,21 @@ if [[ "$VIRTUAL_ENV" == "" ]]; then
 fi
 
 echo "✅ Virtual environment activated: $VIRTUAL_ENV"
+
+# Load environment variables from .env file if it exists
+if [ -f .env ]; then
+    echo "📄 Loading environment variables from .env"
+    # More robust .env loading that handles comments and special characters
+    while IFS= read -r line; do
+        # Skip empty lines and comments
+        if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
+            # Only export valid KEY=VALUE pairs
+            if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                export "$line"
+            fi
+        fi
+    done < .env
+fi
 
 # Set environment variables to help with multiprocessing on macOS
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
@@ -100,7 +122,100 @@ fi
 echo "   ✅ All critical dependencies satisfied"
 
 echo "🧠 Memory system configuration:"
-if [ "$USE_STATELESS_MEMORY" = "true" ]; then
+
+# ---------------------------------------------
+# Simplified high-level configuration switches
+# ---------------------------------------------
+# MEMORY_BACKEND: sqlite | surreal | stateless
+MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
+# GREETING_MODE: pipeline | model | off
+GREETING_MODE=${GREETING_MODE:-pipeline}
+# FACTS_PROMPT_STYLE: clean | raw
+FACTS_PROMPT_STYLE=${FACTS_PROMPT_STYLE:-clean}
+
+# RESPONSE_FORMATTER_MODE: off | minimal | full
+RESPONSE_FORMATTER_MODE=${RESPONSE_FORMATTER_MODE:-off}
+
+# Map high-level switches to detailed flags
+case "$MEMORY_BACKEND" in
+  surreal)
+    export USE_SURREALDB=true ;;
+  stateless)
+    export USE_STATELESS_MEMORY=true
+    export USE_SURREALDB=false ;;
+  sqlite|*)
+    export USE_SURREALDB=false
+    export USE_STATELESS_MEMORY=false ;;
+esac
+
+case "$GREETING_MODE" in
+  pipeline)
+    export SC_ENFORCE_GREETING=${SC_ENFORCE_GREETING:-true}
+    export SC_SUPPRESS_ASSISTANT_GREETINGS=${SC_SUPPRESS_ASSISTANT_GREETINGS:-true} ;;
+  model)
+    export SC_ENFORCE_GREETING=false
+    export SC_SUPPRESS_ASSISTANT_GREETINGS=false ;;
+  off)
+    export SC_ENFORCE_GREETING=false
+    export SC_SUPPRESS_ASSISTANT_GREETINGS=true ;;
+esac
+
+case "$FACTS_PROMPT_STYLE" in
+  clean)
+    export FACTS_ONLY_USER_SUBJECT=${FACTS_ONLY_USER_SUBJECT:-true}
+    export INCLUDE_NAME_IN_FACTS=${INCLUDE_NAME_IN_FACTS:-false} ;;
+  raw)
+    export FACTS_ONLY_USER_SUBJECT=false
+    export INCLUDE_NAME_IN_FACTS=true ;;
+esac
+
+# Check if SurrealDB memory is enabled
+# Accept alias USE_SLOWCAT_MEMORY=true for backward compatibility
+USE_SURREALDB=${USE_SURREALDB:-${USE_SLOWCAT_MEMORY:-false}}
+
+if [ "$USE_SURREALDB" = "true" ]; then
+    echo "   Using SURREALDB memory system (multi-model, time-travel)"
+    export USE_SURREALDB=true
+    
+    # Set SurrealDB configuration
+    export SURREALDB_URL="${SURREALDB_URL:-ws://127.0.0.1:8000/rpc}"
+    export SURREALDB_USER="${SURREALDB_USER:-root}"
+    export SURREALDB_PASS="${SURREALDB_PASS:-slowcat_secure_2024}"
+    export SURREALDB_NAMESPACE="${SURREALDB_NAMESPACE:-slowcat}"
+    export SURREALDB_DATABASE="${SURREALDB_DATABASE:-memory}"
+    
+    echo "   Checking SurrealDB dependencies..."
+    python -c "import surrealdb; print('   ✅ SurrealDB client available')" 2>/dev/null || {
+        echo "   ❌ SurrealDB client not available"
+        echo "   Installing SurrealDB Python client..."
+        pip install surrealdb || {
+            echo "   ❌ Failed to install SurrealDB client"
+            echo "   Please run: pip install surrealdb"
+            exit 1
+        }
+        echo "   ✅ SurrealDB client installed successfully"
+    }
+    
+    # Check if SurrealDB server is running, start if needed
+    if curl -s "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
+        echo "   ✅ SurrealDB server already running"
+    else
+        echo "   🚀 Starting SurrealDB server..."
+        if [ -f "./scripts/start_surrealdb.sh" ]; then
+            ./scripts/start_surrealdb.sh || {
+                echo "   ❌ Failed to start SurrealDB server"
+                echo "   Please ensure SurrealDB is installed: brew install surrealdb/tap/surreal"
+                exit 1
+            }
+            SURREALDB_STARTED_BY_US=true
+        else
+            echo "   ❌ SurrealDB startup script not found"
+            echo "   Please start SurrealDB manually or ensure scripts/ directory exists"
+            exit 1
+        fi
+    fi
+    
+elif [ "$USE_STATELESS_MEMORY" = "true" ]; then
     echo "   Using STATELESS memory system (constant performance)"
     export USE_STATELESS_MEMORY=true
     
@@ -125,6 +240,10 @@ else
     echo "   Using TRADITIONAL memory system"
     export USE_STATELESS_MEMORY=false
 fi
+
+echo "   Greeting mode: $GREETING_MODE (SC_ENFORCE_GREETING=$SC_ENFORCE_GREETING, SC_SUPPRESS_ASSISTANT_GREETINGS=${SC_SUPPRESS_ASSISTANT_GREETINGS:-false})"
+echo "   Facts prompt style: $FACTS_PROMPT_STYLE (ONLY_USER=$FACTS_ONLY_USER_SUBJECT, INCLUDE_NAME=$INCLUDE_NAME_IN_FACTS)"
+echo "   Response formatter: $RESPONSE_FORMATTER_MODE"
 
 # Check if MCP integration is enabled (default: true)
 ENABLE_MCP=${ENABLE_MCP:-true}
@@ -186,6 +305,7 @@ mkdir -p data/debug_memory
 mkdir -p data/tool_memory
 mkdir -p data/dictation
 mkdir -p data/speaker_profiles
+mkdir -p data/surrealdb
 echo "✅ Directories created"
 
 # Set production-ready environment variables
@@ -206,7 +326,14 @@ echo ""
 echo "🚀 Starting Slowcat Bot with comprehensive error handling..."
 echo "🔧 Arguments: $@"
 echo "🌍 Environment:"
-echo "   - Memory system: $([ "$USE_STATELESS_MEMORY" = "true" ] && echo "Stateless" || echo "Traditional")"
+if [ "$USE_SURREALDB" = "true" ]; then
+    echo "   - Memory system: SurrealDB (multi-model, time-travel)"
+    echo "   - SurrealDB URL: $SURREALDB_URL"
+elif [ "$USE_STATELESS_MEMORY" = "true" ]; then
+    echo "   - Memory system: Stateless (constant performance)"
+else
+    echo "   - Memory system: Traditional SQLite"
+fi
 echo "   - MCP integration: $ENABLE_MCP"
 echo "   - Python: $PYTHON_VERSION"
 echo "   - Working directory: $PWD"

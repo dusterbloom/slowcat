@@ -53,15 +53,50 @@ def create_smart_memory_system(facts_db_path: str = "data/facts.db",
     """
     Create complete smart memory system with all components
     
+    Environment Variables:
+        USE_SURREALDB: Set to 'true' to use SurrealDB instead of SQLite
+        SURREALDB_URL: SurrealDB connection URL (default: ws://localhost:8000/rpc)
+        SURREALDB_NAMESPACE: Database namespace (default: slowcat)
+        SURREALDB_DATABASE: Database name (default: memory)
+    
     Args:
-        facts_db_path: Path to facts SQLite database
+        facts_db_path: Path to facts SQLite database (ignored if using SurrealDB)
         tape_store: Optional conversation tape store
         embedding_store: Optional semantic search store
         
     Returns:
         SmartMemorySystem instance
     """
+    import os
     from pathlib import Path
+    from loguru import logger
+    
+    # Check if SurrealDB is enabled (support legacy/alias flag too)
+    use_surreal_env = os.getenv('USE_SURREALDB', 'false').lower() == 'true'
+    use_slowcat_memory_env = os.getenv('USE_SLOWCAT_MEMORY', 'false').lower() == 'true'
+    if use_surreal_env or use_slowcat_memory_env:
+        try:
+            from .surreal_memory import create_surreal_memory_system
+            logger.info("🚀 Using SurrealDB memory system")
+            
+            # Create SurrealDB unified memory system
+            surreal_memory = create_surreal_memory_system()
+            
+            # SurrealDB provides both facts and tape functionality
+            # Return adapter that maintains compatibility
+            return SurrealMemorySystemAdapter(surreal_memory)
+            
+        except ImportError as e:
+            logger.error(f"SurrealDB not available: {e}")
+            logger.info("📦 Falling back to SQLite memory system")
+            # Fall through to SQLite implementation
+        except Exception as e:
+            logger.error(f"SurrealDB initialization failed: {e}")
+            logger.info("📦 Falling back to SQLite memory system")
+            # Fall through to SQLite implementation
+    
+    # Original SQLite implementation
+    logger.info("📦 Using SQLite memory system")
     
     # Ensure data directory exists
     Path(facts_db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +119,118 @@ def create_smart_memory_system(facts_db_path: str = "data/facts.db",
         query_router=query_router,
         tape_store=tape_store
     )
+
+
+class SurrealMemorySystemAdapter:
+    """
+    Adapter to make SurrealDB memory compatible with SmartMemorySystem interface
+    """
+    
+    def __init__(self, surreal_memory):
+        self.surreal_memory = surreal_memory
+        self.facts_graph = surreal_memory  # SurrealDB provides facts interface
+        self.tape_store = surreal_memory   # SurrealDB provides tape interface
+        self.query_router = None           # TODO: Create SurrealDB query router
+    
+    async def process_query(self, query: str, context: dict = None):
+        """Process query using SurrealDB capabilities"""
+        # For now, simple fact search - will enhance with proper routing
+        raw_results = await self.surreal_memory.search_facts(query)
+        
+        # Wrap results to include source_store for compatibility with SCM filters
+        class SimpleResult:
+            def __init__(self, fact_obj):
+                # Expect a SurrealFact-like object with attributes
+                self.subject = getattr(fact_obj, 'subject', '')
+                self.predicate = getattr(fact_obj, 'predicate', '')
+                self.value = getattr(fact_obj, 'value', None)
+                self.species = getattr(fact_obj, 'species', None)
+                self.fidelity = getattr(fact_obj, 'fidelity', 3)
+                self.strength = getattr(fact_obj, 'strength', 0.6)
+                self.last_seen = getattr(fact_obj, 'last_seen', 0)
+                self.created = getattr(fact_obj, 'created', 0)
+                self.access_count = getattr(fact_obj, 'access_count', 0)
+                self.source_text = getattr(fact_obj, 'source_text', '')
+                self.source_store = 'facts'
+        
+        results = [SimpleResult(f) for f in raw_results]
+        
+        # Create a simple object with .results attribute for compatibility
+        class SimpleResponse:
+            def __init__(self, results, classification=None):
+                self.results = results
+                self.total_results = len(results)
+                self.retrieval_time_ms = 0
+                self.strategy_used = 'direct'
+                self.stores_queried = ['surreal_facts']
+                self.classification = classification or SimpleClassification()
+        
+        class SimpleClassification:
+            def __init__(self):
+                self.intent = SimpleIntent()
+                self.confidence = 0.8
+        
+        class SimpleIntent:
+            def __init__(self):
+                self.name = 'PERSONAL_FACTS'
+        
+        return SimpleResponse(results)
+    
+    async def store_facts(self, text: str) -> int:
+        """Extract and store facts from text using SurrealDB"""
+        from .facts_graph import extract_facts_from_text
+        facts = extract_facts_from_text(text)
+        stored_count = 0
+        
+        for fact in facts:
+            await self.surreal_memory.reinforce_or_insert(fact)
+            stored_count += 1
+            
+        return stored_count
+    
+    def update_session(self, speaker_id: str):
+        """Update session metadata"""
+        import asyncio
+        async def _do():
+            try:
+                await self.surreal_memory.update_session(speaker_id)
+            except Exception:
+                pass
+        try:
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(_do())
+        except RuntimeError:
+            asyncio.run(_do())
+    
+    def apply_decay(self):
+        """Apply natural decay to facts using SurrealDB"""
+        import asyncio
+        
+        async def decay_async():
+            await self.surreal_memory.apply_decay()
+        
+        try:
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(decay_async())
+        except RuntimeError:
+            asyncio.run(decay_async())
+    
+    def get_stats(self) -> dict:
+        """Get comprehensive system statistics from SurrealDB"""
+        import asyncio
+        
+        async def stats_async():
+            return await self.surreal_memory.get_stats()
+        
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(stats_async())
+        except RuntimeError:
+            return asyncio.run(stats_async())
+    
+    async def close(self):
+        """Clean shutdown of SurrealDB connection"""
+        await self.surreal_memory.close()
 
 
 class SmartMemorySystem:
@@ -109,7 +256,7 @@ class SmartMemorySystem:
         """
         return await self.query_router.route_query(query, context)
     
-    def store_facts(self, text: str) -> int:
+    async def store_facts(self, text: str) -> int:
         """
         Extract and store facts from text
         
@@ -123,7 +270,10 @@ class SmartMemorySystem:
         stored_count = 0
         
         for fact in facts:
-            self.facts_graph.reinforce_or_insert(fact)
+            # SQLite operations are sync, but await for consistency with SurrealDB
+            result = self.facts_graph.reinforce_or_insert(fact)
+            if hasattr(result, '__await__'):
+                await result
             stored_count += 1
             
         return stored_count
@@ -144,6 +294,8 @@ class SmartMemorySystem:
             'tape_entries': None
         }
     
-    def close(self):
+    async def close(self):
         """Clean shutdown"""
-        self.facts_graph.close()
+        result = self.facts_graph.close()
+        if hasattr(result, '__await__'):
+            await result

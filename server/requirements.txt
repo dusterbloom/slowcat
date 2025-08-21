@@ -37,3 +37,6 @@ ddgs>=9.5.2
 
 loguru==0.7.3
 transformers>=4.10.3
+
+# --- SurrealDB for multi-model memory system ---
+surrealdb>=1.0.6
