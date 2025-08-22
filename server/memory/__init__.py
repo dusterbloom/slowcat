@@ -71,10 +71,13 @@ def create_smart_memory_system(facts_db_path: str = "data/facts.db",
     from pathlib import Path
     from loguru import logger
     
-    # Check if SurrealDB is enabled (support legacy/alias flag too)
-    use_surreal_env = os.getenv('USE_SURREALDB', 'false').lower() == 'true'
-    use_slowcat_memory_env = os.getenv('USE_SLOWCAT_MEMORY', 'false').lower() == 'true'
-    if use_surreal_env or use_slowcat_memory_env:
+    # Default to SurrealDB memory (no flag required). Legacy flags still honored.
+    val = (os.getenv('USE_SURREALDB', '').strip().lower() or os.getenv('USE_SLOWCAT_MEMORY', '').strip().lower())
+    # If explicitly disabled (e.g., 'false', '0', 'no'), use SQLite; otherwise prefer SurrealDB.
+    use_surreal = not (val in ('false', '0', 'no'))
+    if os.getenv('USE_SURREALDB') is not None:
+        logger.info("🛈 USE_SURREALDB is deprecated — SurrealDB is the default now.")
+    if use_surreal:
         try:
             from .surreal_memory import create_surreal_memory_system
             logger.info("🚀 Using SurrealDB memory system")
@@ -188,19 +191,34 @@ class SurrealMemorySystemAdapter:
             
         return stored_count
     
-    def update_session(self, speaker_id: str):
-        """Update session metadata"""
-        import asyncio
-        async def _do():
-            try:
-                await self.surreal_memory.update_session(speaker_id)
-            except Exception:
-                pass
+    async def update_session(self, speaker_id: str):
+        """Update session metadata (async for compatibility with pipeline)."""
         try:
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(_do())
-        except RuntimeError:
-            asyncio.run(_do())
+            await self.surreal_memory.update_session(speaker_id)
+        except Exception:
+            pass
+
+    # --- Pass-throughs for DTH / retrieval helpers ---
+    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200):
+        """Expose SurrealDB-side KNN to DynamicTapeHead."""
+        try:
+            return await self.surreal_memory.knn_tape(query, limit=limit, scan=scan)
+        except Exception:
+            return []
+
+    async def search_tape(self, query: str, limit: int = 10):
+        """Expose keyword search over tape to DynamicTapeHead."""
+        try:
+            return await self.surreal_memory.search_tape(query, limit=limit)
+        except Exception:
+            return []
+
+    async def get_recent(self, limit: int = 10, since: float | None = None):
+        """Expose recent tape retrieval for candidates."""
+        try:
+            return await self.surreal_memory.get_recent(limit=limit, since=since)
+        except Exception:
+            return []
     
     def apply_decay(self):
         """Apply natural decay to facts using SurrealDB"""

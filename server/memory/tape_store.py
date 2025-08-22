@@ -52,6 +52,25 @@ class TapeStore:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_entries_ts ON entries(ts DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_entries_role ON entries(role)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_entries_content ON entries(content)")
+        # Per-entry metadata table (mood, prosody, etc.)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS entry_meta (
+                ts REAL PRIMARY KEY,
+                mood TEXT,
+                arousal REAL,
+                valence REAL,
+                pitch_mean REAL,
+                pitch_std REAL,
+                energy_mean REAL,
+                energy_std REAL,
+                zcr_mean REAL,
+                duration_s REAL,
+                speaking_rate_wps REAL,
+                meta_json TEXT DEFAULT '{}'
+            )
+            """
+        )
         # Session summaries table
         cur.execute(
             """
@@ -116,6 +135,72 @@ class TapeStore:
         except Exception as e:
             logger.error(f"TapeStore get_recent failed: {e}")
             return []
+
+    # Entry metadata APIs (mood, prosody, etc.)
+    def add_entry_meta(self, ts: float, meta: Dict[str, Any]):
+        """Attach metadata to a tape entry keyed by timestamp.
+
+        Creates or replaces metadata for the given entry timestamp.
+        """
+        try:
+            import json as _json
+            self.conn.execute(
+                """
+                REPLACE INTO entry_meta(
+                    ts, mood, arousal, valence, pitch_mean, pitch_std,
+                    energy_mean, energy_std, zcr_mean, duration_s, speaking_rate_wps, meta_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    ts,
+                    meta.get('mood'),
+                    float(meta.get('arousal')) if meta.get('arousal') is not None else None,
+                    float(meta.get('valence')) if meta.get('valence') is not None else None,
+                    float(meta.get('pitch_mean_hz')) if meta.get('pitch_mean_hz') is not None else None,
+                    float(meta.get('pitch_std_hz')) if meta.get('pitch_std_hz') is not None else None,
+                    float(meta.get('energy_rms')) if meta.get('energy_rms') is not None else None,
+                    float(meta.get('energy_std')) if meta.get('energy_std') is not None else None,
+                    float(meta.get('zcr_mean')) if meta.get('zcr_mean') is not None else None,
+                    float(meta.get('duration_s')) if meta.get('duration_s') is not None else None,
+                    float(meta.get('speaking_rate_wps')) if meta.get('speaking_rate_wps') is not None else None,
+                    _json.dumps(meta, ensure_ascii=False)
+                )
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"TapeStore add_entry_meta failed: {e}")
+
+    def get_entry_meta(self, ts: float) -> Optional[Dict[str, Any]]:
+        try:
+            import json as _json
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT mood, arousal, valence, pitch_mean, pitch_std, energy_mean, energy_std, zcr_mean, duration_s, speaking_rate_wps, meta_json FROM entry_meta WHERE ts = ?",
+                (ts,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            mood, arousal, valence, pitch_mean, pitch_std, energy_mean, energy_std, zcr_mean, duration_s, speaking_rate_wps, meta_json = row
+            try:
+                meta = _json.loads(meta_json or '{}')
+            except Exception:
+                meta = {}
+            # Ensure core fields present
+            meta.setdefault('mood', mood)
+            meta.setdefault('arousal', arousal)
+            meta.setdefault('valence', valence)
+            meta.setdefault('pitch_mean_hz', pitch_mean)
+            meta.setdefault('pitch_std_hz', pitch_std)
+            meta.setdefault('energy_rms', energy_mean)
+            meta.setdefault('energy_std', energy_std)
+            meta.setdefault('zcr_mean', zcr_mean)
+            meta.setdefault('duration_s', duration_s)
+            meta.setdefault('speaking_rate_wps', speaking_rate_wps)
+            return meta
+        except Exception as e:
+            logger.error(f"TapeStore get_entry_meta failed: {e}")
+            return None
 
     # Convenience helpers for session windows
     def get_entries_since(self, since_ts: float) -> List[TapeEntry]:

@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from loguru import logger
+import os
 
 
 @dataclass
@@ -388,6 +389,7 @@ class FactsGraph:
         """Update session metadata for speaker"""
         cur = self.conn.cursor()
         now = time.time()
+        trace = os.getenv('SC_TRACE_SESSIONS', 'false').lower() == 'true'
 
         cur.execute("""
         INSERT INTO sessions(speaker_id, session_count, last_interaction, first_seen, total_turns)
@@ -396,6 +398,8 @@ class FactsGraph:
             last_interaction = excluded.last_interaction,
             total_turns = total_turns + 1
         """, (speaker_id, now, now))
+        if trace:
+            logger.info(f"[FactsGraph:session] update_session: speaker_id={speaker_id}")
         
         self.conn.commit()
 
@@ -407,6 +411,13 @@ class FactsGraph:
         """
         cur = self.conn.cursor()
         now = time.time()
+        trace = os.getenv('SC_TRACE_SESSIONS', 'false').lower() == 'true'
+        
+        # Get count before update for validation
+        cur.execute("SELECT session_count FROM sessions WHERE speaker_id = ?", (speaker_id,))
+        before_row = cur.fetchone()
+        before_count = before_row['session_count'] if before_row else 0
+        
         cur.execute(
             """
             INSERT INTO sessions(speaker_id, session_count, last_interaction, first_seen, total_turns)
@@ -417,11 +428,27 @@ class FactsGraph:
             """,
             (speaker_id, now, now)
         )
+        
+        # Verify the update worked
+        cur.execute("SELECT session_count FROM sessions WHERE speaker_id = ?", (speaker_id,))
+        after_row = cur.fetchone()
+        after_count = after_row['session_count'] if after_row else 0
+        
+        if trace:
+            logger.info(f"[FactsGraph:session] start_session: speaker_id={speaker_id}, {before_count} → {after_count}")
+        else:
+            # Always log session count changes for debugging
+            logger.info(f"🎯 FactsGraph.start_session: {speaker_id} session_count {before_count} → {after_count}")
+            
+        if after_count <= before_count:
+            logger.error(f"❌ FactsGraph.start_session FAILED to increment! {speaker_id}: {before_count} → {after_count}")
+            
         self.conn.commit()
     
     def get_session_info(self, speaker_id: str) -> Dict:
         """Get session metadata for dynamic prompts"""
         cur = self.conn.cursor()
+        trace = os.getenv('SC_TRACE_SESSIONS', 'false').lower() == 'true'
         
         cur.execute("""
         SELECT session_count, last_interaction, first_seen, total_turns
@@ -430,6 +457,8 @@ class FactsGraph:
         """, (speaker_id,))
         
         row = cur.fetchone()
+        if trace:
+            logger.info(f"[FactsGraph:session] get_session_info: speaker_id={speaker_id} row={dict(row) if row else None}")
         if not row:
             return {
                 'session_count': 0,

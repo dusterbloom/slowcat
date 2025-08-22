@@ -40,3 +40,6 @@ transformers>=4.10.3
 
 # --- SurrealDB for multi-model memory system ---
 surrealdb>=1.0.6
+
+# --- Semantic retrieval / reranking ---
+sentence-transformers>=2.2.2

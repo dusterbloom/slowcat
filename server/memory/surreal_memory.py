@@ -23,6 +23,7 @@ import asyncio
 import json
 import math
 from typing import Dict, List, Optional, Any, Tuple
+import numpy as np
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from loguru import logger
@@ -116,6 +117,10 @@ class SurrealMemory:
         self.database = database
         self.db = None
         self.connected = False
+        # Optional embedding for tape entries (enables semantic KNN)
+        # Default to embedding tape for effective KNN by default
+        self._embed_tape = os.getenv('SURREAL_EMBED_TAPE', 'true').lower() == 'true'
+        self._encoder = None
         
         # Performance tracking (matching FactsGraph interface)
         self.reinforcements = 0
@@ -134,17 +139,27 @@ class SurrealMemory:
             auth_pass = os.getenv('SURREALDB_PASS', 'slowcat_secure_2024')
             
             try:
-                # Correct JWT-based authentication format
+                # Prefer standard credentials keys supported by the client
                 await self.db.signin({
-                    'username': 'root',
-                    'password': auth_pass
+                    'user': auth_user,
+                    'pass': auth_pass,
                 })
-                logger.debug(f"✅ Authentication successful as root with JWT")
+                logger.debug("✅ Authentication successful as root with JWT")
             except Exception as e:
                 logger.warning(f"JWT authentication failed: {e}")
-                # Try without authentication as fallback
-                logger.info("Attempting to continue without authentication")
+                # Try alternate key names that some client versions accept
+                try:
+                    await self.db.signin({
+                        'username': auth_user,
+                        'password': auth_pass,
+                    })
+                    logger.debug("✅ Authentication successful with username/password keys")
+                except Exception as e2:
+                    logger.warning(f"Secondary authentication failed: {e2}")
+                    # Try without authentication as fallback
+                    logger.info("Attempting to continue without authentication")
             
+            logger.info(f"🔄 SurrealDB: Using namespace '{self.namespace}' and database '{self.database}'")
             await self.db.use(self.namespace, self.database)
             
             # Initialize schema idempotently
@@ -183,20 +198,59 @@ class SurrealMemory:
             DEFINE FIELD role ON tape TYPE string;
             DEFINE FIELD content ON tape TYPE string;
             DEFINE FIELD session_id ON tape TYPE option<string>;
+            DEFINE FIELD embedding ON tape TYPE option<array<number>>;
             DEFINE FIELD metadata ON tape TYPE object DEFAULT {};
         """)
         
         # Session summaries and metadata
         await self.db.query("""
-            DEFINE TABLE session SCHEMAFULL;
-            DEFINE FIELD speaker_id ON session TYPE string;
-            DEFINE FIELD session_count ON session TYPE number DEFAULT 0;
-            DEFINE FIELD last_interaction ON session TYPE datetime VALUE time::now();
-            DEFINE FIELD first_seen ON session TYPE datetime VALUE time::now();
-            DEFINE FIELD total_turns ON session TYPE number DEFAULT 0;
+            DEFINE TABLE sessions SCHEMAFULL;
+            DEFINE FIELD speaker_id ON sessions TYPE string;
+            DEFINE FIELD session_count ON sessions TYPE number DEFAULT 0;
+            DEFINE FIELD last_interaction ON sessions TYPE datetime DEFAULT time::now();
+            DEFINE FIELD first_seen ON sessions TYPE datetime DEFAULT time::now();
+            DEFINE FIELD total_turns ON sessions TYPE number DEFAULT 0;
         """)
         
         logger.debug("📊 SurrealDB schema initialized")
+
+    # ------------------------------
+    # Result normalization helpers
+    # ------------------------------
+    def _rows_from_query(self, res: Any) -> List[Dict[str, Any]]:
+        """Normalize AsyncSurreal.query() responses into a list of row dicts.
+
+        The Python client may return one of:
+        - [ {'status': 'OK', 'result': [ {...}, ... ]} ]
+        - [ {...}, ... ]  (some adapters)
+        - [] on error
+        This helper returns a flat list of row dicts.
+        """
+        try:
+            if not res:
+                return []
+            # Common case: list with a single dict containing 'result'
+            if isinstance(res, list):
+                # Flatten first element if it has a 'result'
+                first = res[0]
+                if isinstance(first, dict) and 'result' in first:
+                    return first.get('result') or []
+                # Some clients return rows directly as a list of dicts (no wrapper)
+                if isinstance(first, dict) and 'status' not in first and 'result' not in first:
+                    return res  # treat as already rows
+                # Fallback: try to collect any 'result' lists from wrapper items
+                rows: List[Dict[str, Any]] = []
+                for item in res:
+                    if isinstance(item, dict) and 'result' in item and isinstance(item['result'], list):
+                        rows.extend(item['result'])
+                return rows
+            # Dict with 'result'
+            if isinstance(res, dict) and 'result' in res:
+                r = res.get('result')
+                return r if isinstance(r, list) else []
+        except Exception:
+            pass
+        return []
     
     # ========================================
     # FactsGraph Interface Compatibility
@@ -318,33 +372,46 @@ class SurrealMemory:
         if not self.connected:
             await self.connect()
         try:
+            trace = os.getenv('SC_TRACE_SESSIONS', 'false').lower() == 'true'
             # Fetch existing session record
             sel = """
-                SELECT * FROM session WHERE speaker_id = $speaker_id LIMIT 1
+                SELECT * FROM sessions WHERE speaker_id = $speaker_id LIMIT 1
             """
             result = await self.db.query(sel, { 'speaker_id': speaker_id })
-            rows = []
-            if result and len(result) > 0:
-                rows = result[0].get('result', []) if isinstance(result[0], dict) else result[0]
+            rows = self._rows_from_query(result)
+            logger.info(f"🔍 SurrealDB: Raw SELECT result rows: {rows}")
 
             if rows:
                 rec_id = rows[0].get('id')
+                logger.info(f"🔄 SurrealDB: Updating existing session {rec_id} for {speaker_id}")
                 upd = f"""
                     UPDATE {rec_id} SET 
                         session_count = (session_count ?? 0) + 1,
                         last_interaction = time::now()
+                    RETURN AFTER
                 """
-                await self.db.query(upd)
+                result = await self.db.query(upd)
+                upd_rows = self._rows_from_query(result)
+                logger.info(f"✅ SurrealDB: Update result rows: {upd_rows}")
             else:
-                ins = """
-                    CREATE session SET 
-                        speaker_id = $speaker_id,
-                        session_count = 1,
-                        last_interaction = time::now(),
-                        first_seen = time::now(),
-                        total_turns = 0
-                """
-                await self.db.query(ins, { 'speaker_id': speaker_id })
+                logger.info(f"🆕 SurrealDB: Creating new session for {speaker_id}")
+                try:
+                    # Use the proper .create() method; normalize return
+                    created = await self.db.create('sessions', {
+                        'speaker_id': speaker_id,
+                        'session_count': 1,
+                        'total_turns': 0,
+                    })
+                    # Some client versions return the created record; others return None.
+                    # Verify creation by re-selecting.
+                    verify = await self.db.query(sel, { 'speaker_id': speaker_id })
+                    verify_rows = self._rows_from_query(verify)
+                    logger.info(f"✅ SurrealDB: Created session, verify rows: {verify_rows}")
+                except Exception as query_error:
+                    logger.error(f"❌ SurrealDB: CREATE failed: {query_error}")
+                    # Nothing else to do here; read path will handle default
+            if trace:
+                logger.info(f"[Surreal:session] start_session speaker_id={speaker_id} existed={bool(rows)}")
         except Exception as e:
             logger.error(f"SurrealDB start_session failed: {e}")
 
@@ -353,13 +420,12 @@ class SurrealMemory:
         if not self.connected:
             await self.connect()
         try:
+            trace = os.getenv('SC_TRACE_SESSIONS', 'false').lower() == 'true'
             sel = """
-                SELECT * FROM session WHERE speaker_id = $speaker_id LIMIT 1
+                SELECT * FROM sessions WHERE speaker_id = $speaker_id LIMIT 1
             """
             result = await self.db.query(sel, { 'speaker_id': speaker_id })
-            rows = []
-            if result and len(result) > 0:
-                rows = result[0].get('result', []) if isinstance(result[0], dict) else result[0]
+            rows = self._rows_from_query(result)
 
             if rows:
                 rec_id = rows[0].get('id')
@@ -367,18 +433,18 @@ class SurrealMemory:
                     UPDATE {rec_id} SET 
                         total_turns = (total_turns ?? 0) + 1,
                         last_interaction = time::now()
+                    RETURN AFTER
                 """
                 await self.db.query(upd)
             else:
-                ins = """
-                    CREATE session SET 
-                        speaker_id = $speaker_id,
-                        session_count = 1,
-                        last_interaction = time::now(),
-                        first_seen = time::now(),
-                        total_turns = 1
-                """
-                await self.db.query(ins, { 'speaker_id': speaker_id })
+                # If no row exists, create one initialized for this interaction
+                await self.db.create('sessions', {
+                    'speaker_id': speaker_id,
+                    'session_count': 1,
+                    'total_turns': 1,
+                })
+            if trace:
+                logger.info(f"[Surreal:session] update_session speaker_id={speaker_id} existed={bool(rows)}")
         except Exception as e:
             logger.error(f"SurrealDB update_session failed: {e}")
 
@@ -387,14 +453,13 @@ class SurrealMemory:
         if not self.connected:
             await self.connect()
         try:
+            trace = os.getenv('SC_TRACE_SESSIONS', 'false').lower() == 'true'
             sel = """
                 SELECT session_count, last_interaction, first_seen, total_turns
-                FROM session WHERE speaker_id = $speaker_id LIMIT 1
+                FROM sessions WHERE speaker_id = $speaker_id LIMIT 1
             """
             result = await self.db.query(sel, { 'speaker_id': speaker_id })
-            rows = []
-            if result and len(result) > 0:
-                rows = result[0].get('result', []) if isinstance(result[0], dict) else result[0]
+            rows = self._rows_from_query(result)
 
             if not rows:
                 # Default for new users
@@ -414,12 +479,15 @@ class SurrealMemory:
                     return float(v)
                 return None
 
-            return {
-                'session_count': row.get('session_count', 0),
+            info = {
+                'session_count': (row.get('session_count') or 0),
                 'last_interaction': to_ts(row.get('last_interaction')),
                 'first_seen': to_ts(row.get('first_seen')),
-                'total_turns': row.get('total_turns', 0),
+                'total_turns': (row.get('total_turns') or 0),
             }
+            if trace:
+                logger.info(f"[Surreal:session] get_session_info speaker_id={speaker_id} info={info}")
+            return info
         except Exception as e:
             logger.error(f"SurrealDB get_session_info failed: {e}")
             return {
@@ -549,18 +617,34 @@ class SurrealMemory:
                     role = $role,
                     content = $content,
                     session_id = $session_id,
+                    embedding = $embedding,
                     metadata = $metadata
             """
             
             # Generate session ID based on speaker and date
             session_id = f"{speaker_id}_{int(entry_ts // 86400)}"  # Daily sessions
             
+            # Optional embedding
+            embedding_vec = None
+            if self._embed_tape:
+                try:
+                    if self._encoder is None:
+                        from sentence_transformers import SentenceTransformer  # type: ignore
+                        model_name = os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+                        self._encoder = SentenceTransformer(model_name)
+                        logger.info(f"🧠 SurrealMemory: embedding tape with {model_name}")
+                    embedding_vec = self._encoder.encode(content, convert_to_numpy=True).tolist()
+                except Exception as e:
+                    logger.warning(f"Tape embedding failed: {e}")
+                    embedding_vec = None
+
             await self.db.query(insert_query, {
                 'ts': int(entry_ts),  # Convert to integer for time::from::secs
                 'speaker_id': speaker_id,
                 'role': role,
                 'content': content,
                 'session_id': session_id,
+                'embedding': embedding_vec,
                 'metadata': {}
             })
             
@@ -650,7 +734,8 @@ class SurrealMemory:
                         'ts': ts_float,
                         'speaker_id': row.get('speaker_id', 'unknown'),
                         'role': row.get('role', 'user'),
-                        'content': row.get('content', '')
+                        'content': row.get('content', ''),
+                        'embedding': row.get('embedding')
                     }
                     entries.append(entry)
             
@@ -658,6 +743,91 @@ class SurrealMemory:
             
         except Exception as e:
             logger.error(f"SurrealDB get_recent failed: {e}")
+            return []
+
+    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200) -> List[Dict]:
+        """Return top-K tape entries by cosine similarity to query text.
+
+        Requires either a local encoder (will be created if needed) or that
+        tape entries store embeddings (enabled via SURREAL_EMBED_TAPE=true).
+        """
+        if not self.connected:
+            await self.connect()
+
+        # Ensure we have an encoder for the query embedding
+        try:
+            if self._encoder is None:
+                from sentence_transformers import SentenceTransformer  # type: ignore
+                model_name = os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+                self._encoder = SentenceTransformer(model_name)
+        except Exception as e:
+            logger.error(f"KNN requires sentence-transformers: {e}")
+            return []
+
+        try:
+            q_emb = np.array(self._encoder.encode(query, convert_to_numpy=True), dtype=float)
+        except Exception as e:
+            logger.error(f"Failed to embed query for KNN: {e}")
+            return []
+
+        try:
+            sql = """
+                SELECT id, ts, speaker_id, role, content, embedding FROM tape 
+                WHERE embedding != NONE
+                ORDER BY ts DESC
+                LIMIT $scan
+            """
+            res = await self.db.query(sql, {'scan': scan})
+            rows = self._rows_from_query(res)
+            try:
+                from loguru import logger as _log
+                _log.debug(f"[Surreal.knn_tape] scanned_rows={len(rows)} (scan={scan})")
+            except Exception:
+                pass
+
+            scored = []
+            for row in rows:
+                emb = row.get('embedding')
+                if not emb:
+                    continue
+                try:
+                    v = np.array(emb, dtype=float)
+                    num = float(np.dot(q_emb, v))
+                    den = float(np.linalg.norm(q_emb) * np.linalg.norm(v))
+                    sim = (num / den) if den > 0 else 0.0
+                except Exception:
+                    sim = 0.0
+
+                # Extract fields, normalize ts
+                ts_value = row.get('ts')
+                if hasattr(ts_value, 'timestamp'):
+                    ts_float = ts_value.timestamp()
+                elif hasattr(ts_value, 'timetuple'):
+                    ts_float = time.mktime(ts_value.timetuple())
+                elif isinstance(ts_value, (int, float)):
+                    ts_float = float(ts_value)
+                else:
+                    ts_float = time.time()
+
+                scored.append((sim, {
+                    'ts': ts_float,
+                    'speaker_id': row.get('speaker_id', 'unknown'),
+                    'role': row.get('role', 'user'),
+                    'content': row.get('content', ''),
+                    'embedding': emb,
+                }))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top = [e for _, e in scored[:max(1, limit)]]
+            try:
+                from loguru import logger as _log
+                _log.debug(f"[Surreal.knn_tape] returned={len(top)} of {len(scored)} scored")
+            except Exception:
+                pass
+            return top
+
+        except Exception as e:
+            logger.error(f"SurrealDB knn_tape failed: {e}")
             return []
     
     async def get_entries_since(self, since_ts: float) -> List[Dict]:
