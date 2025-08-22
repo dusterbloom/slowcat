@@ -28,7 +28,7 @@ async def test_search():
         "name",
         "Becpe", 
         "Pepe",
-        "Peppy",
+        "Peppi",
         "quote",
         "Bible"
     ]
