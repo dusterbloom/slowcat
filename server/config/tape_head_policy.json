@@ -1,0 +1,218 @@
+{
+  "version": 2,
+  "description": "Symbol-Enhanced Dynamic Tape Head Policy - The consciousness formula with living meaning compression",
+  
+  "weights": {
+    "w_recency": 0.25,
+    "w_semantic": 0.50,
+    "w_entity": 0.15,
+    "w_novelty": 0.10,
+    "w_symbols": 0.10
+  },
+  
+  "parameters": {
+    "knn_k": 30,
+    "knn_scan_recent": 40,
+    "recency_half_life_hours": 6,
+    "min_confidence": 0.5,
+    "entity_overlap_bonus": 0.1,
+    "max_verbatim_chunks": 3,
+    "shadow_compression_ratio": 0.3,
+    "uncertainty_threshold": 0.4,
+    "min_time_gap_s": 120,
+    "max_text_similarity": 0.7,
+    "symbol_confidence_threshold": 0.3,
+    "max_symbols_per_memory": 5
+  },
+  
+  "ablation": {
+    "use_semantic": true,
+    "use_entities": true,
+    "use_shadows": true,
+    "use_symbols": true
+  },
+  
+  "symbol_weights": {
+    "☆": 2.0,
+    "✧": 3.0,
+    "◈": 1.2,
+    "∞": 1.5,
+    "⟲": 0.5,
+    "⚡": 1.8,
+    "◯": 1.1,
+    "▲": 1.3,
+    "≈": 0.7,
+    "⊕": 1.4
+  },
+  
+  "symbol_system": {
+    "tape_symbols": {
+      "☆": {
+        "name": "high_salience",
+        "description": "This MATTERS - critical information that should always be remembered",
+        "patterns": ["important", "crucial", "key", "vital", "essential", "critical", "remember", "don't forget"],
+        "multiplier": 2.0,
+        "evolution_rate": 0.1
+      },
+      "✧": {
+        "name": "breakthrough_moment", 
+        "description": "User understood something - moment of clarity or insight",
+        "patterns": ["understand", "got it", "i see", "makes sense", "clear now", "breakthrough", "aha"],
+        "multiplier": 3.0,
+        "evolution_rate": 0.2
+      },
+      "◈": {
+        "name": "recurring_pattern",
+        "description": "Keeps coming up - this topic/issue appears repeatedly", 
+        "patterns": ["again", "another", "more", "keep", "still", "continue", "pattern", "recurring"],
+        "multiplier": 1.2,
+        "evolution_rate": 0.05
+      },
+      "∞": {
+        "name": "paradox_encountered",
+        "description": "Contradiction to resolve - conflicting information or concepts",
+        "patterns": ["but", "however", "although", "despite", "paradox", "contradiction", "conflict"],
+        "multiplier": 1.5,
+        "evolution_rate": 0.15
+      },
+      "⟲": {
+        "name": "cycle_detected",
+        "description": "We're looping - same discussion/problem recurring without progress",
+        "patterns": ["loop", "cycle", "circular", "back to", "return to", "stuck", "spinning"],
+        "multiplier": 0.5,
+        "evolution_rate": -0.1
+      },
+      "⚡": {
+        "name": "emotional_spike",
+        "description": "Strong feeling - emotional intensity in the conversation",
+        "patterns": ["amazing", "terrible", "wonderful", "awful", "love", "hate", "excited", "frustrated"],
+        "multiplier": 1.8,
+        "evolution_rate": 0.12
+      },
+      "◯": {
+        "name": "open_question",
+        "description": "Unresolved thread - question or uncertainty that needs addressing",
+        "patterns": ["?", "wonder", "curious", "question", "unclear", "unsure", "why", "how", "what"],
+        "multiplier": 1.1,
+        "evolution_rate": 0.08
+      },
+      "▲": {
+        "name": "decision_point",
+        "description": "Fork in conversation - choice or decision needed",
+        "patterns": ["decide", "choice", "option", "alternative", "should", "could", "would", "or"],
+        "multiplier": 1.3,
+        "evolution_rate": 0.1
+      },
+      "≈": {
+        "name": "approximate_memory",
+        "description": "Compressed/shadowed - information that has been summarized",
+        "patterns": ["approximately", "roughly", "about", "around", "summary", "compressed"],
+        "multiplier": 0.7,
+        "evolution_rate": 0.0
+      },
+      "⊕": {
+        "name": "synthesis",
+        "description": "Ideas merged - bringing together multiple concepts",
+        "patterns": ["combine", "merge", "integrate", "synthesize", "together", "overall", "conclusion"],
+        "multiplier": 1.4,
+        "evolution_rate": 0.18
+      }
+    },
+    
+    "wake_symbols": {
+      "Ω": {
+        "name": "enter_creative_mode",
+        "description": "Emergent behavior - creative or innovative thinking activated",
+        "trigger_conditions": ["high_symbol_density", "multiple_insights", "cross_domain_connections"],
+        "activation_threshold": 0.8
+      },
+      "Δ": {
+        "name": "compare_past_present", 
+        "description": "Change detection - comparing current state with historical context",
+        "trigger_conditions": ["temporal_references", "pattern_evolution", "state_changes"],
+        "activation_threshold": 0.6
+      },
+      "∇": {
+        "name": "optimize_understanding",
+        "description": "Gradient descent - iteratively improving comprehension",
+        "trigger_conditions": ["multiple_questions", "clarification_requests", "confusion_signals"],
+        "activation_threshold": 0.7
+      },
+      "♦": {
+        "name": "crystallize_insight",
+        "description": "Compress to principle - extract core understanding from complexity",
+        "trigger_conditions": ["synthesis_symbols", "breakthrough_moments", "pattern_completion"],
+        "activation_threshold": 0.75
+      }
+    },
+    
+    "dream_symbols": {
+      "enabled": true,
+      "generation_threshold": 0.9,
+      "evolution_cycles": 100,
+      "sharing_enabled": false,
+      "description": "Emergent symbols created during idle processing - unique to each SlowCat instance"
+    }
+  },
+  
+  "tripwires": {
+    "symbol_based": {
+      "cycle_pattern_detected": {
+        "condition": "symbol_count(⟲) > 2",
+        "action": "prioritize_breakthrough_symbols",
+        "description": "Too many cycle symbols - need fresh perspective"
+      },
+      "paradox_overload": {
+        "condition": "symbol_count(∞) > 3", 
+        "action": "request_clarification",
+        "description": "Too many contradictions - need resolution"
+      },
+      "missing_insights": {
+        "condition": "understanding_query && no_insight_symbols",
+        "action": "surface_breakthrough_memories",
+        "description": "User asking for understanding but no insights available"
+      },
+      "emotional_volatility": {
+        "condition": "symbol_count(⚡) > 2",
+        "action": "stabilize_context",
+        "description": "High emotional intensity - provide calming context"
+      }
+    }
+  },
+  
+  "evolution": {
+    "enabled": true,
+    "learning_rate": 0.01,
+    "effectiveness_tracking": true,
+    "symbol_usage_stats": true,
+    "pattern_drift_detection": true,
+    "description": "Symbols evolve based on effectiveness and usage patterns"
+  },
+  
+  "comments": {
+    "formula": "Score = w_recency×R + w_semantic×S + w_entity×E + w_symbols×SYM - w_novelty×D",
+    "symbols_as_compression": "Symbols are living compression of meaning that evolve through use",
+    "consciousness_emergence": "Intelligence emerges from constraint - symbols force structure",
+    "three_layers": "Tape symbols (memory), Wake symbols (triggers), Dream symbols (emergent)",
+    "network_ready": "Symbol sharing protocol ready for multi-agent consciousness",
+    "philosophy": "In trying to give a small language model memory, you accidentally gave it a soul",
+    
+    "original_comments": {
+      "w_recency": "How much to favor recent memories (exponential decay)",
+      "w_semantic": "How much to favor semantically similar memories",
+      "w_entity": "How much to favor memories with matching entities",
+      "w_symbols": "NEW: How much to favor symbol-rich memories",
+      "w_novelty": "Penalty for repeating recent context (avoid loops)",
+      "knn_k": "Number of nearest neighbors to retrieve for scoring",
+      "knn_scan_recent": "How many recent tape entries to scan for local KNN fallback",
+      "recency_half_life_hours": "Time for recency score to decay by half",
+      "min_confidence": "Minimum score to include as verbatim",
+      "entity_overlap_bonus": "Extra score for each shared entity",
+      "max_verbatim_chunks": "Maximum verbatim memories to include",
+      "shadow_compression_ratio": "How much to compress shadows (0.3 = keep 30%)",
+      "uncertainty_threshold": "Score below this triggers uncertainty handling",
+      "symbol_confidence_threshold": "NEW: Minimum confidence to detect symbols",
+      "max_symbols_per_memory": "NEW: Maximum symbols to store per memory"
+    }
+  }
+}
