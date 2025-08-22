@@ -58,3 +58,6 @@ server/mcp.json
 
 server/*.log
 server/models/*.*
+# Debug and development artifacts
+server/server/debug/
+server/server/history.txt
