@@ -113,6 +113,11 @@ class SherpaOnlineSTTService(STTService):
         self._pending_text: Optional[str] = None
         self._pending_since_ms: Optional[float] = None
 
+        # Logging controls (reduce noise unless explicitly enabled)
+        self._stt_verbose = os.getenv('STT_VERBOSE', 'false').lower() == 'true'
+        self._stt_log_interim = os.getenv('STT_LOG_INTERIM', 'false').lower() == 'true'
+        self._stt_log_punctuation = os.getenv('STT_LOG_PUNCT', 'false').lower() == 'true'
+
         # Validate model directory
         if not self.model_dir.exists():
             raise FileNotFoundError(f"Model directory does not exist: {self.model_dir}")
@@ -292,10 +297,12 @@ class SherpaOnlineSTTService(STTService):
                 for chinese_punct, english_punct in punctuation_map.items():
                     punctuated = punctuated.replace(chinese_punct, english_punct)
             
-            logger.debug(f"Punctuation: '{text}' -> '{punctuated}'")
+            if self._stt_log_punctuation or self._stt_verbose:
+                logger.debug(f"Punctuation: '{text}' -> '{punctuated}'")
             return punctuated
         except Exception as e:
-            logger.debug(f"Punctuation failed: {e}")
+            if self._stt_verbose:
+                logger.debug(f"Punctuation failed: {e}")
             return text  # Fallback to original text
 
     def _create_stream(self):
@@ -362,11 +369,11 @@ class SherpaOnlineSTTService(STTService):
             if is_endpoint and result.strip():
                 result = self._add_punctuation(result)
             
-            # Log endpoint (do not reset here; defer reset until we actually emit)
+            # Log endpoint/interim (guarded by verbosity flags)
             if is_endpoint:
-                if result.strip():
+                if result.strip() and self._stt_verbose:
                     logger.debug(f"🎯 Sherpa endpoint text: '{result}' (endpoint detected)")
-            elif result:
+            elif result and self._stt_log_interim:
                 logger.debug(f"🔄 Sherpa interim: '{result}'")
             
             return result.strip(), is_endpoint

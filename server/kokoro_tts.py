@@ -139,6 +139,11 @@ class KokoroTTSService(TTSService):
         
         self._kokoro_language = self._get_kokoro_language_code(self._language_code)
 
+        # Logging controls
+        import os as _os
+        self._tts_verbose = _os.getenv('TTS_VERBOSE', 'false').lower() == 'true'
+        self._tts_log_sanitization = _os.getenv('TTS_LOG_SANITIZATION', 'false').lower() == 'true'
+
         # 🚀 EAGER INITIALIZATION: Initialize model immediately for zero cold-start delay
         self._model = None
         self._initialize_model()  # Initialize immediately instead of lazy loading
@@ -187,7 +192,8 @@ class KokoroTTSService(TTSService):
                 logger.error("🚨 Model not initialized! This should not happen with eager loading")
                 self._initialize_model()
 
-            logger.debug(f"Starting streaming audio generation for: {text}")
+            if self._tts_verbose:
+                logger.debug(f"Starting streaming audio generation for: {text}")
 
             # Acquire the global MLX lock for audio generation
             with MLX_GLOBAL_LOCK:
@@ -213,7 +219,8 @@ class KokoroTTSService(TTSService):
                     # Put chunk in queue for async consumption
                     chunk_queue.put(audio_bytes)
                     chunk_count += 1
-                    logger.debug(f"Generated audio chunk {chunk_count}")
+                    if self._tts_verbose:
+                        logger.debug(f"Generated audio chunk {chunk_count}")
                 
                 if chunk_count == 0:
                     logger.warning(f"No audio chunks generated for text: '{text}' (len={len(text)})")
@@ -221,7 +228,8 @@ class KokoroTTSService(TTSService):
             
             # Signal end of stream
             chunk_queue.put(None)
-            logger.debug(f"Streaming generation complete, generated {chunk_count} chunks")
+            if self._tts_verbose:
+                logger.debug(f"Streaming generation complete, generated {chunk_count} chunks")
 
         except Exception as e:
             logger.error(f"Error in streaming audio generation: {e}")
@@ -269,14 +277,19 @@ class KokoroTTSService(TTSService):
             
             # Log sanitization if text was changed
             if sanitized_text != text:
-                logger.warning(f"🧹 TTS SANITIZATION: '{text[:50]}...' -> '{sanitized_text[:50]}...'")
+                if self._tts_log_sanitization:
+                    logger.warning(f"🧹 TTS SANITIZATION: '{text[:50]}...' -> '{sanitized_text[:50]}...'")
+                else:
+                    logger.debug("TTS sanitized input text")
             else:
-                logger.info(f"✅ TTS text already clean: '{text[:50]}...'")
+                if self._tts_verbose:
+                    logger.info(f"✅ TTS text already clean: '{text[:50]}...'")
         except Exception as e:
             logger.error(f"❌ TTS sanitization failed: {e}")
             sanitized_text = text
         
-        logger.debug(f"{self}: Generating TTS [{sanitized_text}]")
+        if self._tts_verbose:
+            logger.debug(f"{self}: Generating TTS [{sanitized_text}]")
 
         generation_task = None
         try:
@@ -297,14 +310,21 @@ class KokoroTTSService(TTSService):
             # Add error callback to handle unhandled exceptions
             def _handle_generation_exception(future):
                 try:
-                    future.result()  # This will raise if there was an exception
+                    # Accessing the result will raise if the task errored or was cancelled
+                    future.result()
+                except asyncio.CancelledError:
+                    # Expected during pipeline/task cancellations; not an error
+                    if self._tts_verbose:
+                        logger.debug("Background TTS generation task cancelled")
+                    return
                 except Exception as e:
+                    # Real error during background generation; surface to main loop
                     logger.error(f"Background TTS generation failed: {e}")
-                    # Put the exception in the queue so it can be handled by the main loop
                     try:
                         chunk_queue.put(e)
-                    except:
-                        pass  # Queue might be full or closed
+                    except Exception:
+                        # Queue might be closed or full; best-effort only
+                        pass
             
             generation_task.add_done_callback(_handle_generation_exception)
 
@@ -378,7 +398,8 @@ class KokoroTTSService(TTSService):
 
         except GeneratorExit:
             # Handle generator cleanup (e.g., when client disconnects)
-            logger.debug(f"{self}: TTS generator stopped early")
+            if self._tts_verbose:
+                logger.debug(f"{self}: TTS generator stopped early")
             if generation_task and not generation_task.done():
                 generation_task.cancel()
                 try:
@@ -403,7 +424,8 @@ class KokoroTTSService(TTSService):
                     await generation_task
                 except asyncio.CancelledError:
                     pass
-            logger.debug(f"{self}: Finished TTS [{sanitized_text}]")
+            if self._tts_verbose:
+                logger.debug(f"{self}: Finished TTS [{sanitized_text}]")
             await self.stop_processing_metrics()
             yield TTSStoppedFrame()
 

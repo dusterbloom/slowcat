@@ -54,6 +54,12 @@ class WebRTCManager:
             @connection.event_handler("closed")
             async def handle_disconnected(conn: SmallWebRTCConnection):
                 logger.info(f"Discarding peer connection for pc_id: {conn.pc_id}")
+                # Notify session finalizer (if any) before removing the connection
+                try:
+                    from utils.session_events import notify_session_finalizer
+                    await notify_session_finalizer(conn.pc_id)
+                except Exception:
+                    pass
                 self.connections.pop(conn.pc_id, None)
         
         # Get answer and store connection

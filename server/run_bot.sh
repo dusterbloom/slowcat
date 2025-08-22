@@ -109,14 +109,18 @@ fi
 # Check for required packages
 MISSING_PACKAGES=""
 
-for package in "fastapi" "uvicorn" "loguru" "mlx" "pydantic"; do
+for package in "fastapi" "uvicorn" "loguru" "mlx" "pydantic" "sentence_transformers"; do
     python -c "import $package" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES $package"
 done
 
 if [ ! -z "$MISSING_PACKAGES" ]; then
     echo "   ❌ Missing packages:$MISSING_PACKAGES"
     echo "   Please install missing packages or run: pip install -r requirements.txt"
-    exit 1
+    echo "   Attempting to install missing packages..."
+    pip install -r requirements.txt || {
+        echo "   ❌ Failed to install all requirements. Please run: pip install -r requirements.txt"
+        exit 1
+    }
 fi
 
 echo "   ✅ All critical dependencies satisfied"
@@ -338,6 +342,25 @@ echo "   - MCP integration: $ENABLE_MCP"
 echo "   - Python: $PYTHON_VERSION"
 echo "   - Working directory: $PWD"
 echo ""
+
+# Optional feature hints
+if [ "${ENABLE_DTH:-false}" = "true" ]; then
+  echo "   - DTH: Enabled (SmartContextManager injects <dth_memories>)"
+fi
+if [ "${SURREAL_EMBED_TAPE:-false}" = "true" ]; then
+  echo "   - SurrealDB Tape Embeddings: Enabled (semantic KNN ready)"
+fi
+
+# If DTH and models are enabled, prefetch models to make first run smooth
+if [ "${ENABLE_DTH:-false}" = "true" ]; then
+  echo "🧠 Preparing DTH models (this may download once to cache)..."
+  PRECACHE_ARGS=""
+  if [ "${USE_CROSS_ENCODER:-false}" = "true" ]; then
+    PRECACHE_ARGS="--enable-cross-encoder"
+  fi
+  python scripts/precache_models.py $PRECACHE_ARGS || true
+  echo "   (Set HF_HOME/TRANSFORMERS_CACHE to control cache location; offline runs supported after first fetch)"
+fi
 
 # Run the bot with comprehensive error handling
 set -e  # Exit on any error
