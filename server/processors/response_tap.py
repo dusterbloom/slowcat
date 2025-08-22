@@ -33,26 +33,29 @@ class ResponseTap(FrameProcessor):
             self._in_response = True
             self._buffer = ""
             # Do not commit yet; wait for end
-        elif isinstance(frame, (TextFrame, TTSTextFrame)) and direction == FrameDirection.DOWNSTREAM:
-            text = (getattr(frame, 'text', '') or '').strip()
-            if not text:
-                pass
-            elif self._in_response:
-                # Accumulate robustly: prefer overwrite if cumulative, else append
-                if len(text) >= len(self._buffer) and text.startswith(self._buffer):
-                    self._buffer = text
+        elif direction == FrameDirection.DOWNSTREAM:
+            # Only use TextFrame for memory accumulation; ignore TTSTextFrame to avoid
+            # TTS-side tokenization artifacts (e.g., letter-split names) polluting memory/summary.
+            if isinstance(frame, TextFrame):
+                text = (getattr(frame, 'text', '') or '').strip()
+                if not text:
+                    pass
+                elif self._in_response:
+                    # Accumulate robustly: prefer overwrite if cumulative, else append
+                    if len(text) >= len(self._buffer) and text.startswith(self._buffer):
+                        self._buffer = text
+                    else:
+                        if self._buffer and not self._buffer.endswith(' ') and not text.startswith(' '):
+                            self._buffer += ' '
+                        self._buffer += text
                 else:
-                    # Some adapters stream deltas — append with space if needed
-                    if self._buffer and not self._buffer.endswith(' ') and not text.startswith(' '):
-                        self._buffer += ' '
-                    self._buffer += text
-            else:
-                # Not within a declared response; treat this as a final one-off
-                try:
-                    if text:
-                        await self.smart_context_manager.add_assistant_response(text)
-                except Exception as e:
-                    logger.debug(f"ResponseTap: add_assistant_response (immediate) failed: {e}")
+                    # Not within a declared response; treat this as a final one-off
+                    try:
+                        if text:
+                            await self.smart_context_manager.add_assistant_response(text)
+                    except Exception as e:
+                        logger.debug(f"ResponseTap: add_assistant_response (immediate) failed: {e}")
+            # For TTSTextFrame, do nothing here (only pass through below)
         elif isinstance(frame, LLMFullResponseEndFrame) and direction == FrameDirection.DOWNSTREAM:
             if self._in_response:
                 final_text = (self._buffer or '').strip()

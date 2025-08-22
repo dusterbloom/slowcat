@@ -24,6 +24,10 @@ from processors.token_counter import get_token_counter
 import os
 from memory import create_smart_memory_system, extract_facts_from_text
 try:
+    from memory.dynamic_tape_head import DynamicTapeHead  # optional
+except Exception:
+    DynamicTapeHead = None  # type: ignore
+try:
     # For intent enum comparison in retrieval gating (optional)
     from memory.query_classifier import QueryIntent  # noqa: F401
 except Exception:
@@ -87,6 +91,17 @@ class SmartContextManager(FrameProcessor):
             pass
         self.memory_system = create_smart_memory_system(final_db_path)
         self.tape_store = getattr(self.memory_system, 'tape_store', None)
+
+        # Optional Dynamic Tape Head integration (feature flag)
+        self._enable_dth = os.getenv('ENABLE_DTH', 'false').lower() == 'true'
+        self.tape_head = None
+        if self._enable_dth and DynamicTapeHead is not None:
+            try:
+                self.tape_head = DynamicTapeHead(self.memory_system)
+                logger.info("🧠 DTH enabled in SmartContextManager")
+            except Exception as e:
+                logger.warning(f"DTH init failed; continuing without: {e}")
+                self.tape_head = None
         
         # Feature toggles / thresholds (env-driven, default generic)
         self._enable_spelling_hints = os.getenv('ENABLE_SPELLING_HINTS', 'false').lower() == 'true'
@@ -114,6 +129,7 @@ class SmartContextManager(FrameProcessor):
         # Session tracking
         self.session = SessionMetadata()
         self.session.session_start = time.time()
+        self._session_started = False
         # Prefer a single logical user id when speaker recognition is disabled
         self._user_id_override = os.getenv('USER_ID', '').strip() or None
         if self._user_id_override:
@@ -125,14 +141,128 @@ class SmartContextManager(FrameProcessor):
         self.max_recent_exchanges = 50
 
         # Running summary state
-        self.summary_every_n = int(os.getenv('SC_SUMMARY_EVERY_N', '3'))
+        # Summarization cadence and size
+        self.summary_every_n = int(os.getenv('SC_SUMMARY_EVERY_N', '10'))
         self.summary_text: str = ''
         self.last_summary_turn: int = 0
+        self._use_abstract_summary = os.getenv('SC_USE_ABSTRACT_SUMMARY', 'false').lower() == 'true'
+        try:
+            self._summary_last_turns = int(os.getenv('SC_SUMMARY_LAST_TURNS', '10'))
+        except Exception:
+            self._summary_last_turns = 10
+        # Recent inclusion guarantees
+        try:
+            self._recent_min_exchanges = int(os.getenv('SC_RECENT_MIN_EXCHANGES', '5'))
+        except Exception:
+            self._recent_min_exchanges = 5
+        try:
+            self._recent_truncate_chars = int(os.getenv('SC_RECENT_TRUNCATE_CHARS', '260'))
+        except Exception:
+            self._recent_truncate_chars = 260
         
         # Performance metrics
         self.context_builds = 0
         self.fact_extractions = 0
         self.avg_context_tokens = 0
+        
+    def _trace_sessions(self, event: str, **data):
+        """Targeted session trace when SC_TRACE_SESSIONS=true."""
+        try:
+            import os
+            if os.getenv('SC_TRACE_SESSIONS', 'false').lower() != 'true':
+                return
+            logger.info(f"[SCM:session] {event}: {data}")
+        except Exception:
+            pass
+        
+    def _speaker_key(self) -> str:
+        """Return a consistent speaker key for persistence.
+
+        - Prefer explicit USER_ID override when provided.
+        - Map empty/"unknown" to a stable 'default_user'.
+        """
+        if self._user_id_override:
+            key = self._user_id_override
+            self._trace_sessions('speaker_key_override', key=key)
+            logger.debug(f"🎭 Using USER_ID override as speaker_key: {key}")
+            return key
+        sid = (self.session.speaker_id or '').strip()
+        key = sid if sid and sid != 'unknown' else 'default_user'
+        self._trace_sessions('speaker_key', raw_sid=sid, key=key)
+        logger.debug(f"🎭 Speaker key determination - raw_sid: '{sid}' → key: '{key}'")
+        return key
+
+    def _sanitize_summary_lines(self, lines: List[str]) -> List[str]:
+        """Remove boilerplate and meta lines that cause the model to parrot prompts.
+
+        - Drop assistant greetings/clarifications and generic filler.
+        - Prefer keeping user lines; keep assistant lines only if informative and short.
+        - Keep overall size small and stable.
+        """
+        try:
+            import re
+            cleaned: List[str] = []
+            # Patterns to drop from assistant lines
+            drop_patterns = [
+                r"\b(let\s+me\s+clarify)\b",
+                r"\b(i'?m\s+the\s+one\s+processing)\b",
+                r"\b(i'?m\s+the\s+one\s+who\s+is\s+reading)\b",
+                r"\b(ah\s*,?\s*i\s*[,\s]*see)\b",
+                r"\b(how\s+can\s+i\s+help\s+you\s+today)\b",
+                r"\b(i'?m\s+slowcat)\b",
+            ]
+            drop_re = re.compile("|".join(drop_patterns), re.IGNORECASE)
+
+            for ln in lines:
+                t = (ln or '').strip()
+                if not t:
+                    continue
+                # Identify role
+                role = 'user'
+                content = t
+                if t.startswith('[assistant]'):
+                    role = 'assistant'
+                    content = t[len('[assistant]'):].strip()
+                elif t.startswith('[user]'):
+                    role = 'user'
+                    content = t[len('[user]'):].strip()
+
+                content_norm = re.sub(r"\s+", " ", content)
+
+                if role == 'assistant':
+                    # Drop boilerplate assistant meta lines
+                    if drop_re.search(content_norm):
+                        continue
+                    # Keep very short, informative assistant statements
+                    if len(content_norm.split()) > 24:
+                        continue
+                # Keep user lines unless extremely long
+                if role == 'user' and len(content_norm.split()) > 40:
+                    continue
+
+                # Reconstruct with role tag to keep consistent downstream handling
+                cleaned.append(f"[{role}] {content_norm}")
+
+            # Cap to last 12 lines to avoid bloat
+            return cleaned[-12:]
+        except Exception:
+            return lines[-12:]
+
+    def _prepare_summary_lines(self, entries: List[Any]) -> List[str]:
+        """Build candidate lines from entries and sanitize them for summarization."""
+        def _get(obj, k, default=None):
+            return obj.get(k, default) if isinstance(obj, dict) else getattr(obj, k, default)
+        # Sort ascending and take tail window
+        entries = sorted(entries, key=lambda e: _get(e, 'ts', 0.0))
+        tail = entries[-max(1, self._summary_last_turns):]
+        raw_lines: List[str] = []
+        for e in tail:
+            content = ((_get(e, 'content', '') or '')).strip()
+            if not content:
+                continue
+            role = _get(e, 'role', 'user')
+            raw_lines.append(f"[{role}] {content}")
+        return self._sanitize_summary_lines(raw_lines)
         
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """
@@ -147,11 +277,33 @@ class SmartContextManager(FrameProcessor):
                     spk = getattr(frame, 'speaker_id', None) or getattr(frame, 'user_id', None)
                     if spk:
                         self.session.speaker_id = spk
+                        self._trace_sessions('user_started_speaking', frame_speaker_id=spk)
             except Exception:
                 pass
         
         # Only process TranscriptionFrames (user input)
         if isinstance(frame, TranscriptionFrame) and frame.text.strip():
+            # Ensure session is registered once, even if get_initial_context_frame wasn't used
+            if not self._session_started and hasattr(self.memory_system, 'facts_graph'):
+                try:
+                    spk = self._speaker_key()
+                    self._trace_sessions('start_session_on_transcription', key=spk)
+                    await self._maybe_await(self.memory_system.facts_graph.start_session(spk))
+                    self._session_started = True
+                except Exception:
+                    pass
+            # Seed previous summary lazily if not done by initial context
+            if not getattr(self, '_summary_seeded', False) and self.tape_store is not None and not self.summary_text:
+                try:
+                    last = await self._maybe_await(self.tape_store.get_last_summary())
+                    if last:
+                        prev_summary_raw = str(last['summary'])
+                        prev_summary = self._clean_previous_summary(prev_summary_raw)[:600]
+                        if prev_summary:
+                            self.summary_text = prev_summary
+                    self._summary_seeded = True
+                except Exception:
+                    pass
             # Normalize user input (collapse repeated punctuation, trim, etc.)
             user_text = self._normalize_user_input(frame.text)
             logger.debug(f"🎤 Processing transcription: '{user_text[:50]}...'")
@@ -167,7 +319,7 @@ class SmartContextManager(FrameProcessor):
                         self.tape_store.add_entry(
                             role='user',
                             content=user_text,
-                            speaker_id=self.session.speaker_id or 'default_user'
+                            speaker_id=self._speaker_key()
                         )
                     )
             except Exception as e:
@@ -175,7 +327,9 @@ class SmartContextManager(FrameProcessor):
             
             # 2. Update session in memory system
             try:
-                await self._maybe_await(self.memory_system.update_session(self.session.speaker_id or 'default_user'))
+                key = self._speaker_key()
+                self._trace_sessions('update_session', key=key)
+                await self._maybe_await(self.memory_system.update_session(key))
             except Exception:
                 pass
 
@@ -212,11 +366,11 @@ class SmartContextManager(FrameProcessor):
             except Exception as e:
                 logger.debug(f"Recent window update failed: {e}")
 
-            # 6b. Update running summary periodically
+            # 6b. Update running summary periodically (async, non-blocking)
             try:
-                await self._maybe_update_running_summary()
+                asyncio.create_task(self._maybe_update_running_summary())
             except Exception as e:
-                logger.debug(f"Running summary update skipped: {e}")
+                logger.debug(f"Running summary scheduling skipped: {e}")
             
             # DON'T forward the original TranscriptionFrame
             # This prevents the old context_aggregator from accumulating
@@ -281,12 +435,36 @@ class SmartContextManager(FrameProcessor):
                 snippets_context = "\n".join(lines)
         snippets_tokens = self.token_counter.count_tokens(snippets_context)
 
+        # 2c. Optional DTH memory block (uses its own budget from facts_context share)
+        dth_context = ""
+        if self.tape_head is not None and user_input:
+            try:
+                # Reserve up to half of facts_context budget for DTH verbatim
+                dth_budget = max(100, self.budget.facts_context // 2)
+                bundle = await self.tape_head.seek(user_input, budget=dth_budget)
+                try:
+                    # Observability: brief summary of what DTH returned
+                    logger.debug(
+                        f"[SCM:retrieval] DTH verbatim={len(bundle.verbatim)}, shadows={len(bundle.shadows)}, recents={len(bundle.recents)}, tokens={bundle.token_count}/{dth_budget}"
+                    )
+                except Exception:
+                    pass
+                if bundle.verbatim:
+                    lines = ["<dth_memories>"]
+                    for m in bundle.verbatim[:3]:
+                        lines.append(f"- {m.content}")
+                    lines.append("</dth_memories>")
+                    dth_context = "\n".join(lines)
+            except Exception as e:
+                logger.debug(f"DTH block skipped: {e}")
+        dth_tokens = self.token_counter.count_tokens(dth_context)
+
         # 3. Build recent conversation context with dynamic budget
         # Use remaining space after system + summary + facts + current input + buffer
         current_tokens_est = self.token_counter.count_tokens(user_input)
         dynamic_recent_budget = max(
             0,
-            self.max_tokens - (system_tokens + summary_tokens + facts_tokens + snippets_tokens + current_tokens_est + self.budget.buffer)
+            self.max_tokens - (system_tokens + summary_tokens + facts_tokens + snippets_tokens + dth_tokens + current_tokens_est + self.budget.buffer)
         )
         recent_tokens_budget = dynamic_recent_budget
         recent_context = self._build_recent_context(recent_tokens_budget)
@@ -310,6 +488,8 @@ class SmartContextManager(FrameProcessor):
             full_system += f"\n\n{facts_context}"
         if snippets_context:
             full_system += f"\n\n{snippets_context}"
+        if dth_context:
+            full_system += f"\n\n{dth_context}"
         
         messages.append({"role": "system", "content": full_system})
         
@@ -374,6 +554,16 @@ class SmartContextManager(FrameProcessor):
             # Remove stray punctuation-only tails like '?.' -> '?'
             s = re.sub(r"\?\.+$", "?", s)
             s = re.sub(r"!\.+$", "!", s)
+            # Fix comma-dot sequences like ", .word" or ", . no" -> ", word"
+            s = re.sub(r",\s*\.\s*", ", ", s)
+            # Fix dot-comma sequences ".," -> ". "
+            s = re.sub(r"\.\s*,\s*", ". ", s)
+            # Ensure a space after sentence punctuation when followed by a letter: ".and" -> ". and"
+            s = re.sub(r"([.!?])([A-Za-z])", r"\1 \2", s)
+            # Remove a leading dot before a word when preceded by whitespace: " .word" -> " word"
+            s = re.sub(r"\s+\.(\w)", r" \1", s)
+            # Collapse duplicate commas with proper spacing: ", ," -> ", "
+            s = re.sub(r",\s*,+", ", ", s)
             # Normalize whitespace
             s = re.sub(r"\s+", " ", s)
             return s.strip()
@@ -417,22 +607,41 @@ class SmartContextManager(FrameProcessor):
         """Build an initial context frame using current facts and session status."""
         # Ensure session is registered and increment session count
         try:
-            spk = self.session.speaker_id or 'default_user'
+            spk = self._speaker_key()
+            self._trace_sessions('start_session_initial_context', key=spk)
+            logger.info(f"🎯 Starting new session for speaker: {spk}")
             # Start a new session (increments session_count once)
             if hasattr(self.memory_system, 'facts_graph'):
                 try:
                     before = await self._maybe_await(self.memory_system.facts_graph.get_session_info(spk))
                     logger.info(f"📊 Session before start: {before}")
-                except Exception:
-                    pass
+                    self._trace_sessions('get_session_info_before', key=spk, info=before)
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to get session info before start: {e}")
+                
+                logger.info(f"🚀 Calling start_session() for {spk}")
                 await self._maybe_await(self.memory_system.facts_graph.start_session(spk))
+                self._session_started = True
+                logger.info(f"✅ start_session() completed, session_started = {self._session_started}")
+                
                 try:
-                    after = await self._maybe_await(self.memory_system.facts_graph.get_session_info(spk))
+                    # Read-after-write retry: expect an increment versus 'before'
+                    before_count = before.get('session_count', 0) if isinstance(before, dict) else 0
+                    logger.info(f"🔄 Retrying session info read, expecting count >= {before_count + 1}")
+                    after = await self._read_session_info_retry(spk, expected_min=before_count + 1)
                     logger.info(f"📊 Session after start: {after}")
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    self._trace_sessions('get_session_info_after', key=spk, info=after)
+                    
+                    # Verify the increment happened
+                    after_count = after.get('session_count', 0) if isinstance(after, dict) else 0
+                    if after_count <= before_count:
+                        logger.error(f"❌ Session count did NOT increment! Before: {before_count}, After: {after_count}")
+                    else:
+                        logger.info(f"✅ Session count incremented: {before_count} → {after_count}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to verify session increment: {e}")
+        except Exception as e:
+            logger.error(f"❌ Failed to start session: {e}")
         messages = await self._build_fixed_context("")
         
         # Inject previous session summary, if available
@@ -457,32 +666,66 @@ class SmartContextManager(FrameProcessor):
             pass
         return LLMMessagesUpdateFrame(messages, run_llm=True)
 
+    async def _read_session_info_retry(self, spk: str, expected_min: int = 1, attempts: int = 4, base_delay_ms: int = 25) -> Dict[str, Any]:
+        """Retry reads of session info briefly to handle eventual consistency.
+
+        Args:
+            spk: Speaker key
+            expected_min: Minimal expected session_count after start
+            attempts: Number of attempts (default 4)
+            base_delay_ms: Initial backoff delay in ms (exponential)
+
+        Returns:
+            The last seen info dict (or default) after retries.
+        """
+        info: Dict[str, Any] = {}
+        last_err = None
+        for i in range(max(1, attempts)):
+            try:
+                info = await self._maybe_await(self.memory_system.facts_graph.get_session_info(spk))
+                if isinstance(info, dict) and info.get('session_count', 0) >= expected_min:
+                    self._trace_sessions('read_session_info_retry', key=spk, attempt=i+1, info=info)
+                    return info
+            except Exception as e:
+                last_err = e
+            # backoff
+            try:
+                await asyncio.sleep((base_delay_ms * (2 ** i)) / 1000.0)
+            except Exception:
+                pass
+        # exhausted
+        if last_err:
+            self._trace_sessions('read_session_info_retry_failed', key=spk, error=str(last_err))
+        else:
+            self._trace_sessions('read_session_info_retry_exhausted', key=spk, info=info)
+        return info if isinstance(info, dict) else {'session_count': 0, 'last_interaction': None, 'first_seen': None, 'total_turns': 0}
+
     def needs_greeting(self) -> bool:
         # If deterministic greeting is enabled, greet exactly once per session
         if self._enforce_greeting and not self._greeted:
             return True
         return not getattr(self, '_initial_summary_ok', True)
 
-    def get_greeting_text(self) -> str:
-        # Compose a deterministic greeting with display name if we have one
+    async def get_greeting_text(self) -> str:
+        """Compose a deterministic greeting with display name if we have one.
+
+        Uses _maybe_await so it works with both SQLite (sync) and SurrealDB (async).
+        """
         name = None
         try:
             if self.memory_system and hasattr(self.memory_system, 'facts_graph'):
-                top_facts = None
-                # Try fetching a few top facts synchronously if available
-                top_facts = getattr(self.memory_system.facts_graph, 'get_top_facts', None)
-                if callable(top_facts):
-                    facts = top_facts(limit=10)  # may be sync in SQLite mode
-                    for fact in facts or []:
-                        if (getattr(fact, 'subject', '') == 'user' and 
-                            getattr(fact, 'predicate', '') in ['name', 'name_name'] and
-                            getattr(fact, 'value', '')):
-                            name = getattr(fact, 'value', '')
-                            break
+                facts = await self._maybe_await(self.memory_system.facts_graph.get_top_facts(limit=10))
+                for fact in facts or []:
+                    if (getattr(fact, 'subject', '') == 'user' and 
+                        getattr(fact, 'predicate', '') in ['name', 'name_name'] and
+                        getattr(fact, 'value', '')):
+                        name = getattr(fact, 'value', '')
+                        break
         except Exception:
             pass
         if not name:
-            name = self.session.speaker_id if self.session.speaker_id and self.session.speaker_id != 'unknown' else ''
+            key = self._speaker_key()
+            name = '' if key == 'default_user' else key
         self._greeted = True
         return f"Hello{', ' + name if name else ''}!"
 
@@ -560,8 +803,8 @@ class SmartContextManager(FrameProcessor):
         else:
             session_info += f"\nDuration: {duration_s}s"
             
-        # Speaker information - prioritize user's stated name from facts over session ID
-        spk = self.session.speaker_id if self.session.speaker_id and self.session.speaker_id != "unknown" else "default_user"
+        # Speaker key used for session info lookup
+        spk = self._speaker_key()
         
         # Try to get user's actual name from facts if available
         user_stated_name = None
@@ -577,8 +820,9 @@ class SmartContextManager(FrameProcessor):
         except Exception:
             pass
         
-        # Use stated name if available, otherwise fall back to session ID
-        display_name = user_stated_name if user_stated_name else spk
+        # Use USER_ID by default; optionally allow a stored "name" fact to override
+        use_fact_name = os.getenv('SC_USE_FACT_NAME', 'false').lower() == 'true'
+        display_name = (user_stated_name if (use_fact_name and user_stated_name) else spk)
         session_info += f"\nSpeaker: {display_name}"
 
         # Total sessions (lifetime) from facts graph, if available
@@ -586,23 +830,33 @@ class SmartContextManager(FrameProcessor):
         try:
             if hasattr(self.memory_system, 'facts_graph'):
                 info = await self._maybe_await(self.memory_system.facts_graph.get_session_info(spk))
+                self._trace_sessions('dynamic_prompt_session_info', key=spk, info=info)
+                # Enhanced logging for session count debugging
+                logger.info(f"🔍 Session count debug - Speaker: {spk}, Info: {info}")
                 sessions_total = info.get('session_count', 0)
+                logger.info(f"🔢 Retrieved session_count: {sessions_total} for speaker: {spk}")
+                
                 # Include first/last seen when available
                 first_seen = info.get('first_seen')
                 last_seen = info.get('last_interaction')
                 if first_seen:
                     try:
                         from datetime import datetime
-                        session_info += f"\nFirst seen: {datetime.fromtimestamp(first_seen).strftime('%Y-%m-%d %H:%M')}"
-                    except Exception:
-                        pass
+                        first_seen_str = datetime.fromtimestamp(first_seen).strftime('%Y-%m-%d %H:%M')
+                        session_info += f"\nFirst seen: {first_seen_str}"
+                        logger.debug(f"📅 First seen: {first_seen_str} for {spk}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to format first_seen timestamp: {e}")
                 if last_seen:
                     try:
                         from datetime import datetime
-                        session_info += f"\nLast seen: {datetime.fromtimestamp(last_seen).strftime('%Y-%m-%d %H:%M')}"
-                    except Exception:
-                        pass
-        except Exception:
+                        last_seen_str = datetime.fromtimestamp(last_seen).strftime('%Y-%m-%d %H:%M')
+                        session_info += f"\nLast seen: {last_seen_str}"
+                        logger.debug(f"📅 Last seen: {last_seen_str} for {spk}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to format last_seen timestamp: {e}")
+        except Exception as e:
+            logger.error(f"❌ Failed to get session info for {spk}: {e}")
             sessions_total = None
 
         if sessions_total is not None:
@@ -611,59 +865,40 @@ class SmartContextManager(FrameProcessor):
         session_info += "\n</session_info>"
         base_prompt += session_info
 
-        # Greeting handled flag to prevent re-greetings from the model when we inject greeting deterministically
-        base_prompt += f"\n\n<greeting_handled>{'true' if self._greeted else 'false'}</greeting_handled>"
-
-        # Relationship-aware tone guidance
+        # Simplified greeting logic
+        turn_display = max(1, self.session.turn_count + 1)
         relationship = "first-time" if not sessions_total or sessions_total <= 1 else ("returning" if sessions_total <= 10 else ("regular" if sessions_total <= 50 else "long-term"))
-        # Compact tone guidance (single block, minimal spacing)
-        tone_block = (
-            f"\n\n<response_style>\nRelationship: {relationship}\n"
-            "- If Turn > 1 or <greeting_handled> is true, do not start with any greeting (no 'Hello').\n"
-            "- On the first turn only, start with: 'Hello, {name}!' where name is the user's display name if known.\n"
-            "- Otherwise answer directly and concisely.\n"
-            "- If the last user message is an urgent question, answer first; greeting optional.\n"
-            "</response_style>"
-        )
+        
+        # Clear, simple tone guidance
+        if turn_display == 1 and not self._greeted:
+            tone_block = (
+                f"\n\n<response_style>\nRelationship: {relationship}\n"
+                f"- Start with a brief greeting: 'Hello, {display_name}!'\n"
+                "- Then answer the user's question directly.\n"
+                "- Keep responses concise and natural.\n"
+                "</response_style>"
+            )
+        else:
+            tone_block = (
+                f"\n\n<response_style>\nRelationship: {relationship}\n"
+                "- Answer directly without any greeting.\n"
+                "- Keep responses concise and natural.\n"
+                "- Continue the conversation naturally.\n"
+                "</response_style>"
+            )
         base_prompt += tone_block
 
-        # Add memory instructions
-        memory_instructions = (
-            "\n\n<memory_instructions>\n"
+        # Consolidated conversation guidelines
+        guidelines = (
+            "\n\n<conversation_guidelines>\n"
+            "- Your name is Slowcat. The user's name is not your name.\n"
             "- Use 'you' for user facts; never claim them as yours.\n"
-            "- Your name is Slowcat; never say 'I'm {user_name}'.\n"
-            "- Do not say 'I'm Slowcat' unless the user explicitly asks who you are or your name.\n"
-            "- Never begin a reply with the pattern: `I'm …`.\n"
-            "- Facts are a short reference; do not repeat them unless relevant.\n"
-            "- Recent conversation is for reference — do not parrot it; continue naturally.\n"
-            "- If info is missing, ask one brief, specific clarification.\n"
-            "</memory_instructions>"
+            "- Keep responses concise and natural.\n"
+            "- Don't repeat the user's message verbatim.\n"
+            "- If asking for clarification, be brief and specific.\n"
+            "</conversation_guidelines>"
         )
-        base_prompt += memory_instructions
-
-        # Interaction rules tuned for small models (generic, not user-specific)
-        interaction_rules = (
-            "\n\n<conversation_rules>\n"
-            "- Do not repeat the user's message verbatim; paraphrase only when needed.\n"
-            "- If the user spells a name (letters separated by spaces/commas/dashes), join the letters into one candidate and confirm.\n"
-            "- Ask at most one follow-up for the same detail; if still unclear, ask the user to type it.\n"
-            "- Avoid listing capabilities unless asked.\n"
-            "- Prefer one short sentence; add a brief follow-up only if necessary.\n"
-            "</conversation_rules>"
-        )
-        base_prompt += interaction_rules
-
-        # Identity guard with explicit examples to prevent confusion
-        identity_guard = (
-            "\n\n<identity_rules>\n"
-            "- Assistant name: Slowcat.\n"
-            "- User name != assistant name.\n"
-            "- Never say 'I'm {user_name}'.\n"
-            "- Greeting example (OK): 'Hello, Peppy!'.\n"
-            "- Not allowed: 'I'm Peppy.'\n"
-            "</identity_rules>"
-        )
-        base_prompt += identity_guard
+        base_prompt += guidelines
         
         return base_prompt
     
@@ -785,9 +1020,19 @@ class SmartContextManager(FrameProcessor):
                     include_name = os.getenv('INCLUDE_NAME_IN_FACTS', 'false').lower() == 'true'
                     if include_name and val:
                         lines.append(f"- you go by '{val}'")
+                elif p.endswith('_name') and val:
+                    # Improve phrasing for things like dog_name → "your dog's name is X"
+                    stem = p[:-5].replace('_', ' ').strip()
+                    if stem:
+                        # Possessive form
+                        possessive = f"{stem}'s" if not stem.endswith('s') else f"{stem}'"
+                        lines.append(f"- your {possessive} name is {val}")
                 elif p in ('likes', 'like') and val:
                     lines.append(f"- you like {val}")
                 elif p in ('location', 'live', 'lives', 'hometown') and val:
+                    # Skip malformed location values like 'where'
+                    if str(val).strip().lower() == 'where':
+                        continue
                     loc_phrase = os.getenv('FACTS_LOCATION_PHRASE', 'are located in')
                     lines.append(f"- you {loc_phrase} {val}")
                 elif val:
@@ -795,7 +1040,18 @@ class SmartContextManager(FrameProcessor):
                 else:
                     lines.append(f"- you have {pred}")
             else:
-                if val:
+                p = (pred or '').lower()
+                if p.endswith('_name') and val:
+                    stem = p[:-5].replace('_', ' ').strip()
+                    if stem:
+                        possessive = f"{stem}'s" if not stem.endswith('s') else f"{stem}'"
+                        lines.append(f"- {subj}'s {possessive} name is {val}")
+                    else:
+                        lines.append(f"- {subj}'s name is {val}")
+                elif val:
+                    # Special-case malformed 'where' location
+                    if p in ('location', 'live', 'lives', 'hometown') and str(val).strip().lower() == 'where':
+                        continue
                     lines.append(f"- {subj}'s {pred} is {val}")
                 else:
                     lines.append(f"- {subj} has {pred}")
@@ -806,27 +1062,40 @@ class SmartContextManager(FrameProcessor):
         """Filter noisy facts and dedupe by subject+predicate, preferring recent and higher fidelity.
 
         Rules:
-        - Prefer subject 'user' in prompt context (FACTS_ONLY_USER_SUBJECT=true by default).
+        - Prefer subject 'user' in prompt context (FACTS_ONLY_USER_SUBJECT controls behaviour).
         - Drop subjects that look like tests (contain 'test' or 'integration').
         - Allow predicate 'name', but drop other *_name variants (e.g., 'dog_name').
         - Keep only the best fact per (subject, predicate) by (fidelity desc, last_seen desc).
         """
         if not facts:
             return []
-        only_user = os.getenv('FACTS_ONLY_USER_SUBJECT', 'true').lower() == 'true'
+        # Allow non-user facts by default so the agent can recall events/topics beyond the user.
+        # Set FACTS_ONLY_USER_SUBJECT=true to revert to legacy user-only behaviour.
+        only_user = os.getenv('FACTS_ONLY_USER_SUBJECT', 'false').lower() == 'true'
         include_name = os.getenv('INCLUDE_NAME_IN_FACTS', 'false').lower() == 'true'
-        tmp = []
+        try:
+            max_non_user = int(os.getenv('FACTS_MAX_NONUSER', '6'))
+        except Exception:
+            max_non_user = 6
+        tmp: List[Any] = []
+        non_user_buf: List[Any] = []
         for f in facts:
             subj = (getattr(f, 'subject', '') or '').lower()
             pred = (getattr(f, 'predicate', '') or '').lower()
-            if only_user and subj != 'user':
-                continue
             if 'test' in subj or 'integration' in subj:
                 continue
             # Drop name by default from facts prompt; keep for greeting logic
             if (pred == 'name' or pred.endswith('_name')) and not include_name:
                 continue
-            tmp.append(f)
+            if subj == 'user':
+                tmp.append(f)
+            else:
+                if not only_user:
+                    non_user_buf.append(f)
+        # Prefer higher-fidelity, recent non-user facts and cap their count
+        if non_user_buf:
+            non_user_buf.sort(key=lambda x: (getattr(x, 'fidelity', 0), getattr(x, 'last_seen', 0)), reverse=True)
+            tmp.extend(non_user_buf[:max(0, max_non_user)])
         best: dict = {}
         for f in tmp:
             key = (getattr(f, 'subject', ''), getattr(f, 'predicate', ''))
@@ -851,29 +1120,80 @@ class SmartContextManager(FrameProcessor):
         messages = []
         token_count = 0
         
-        # Add exchanges from most recent backwards until budget exhausted
-        for exch in reversed(self.recent_exchanges):
+        # Helper to add one exchange with optional truncation
+        def add_exchange(user_msg: str, assistant_msg: str, enforce: bool = False) -> bool:
+            nonlocal messages, token_count
+            um = user_msg or ''
+            am = assistant_msg or ''
+            # Compute tokens and fit into budget; if enforce, allow truncation
+            def tokens_of(u, a):
+                t = self.token_counter.count_tokens(u)
+                if a:
+                    t += self.token_counter.count_tokens(a)
+                return t
+            needed = tokens_of(um, am)
+            if token_count + needed <= token_budget:
+                if am:
+                    messages.insert(0, {"role": "assistant", "content": am})
+                if um:
+                    messages.insert(0, {"role": "user", "content": um})
+                token_count += needed
+                return True
+            if not enforce:
+                return False
+            # Truncate aggressively to fit
+            trunc_u = um[: self._recent_truncate_chars]
+            trunc_a = am[: self._recent_truncate_chars] if am else ''
+            # Try with truncated
+            needed2 = tokens_of(trunc_u, trunc_a)
+            if needed2 > (token_budget - token_count):
+                # Try with assistant only
+                if trunc_a:
+                    needed3 = self.token_counter.count_tokens(trunc_a)
+                    if needed3 <= (token_budget - token_count):
+                        messages.insert(0, {"role": "assistant", "content": trunc_a})
+                        token_count += needed3
+                        return True
+                # Try with user only
+                if trunc_u:
+                    needed4 = self.token_counter.count_tokens(trunc_u)
+                    if needed4 <= (token_budget - token_count):
+                        messages.insert(0, {"role": "user", "content": trunc_u})
+                        token_count += needed4
+                        return True
+                return False
+            # Add truncated pair
+            if trunc_a:
+                messages.insert(0, {"role": "assistant", "content": trunc_a})
+            if trunc_u:
+                messages.insert(0, {"role": "user", "content": trunc_u})
+            token_count += needed2
+            return True
+
+        # First, guarantee last K exchanges (best-effort with truncation)
+        min_k = max(0, self._recent_min_exchanges)
+        recent_rev = list(reversed(self.recent_exchanges))
+        guaranteed = list(reversed(recent_rev[:min_k]))  # restore chronological
+        for exch in guaranteed:
+            user_msg = exch[0] if len(exch) >= 1 else ""
+            assistant_msg = exch[1] if len(exch) >= 2 else ""
+            # Skip stray assistant blips
+            if not user_msg and assistant_msg and len(assistant_msg.split()) <= 2:
+                continue
+            add_exchange(user_msg, assistant_msg, enforce=True)
+
+        # Then, add older exchanges until budget exhausted
+        for exch in recent_rev[min_k:]:
             user_msg = exch[0] if len(exch) >= 1 else ""
             assistant_msg = exch[1] if len(exch) >= 2 else ""
             # Skip stray assistant-only micro-chunks (from any past streaming glitch)
             if not user_msg and assistant_msg and len(assistant_msg.split()) <= 2:
                 continue
             # Calculate tokens for this exchange (handle missing assistant)
-            exchange_tokens = self.token_counter.count_tokens(user_msg)
-            if assistant_msg:
-                exchange_tokens += self.token_counter.count_tokens(assistant_msg)
-            
-            if token_count + exchange_tokens <= token_budget:
-                # Insert at beginning to maintain chronological order
-                if assistant_msg:
-                    messages.insert(0, {"role": "assistant", "content": assistant_msg})
-                if user_msg:
-                    messages.insert(0, {"role": "user", "content": user_msg})
-                token_count += exchange_tokens
-            else:
+            if not add_exchange(user_msg, assistant_msg, enforce=False):
                 break
                 
-        logger.debug(f"📝 Recent context: {len(messages)//2} exchanges, {token_count} tokens")
+        logger.debug(f"📝 Recent context: {len(messages)//2} exchanges, {token_count} tokens (min_guaranteed={self._recent_min_exchanges})")
         return messages
     
     async def _extract_facts_async(self, text: str):
@@ -925,7 +1245,7 @@ class SmartContextManager(FrameProcessor):
                     self.tape_store.add_entry(
                         role='assistant',
                         content=response,
-                        speaker_id=self.session.speaker_id or 'default_user'
+                        speaker_id=self._speaker_key()
                     )
                 )
         except Exception as e:
@@ -962,34 +1282,136 @@ class SmartContextManager(FrameProcessor):
             return
         if (self.session.turn_count - self.last_summary_turn) < max(1, self.summary_every_n):
             return
-        # Build a heuristic summary from recent tape entries in this session
+        self._trace_sessions('summary_periodic_start', turns=self.session.turn_count)
+        # Build a summary from last N turns (recent entries)
         start_ts = self.session.session_start
-        entries = await self._maybe_await(self.tape_store.get_entries_since(start_ts))
+        entries = []
+        try:
+            # Prefer recent API for exact count
+            get_recent = getattr(self.tape_store, 'get_recent', None)
+            if callable(get_recent):
+                # Grab more than needed to ensure N turns across roles
+                entries = await self._maybe_await(get_recent(limit=self._summary_last_turns * 2))
+            else:
+                # Fallback to entries since session start
+                entries = await self._maybe_await(self.tape_store.get_entries_since(start_ts))
+        except Exception:
+            return
         if not entries:
             return
-        # Keep last ~10 lines for summary context
-        tail = entries[-10:]
-        lines = []
-        for e in tail:
-            content = (e.content or '').strip()
-            if not content:
-                continue
-            # Prefer questions and concise statements
-            if content.endswith('?') or len(content.split()) <= 24:
-                lines.append(f"[{e.role}] {content}")
-        # Truncate and join
-        summary = "\n".join(lines[-6:])
+        # Build sanitized lines for summarization
+        lines = self._prepare_summary_lines(entries)
+        # Abstract summarization (optional) or tail snippet fallback
+        summary = ''
+        if self._use_abstract_summary and lines:
+            try:
+                # Convert to chat messages, last up to 12 lines
+                from utils.abstract_summarizer import summarize_dialogue
+                chat = []
+                for ln in lines[-12:]:
+                    if ln.startswith('[assistant]'):
+                        role = 'assistant'
+                        content = ln[len('[assistant]'):].strip()
+                    elif ln.startswith('[user]'):
+                        role = 'user'
+                        content = ln[len('[user]'):].strip()
+                    else:
+                        role = 'user'
+                        content = ln
+                    chat.append({"role": role, "content": content})
+                summary = summarize_dialogue(chat)
+            except Exception as e:
+                logger.debug(f"Abstract summary failed, falling back: {e}")
+        if not summary:
+            # Tail fallback (already sanitized)
+            summary = "\n".join(lines[-6:])
         if summary:
             self.summary_text = summary
             # Persist/update session summary record
             try:
-                session_id = f"{self.session.speaker_id or 'default_user'}:{int(start_ts)}"
+                session_id = f"{self._speaker_key()}:{int(start_ts)}"
                 await self._maybe_await(
                     self.tape_store.add_summary(session_id, summary, keywords_json='[]', turns=len(entries), duration_s=int(time.time()-start_ts))
                 )
+                self._trace_sessions('summary_periodic_persisted', session_id=session_id, chars=len(summary), entries=len(entries))
             except Exception:
                 pass
             self.last_summary_turn = self.session.turn_count
+
+    async def finalize_summary(self) -> Optional[str]:
+        """Summarize the current session window and persist it regardless of length.
+
+        - Uses the same abstractive/fallback logic as periodic summaries.
+        - Returns the summary text (or None if nothing to summarize).
+        """
+        try:
+            if not self.tape_store:
+                logger.warning("⚠️ finalize_summary: No tape_store available")
+                return None
+            self._trace_sessions('summary_finalize_start')
+            logger.info("🔄 Starting session summary finalization")
+            start_ts = getattr(self.session, 'session_start', 0) or 0
+            if start_ts <= 0:
+                return None
+            # Prefer recent API if available to avoid huge scans
+            get_recent = getattr(self.tape_store, 'get_recent', None)
+            if callable(get_recent):
+                entries = await self._maybe_await(get_recent(limit=max(2 * self._summary_last_turns, 20)))
+            else:
+                entries = await self._maybe_await(self.tape_store.get_entries_since(start_ts))
+            if not entries:
+                return None
+            # Build sanitized lines for summarization
+            lines = self._prepare_summary_lines(entries)
+            # Build summary (abstractive if enabled)
+            summary = ''
+            if self._use_abstract_summary and lines:
+                try:
+                    from utils.abstract_summarizer import summarize_dialogue
+                    chat = []
+                    for ln in lines[-12:]:
+                        if ln.startswith('[assistant]'):
+                            role = 'assistant'
+                            content = ln[len('[assistant]'):].strip()
+                        elif ln.startswith('[user]'):
+                            role = 'user'
+                            content = ln[len('[user]'):].strip()
+                        else:
+                            role = 'user'
+                            content = ln
+                        chat.append({"role": role, "content": content})
+                    logger.info(f"🤖 Calling summarize_dialogue with {len(chat)} messages for session finalization")
+                    summary = summarize_dialogue(chat)
+                    logger.info(f"✅ Successfully generated session summary: {len(summary)} chars")
+                except Exception as e:
+                    logger.error(f"❌ Abstract summary on finalize failed, falling back: {e}")
+            if not summary:
+                summary = "\n".join(lines[-6:]) if lines else ''
+            if not summary:
+                return None
+            # Persist
+            try:
+                session_id = f"{self._speaker_key()}:{int(start_ts)}"
+                await self._maybe_await(
+                    self.tape_store.add_summary(
+                        session_id,
+                        summary,
+                        keywords_json='[]',
+                        turns=len(entries),
+                        duration_s=int(time.time() - start_ts)
+                    )
+                )
+                self._trace_sessions('summary_finalize_persisted', session_id=session_id, chars=len(summary), entries=len(entries))
+            except Exception:
+                pass
+            # Update in-memory state
+            self.summary_text = summary
+            self.last_summary_turn = self.session.turn_count
+            logger.info(f"💾 Finalized session summary ({len(summary)} chars, {len(entries)} entries)")
+            return summary
+        except Exception as e:
+            logger.debug(f"Finalize summary skipped: {e}")
+            return None
             
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get performance statistics"""

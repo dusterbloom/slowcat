@@ -293,7 +293,7 @@ class LocalMemoryProcessor(FrameProcessor):
                 "user_id": summary_user_id
             }
             
-            logger.info(f"Generated conversation summary: {total_messages} messages in {days_back} days")
+            logger.info(f"Generated conversation summary: {total_messages} messages in {days_back} days: {summary}")
             return summary
             
         except Exception as e:

@@ -80,6 +80,17 @@ class PipelineBuilder:
         
         # 8. Create task
         task = await self._create_task(pipeline, context_aggregator)
+
+        # 8b. Register session finalizer hook keyed by connection id
+        try:
+            from utils.session_events import register_session_finalizer
+            pc_id = getattr(webrtc_connection, 'pc_id', None)
+            smart_ctx = getattr(self, '_smart_ctx_ref', None)
+            finalize = getattr(smart_ctx, 'finalize_summary', None) if smart_ctx else None
+            if pc_id and callable(finalize):
+                register_session_finalizer(pc_id, finalize)
+        except Exception:
+            pass
         
         logger.info("✅ Pipeline built successfully")
         return pipeline, task
@@ -216,7 +227,7 @@ class PipelineBuilder:
         # Response formatter - fix markdown links from stubborn Qwen2.5  
         from processors.response_formatter import ResponseFormatterProcessor
         import os
-        formatter_mode = os.getenv('RESPONSE_FORMATTER_MODE', 'off').lower()
+        formatter_mode = os.getenv('RESPONSE_FORMATTER_MODE', 'full').lower() # works with full / minimal / off
         if formatter_mode == 'off':
             processors['response_formatter'] = None
             logger.info("🧹 Response formatter: OFF")
@@ -624,15 +635,32 @@ class PipelineBuilder:
             if _initial_sent_flag["sent"]:
                 return
             try:
+                # Set flag early to avoid races from concurrent triggers
+                _initial_sent_flag["sent"] = True
+                logger.info("🚀 Sending initial context with SmartContextManager")
                 # Prefer SmartContextManager initial context for richer status + facts
                 if hasattr(self, '_smart_ctx_ref') and self._smart_ctx_ref is not None:
+                    logger.info("✅ SmartContextManager reference found, calling get_initial_context_frame()")
                     init_frame = await self._smart_ctx_ref.get_initial_context_frame()
                     frames = [init_frame]
                     try:
                         if hasattr(self._smart_ctx_ref, 'needs_greeting') and self._smart_ctx_ref.needs_greeting():
                             from pipecat.frames.frames import TextFrame
                             if hasattr(self._smart_ctx_ref, 'get_greeting_text'):
-                                greeting = self._smart_ctx_ref.get_greeting_text()
+                                greet_fn = getattr(self._smart_ctx_ref, 'get_greeting_text')
+                                try:
+                                    import inspect
+                                    if inspect.iscoroutinefunction(greet_fn):
+                                        greeting = await greet_fn()
+                                    else:
+                                        maybe = greet_fn()
+                                        # If the result is awaitable (SurrealDB path), await it
+                                        if hasattr(maybe, '__await__'):
+                                            greeting = await maybe
+                                        else:
+                                            greeting = maybe
+                                except Exception:
+                                    greeting = "Hello!"
                             else:
                                 greeting = "Hello!"
                             frames.append(TextFrame(greeting))
@@ -640,11 +668,13 @@ class PipelineBuilder:
                         pass
                     await task.queue_frames(frames)
                 else:
+                    logger.warning("⚠️ No SmartContextManager found, using legacy context aggregator")
                     await task.queue_frames([context_aggregator.user().get_context_frame()])
-                _initial_sent_flag["sent"] = True
-            except Exception:
+            except Exception as e:
                 # Fallback to legacy aggregator on any error
+                logger.error(f"❌ Error in _send_initial_context: {e}, falling back to legacy aggregator")
                 await task.queue_frames([context_aggregator.user().get_context_frame()])
+                # Keep sent flag set to avoid duplicate attempts; logs guide the user
                 _initial_sent_flag["sent"] = True
 
         @rtvi_processor.event_handler("on_client_ready")
@@ -672,6 +702,13 @@ class PipelineBuilder:
 
         asyncio.create_task(_auto_ready_fallback())
 
+        # Proactively send initial context once, independent of client_ready timing.
+        # _initial_sent_flag guarantees deduping if events also trigger it.
+        try:
+            asyncio.create_task(_send_initial_context())
+        except Exception:
+            pass
+
         # Summarize session on disconnect and store in TapeStore
         # Use generic event name that RTVI exposes
         @rtvi_processor.event_handler("client_disconnected")
@@ -680,44 +717,17 @@ class PipelineBuilder:
                 smart_ctx = getattr(self, '_smart_ctx_ref', None)
                 if not smart_ctx:
                     return
-                tape = getattr(smart_ctx, 'tape_store', None)
-                if not tape:
-                    return
-                # Compute session window
-                start_ts = getattr(smart_ctx.session, 'session_start', None)
-                if not start_ts:
-                    return
-                entries = tape.get_entries_since(start_ts)
-                if not entries:
-                    return
-                # Build improved heuristic summary (compact, no greetings)
-                import re
-                def _norm(s: str) -> str:
-                    return re.sub(r"\s+", " ", s or "").strip()
-                def _is_intro(s: str) -> bool:
-                    s2 = _norm(s).lower()
-                    return (
-                        s2.startswith("hello") and ("help" in s2 or "assist" in s2)
-                    ) or ("i'm slow" in s2)
-                # Take last ~10 contentful lines excluding boilerplate
-                recent = []
-                for e in entries[-12:]:
-                    t = _norm(e.content)
-                    if not t:
-                        continue
-                    if e.role == 'assistant' and _is_intro(t):
-                        continue
-                    recent.append(f"[{e.role}] {t}")
-                # Compose a short summary
-                header = "Session summary:\n"
-                body = "\n".join(recent[-6:])
-                summary_text = (header + body)[:900]
-                # TODO: If SC_SUMMARY_USE_LLM=true, call LLM for a refined summary
-                session_id = f"{getattr(smart_ctx.session, 'speaker_id','default_user')}:{int(start_ts)}"
-                tape.add_summary(session_id, summary_text, keywords_json='[]', turns=turns, duration_s=duration_s)
+                finalize = getattr(smart_ctx, 'finalize_summary', None)
+                if callable(finalize):
+                    await finalize()
             except Exception as e:
                 from loguru import logger
                 logger.debug(f"Session summarization skipped: {e}")
+
+        # Some implementations may emit an 'on_' prefixed variant
+        @rtvi_processor.event_handler("on_client_disconnected")
+        async def on_client_disconnected2(rtvi_proc):
+            await on_client_disconnected(rtvi_proc)
         
         return task
     
