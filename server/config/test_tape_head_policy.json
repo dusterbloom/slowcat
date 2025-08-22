@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "weights": {
+    "w_recency": 0.35,
+    "w_semantic": 0.3,
+    "w_entity": 0.15,
+    "w_novelty": 0.1,
+    "w_symbols": 0.1
+  },
+  "parameters": {
+    "knn_k": 20,
+    "recency_half_life_hours": 6,
+    "min_confidence": 0.5,
+    "entity_overlap_bonus": 0.1,
+    "max_verbatim_chunks": 3,
+    "shadow_compression_ratio": 0.3,
+    "uncertainty_threshold": 0.4,
+    "symbol_confidence_threshold": 0.3,
+    "max_symbols_per_memory": 5
+  },
+  "ablation": {
+    "use_semantic": true,
+    "use_entities": true,
+    "use_shadows": true,
+    "use_symbols": true
+  },
+  "symbol_weights": {
+    "\u2606": 2.0,
+    "\u2727": 3.0,
+    "\u25c8": 1.2,
+    "\u221e": 1.5,
+    "\u27f2": 0.5,
+    "\u26a1": 1.8,
+    "\u25ef": 1.1,
+    "\u25b2": 1.3,
+    "\u2248": 0.7,
+    "\u2295": 1.4
+  }
+}
