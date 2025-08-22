@@ -115,6 +115,74 @@ processor = DictationModeProcessor()
 # See docs/REFACTORING_GUIDE.md for full examples
 ```
 
+### 🎚️ Voice Mood Capture (experimental)
+
+Capture lightweight mood features (energy, pitch, arousal) from voice and store them alongside tape entries.
+
+How to wire:
+```python
+from processors.audio_tee import AudioTeeProcessor
+from processors.vad_event_bridge import VADEventBridge
+from processors.mood_analyzer import attach_mood_analyzer
+from memory import create_smart_memory_system
+
+# Assuming you already created tee and vad_bridge in your pipeline
+memory = create_smart_memory_system()
+analyzer = attach_mood_analyzer(tee, vad_bridge, memory.tape_store, sample_rate=16000)
+```
+
+Results are stored in SQLite `entry_meta` (or in SurrealDB `tape.metadata` when using that backend).
+
+### Dynamic Tape Head (optional)
+
+- Enable intelligent memory selection in the context manager:
+
+```bash
+export ENABLE_DTH=true
+```
+
+- Semantic recall (KNN) via SurrealDB
+  - SurrealDB memory is the default — no flag required.
+  - Tape embeddings are enabled by default. To be explicit or change models:
+
+```bash
+export SURREAL_EMBED_TAPE=true
+export EMBEDDING_MODEL=all-MiniLM-L6-v2
+```
+
+- Optional cross‑encoder reranker (if installed):
+
+```bash
+export USE_CROSS_ENCODER=true
+export CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+```
+
+Tuning knobs live in `server/config/tape_head_policy.json` (`knn_k`, `knn_scan_recent`, `min_time_gap_s`, etc.).
+
+Reranker model availability
+- We include `sentence-transformers` in `server/requirements.txt`. On first use, models download from HuggingFace to the local cache (`~/.cache/huggingface`).
+- To pre‑download for offline runs:
+
+```bash
+python - << 'PY'
+from sentence_transformers import CrossEncoder
+CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+print('Cross‑encoder cached')
+PY
+# Optional: control cache path
+# export HF_HOME=/path/to/hf_cache
+# export TRANSFORMERS_CACHE=$HF_HOME/hub
+```
+
+Note: `server/run_bot.sh` will automatically attempt to fetch the embedding and (if enabled) cross‑encoder models on first run when `ENABLE_DTH=true`, so it works out of the box. If there is no network access, it continues without the reranker and logs a gentle warning; you can pre‑cache models as shown above.
+
+Alternatively, use the helper script to pre-cache both models:
+
+```bash
+cd server
+python scripts/precache_models.py --enable-cross-encoder
+```
+
 ## 📚 Essential Documentation
 
 ### For New Contributors
@@ -130,6 +198,26 @@ processor = DictationModeProcessor()
 - **Dictation Tools**: `tools/time_tools.py`
 
 ## 🐛 Common Issues
+
+## ⚙️ Surreal-first Environment (Recommended)
+
+To run with SurrealDB memory by default and minimal configuration:
+
+1) Copy the minimal template and adjust if needed
+
+```bash
+cp server/.env.example.surreal server/.env
+```
+
+2) Defaults
+- SurrealDB memory is the default (no `USE_SURREALDB` flag required)
+- Tape embeddings are enabled (`SURREAL_EMBED_TAPE=true`) for semantic recall
+- Non-user facts are allowed by default; cap with `FACTS_MAX_NONUSER` (default 6)
+- Quiet STT/TTS streaming logs by default (see `STT_*` and `TTS_*` flags)
+
+Compatibility:
+- Old flags like `USE_SURREALDB` are deprecated and ignored (Surreal is already the default)
+- To revert to user-only facts, set `FACTS_ONLY_USER_SUBJECT=true` (not recommended)
 
 ### "Module not found" errors
 ```bash

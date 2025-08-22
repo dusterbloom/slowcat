@@ -12,14 +12,10 @@ Slowcat's revolutionary SurrealDB integration replaces 3 separate SQLite databas
 
 ## Quick Start
 
-### 1. Enable SurrealDB
+### 1. SurrealDB is the Default
 
-Update your `.env` file:
+No flag is required — SurrealDB is used by default. Connection settings (with safe defaults) are:
 ```bash
-# Enable SurrealDB memory system
-USE_SURREALDB=true
-
-# SurrealDB connection settings
 SURREALDB_URL=ws://127.0.0.1:8000/rpc
 SURREALDB_USER=root
 SURREALDB_PASS=slowcat_secure_2024
@@ -127,7 +123,7 @@ RELATE subject->knows->value WHERE predicate = "friend";
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `USE_SURREALDB` | `false` | Enable SurrealDB memory system |
+| `USE_SURREALDB` | — (deprecated) | SurrealDB is the default; set `false` only to force SQLite |
 | `SURREALDB_URL` | `ws://127.0.0.1:8000/rpc` | SurrealDB connection URL |
 | `SURREALDB_USER` | `root` | Authentication username |
 | `SURREALDB_PASS` | `slowcat_secure_2024` | Authentication password |
@@ -227,30 +223,27 @@ tail -f data/surrealdb.log
 
 ### From SQLite to SurrealDB
 
+SurrealDB is already the default. If you previously forced SQLite with `USE_SURREALDB=false`, remove or set it to `true`/omit it and restart.
+
 1. **Backup existing data**:
 ```bash
 cp data/facts.db data/facts.db.backup
 cp data/tape.db data/tape.db.backup
 ```
 
-2. **Enable SurrealDB**:
-```bash
-echo "USE_SURREALDB=true" >> .env
-```
-
-3. **Restart Slowcat**:
+2. **Restart Slowcat**:
 ```bash
 ./run_bot.sh
 ```
 
-4. **Verify migration**:
+3. **Verify migration**:
 ```bash
 python tests/test_surrealdb_integration.py
 ```
 
 ### Rollback to SQLite
 
-Simply set `USE_SURREALDB=false` in `.env` and restart.
+Explicitly set `USE_SURREALDB=false` in `.env` and restart (not recommended).
 
 ## File Organization
 

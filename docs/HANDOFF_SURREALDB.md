@@ -26,7 +26,7 @@ This is the **CRITICAL** file that provides drop-in compatibility with existing 
 - Exact same interface as existing `FactsGraph`, `TapeStore`, `QueryRouter`
 - Multi-model schema: facts (graph) + tape (time-series) + sessions (document)
 - Async-first (existing system already uses async)
-- Environment toggle via `USE_SURREALDB=true` (alias supported: `USE_SLOWCAT_MEMORY=true`)
+- SurrealDB is the default (legacy flags like `USE_SURREALDB` are deprecated)
 
 **Schema Design:**
 ```surql
@@ -72,28 +72,21 @@ class SurrealMemory:
 
 ### Task 4: Update `server/memory/__init__.py` (2 minutes)
 
-Add environment toggle:
+Default to SurrealDB (no toggle required):
 ```python
 def create_smart_memory_system(facts_db_path: str = "data/facts.db", ...):
-    if os.getenv('USE_SURREALDB', 'false').lower() == 'true':
-        from .surreal_memory import create_surreal_memory_system
-        logger.info("🚀 Using SurrealDB memory system")
-        return create_surreal_memory_system()
-    # Existing SQLite code continues unchanged
+    from .surreal_memory import create_surreal_memory_system
+    logger.info("🚀 Using SurrealDB memory system (default)")
+    return SurrealMemorySystemAdapter(create_surreal_memory_system())
+    # Legacy: to force SQLite, set USE_SURREALDB=false in env and branch accordingly
 ```
 
 ### Task 5: Test Setup (5 minutes)
 ```bash
-# Start SurrealDB
 surreal start --path data/surreal.db --bind 127.0.0.1:8000 &
 
-# Create test env
-cp .env .env.surreal  
-echo "USE_SURREALDB=true" >> .env.surreal
-echo "SURREALDB_URL=ws://localhost:8000/rpc" >> .env.surreal
-
-# Test
-cp .env.surreal .env
+# Minimal env
+cp server/.env.example.surreal server/.env
 ./run_bot.sh
 ```
 
