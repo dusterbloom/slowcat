@@ -1,6 +1,6 @@
 # SlowCat Documentation Index (Chronological)
 
-*Last Updated: 2025-08-21*
+*Last Updated: 2025-08-24*
 
 ## Documentation Organization
 
@@ -45,6 +45,9 @@ All docs are now numbered for chronological tracking. Format: `XX_NAME.md` where
 - `63_FREE_WEB_SEARCH_GUIDE.md` - Free web search implementation
 - `64_OFFLINE_MODE.md` - Offline mode operation
 - `65_METAL_GPU_FIX.md` - macOS Metal GPU optimization
+
+Recent Additions (2025-08-24)
+- Speculative decoding with LM Studio draft model: CLI `--draft` and env shortcuts documented in `QUICK_START.md`.
 
 ## Development & Analysis (80-89)
 

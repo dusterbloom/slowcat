@@ -22,6 +22,29 @@ cd server/
 ./run_bot.sh
 ```
 
+### Optional: Faster Responses with Speculative Decoding
+
+If you use LM Studio, you can pair a fast draft model with your main model to speed up responses while maintaining quality.
+
+Examples:
+- Main: `qwen2.5-7b-instruct-1ms-dynamic-dwq`
+- Draft: `qwen2.5-0.5b-instruct-mlx`
+
+Run:
+```bash
+cd server
+./run_bot.sh --llm qwen2.5-7b-instruct-1ms-dynamic-dwq --draft qwen2.5-0.5b-instruct-mlx
+```
+
+Environment shortcuts:
+- `DRAFT_MODEL=qwen2.5-0.5b-instruct-mlx` (auto-passed as `--draft`)
+- Or set `ENABLE_SPECULATIVE=true` and `SPECULATIVE_DRAFT_MODEL=qwen2.5-0.5b-instruct-mlx`
+- Optional tuning: `SPECULATIVE_MAX_DRAFT_TOKENS=64`, `SPECULATIVE_MIN_DRAFT_TOKENS=16`
+
+Notes:
+- Intended for LM Studio at `http://localhost:1234/v1` (default).
+- Slowcat automatically skips speculative decoding on non-local endpoints to avoid provider errors.
+
 ### Step 3: Start the Web Client
 ```bash
 cd client/

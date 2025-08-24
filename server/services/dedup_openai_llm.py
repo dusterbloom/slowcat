@@ -14,6 +14,7 @@ from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.frames.frames import Frame, LLMTextFrame, TranscriptionFrame, InterimTranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection
 from loguru import logger
+import os
 
 
 class DedupAssistantContextAggregator(LLMAssistantContextAggregator):
@@ -115,3 +116,36 @@ class DedupOpenAILLMService(OpenAILLMService):
             _user=user_aggregator,
             _assistant=assistant_aggregator
         )
+
+    def _get_completion_kwargs(self, context) -> dict:
+        """Augment parent kwargs with LM Studio speculative decoding when enabled.
+
+        If `ENABLE_SPECULATIVE=true` and `SPECULATIVE_DRAFT_MODEL` is set in env,
+        attach `speculative={"model": <draft>}` to the request. This is compatible
+        with LM Studio's OpenAI-compatible API for draft/speculative decoding.
+        """
+        kwargs = super()._get_completion_kwargs(context)
+
+        try:
+            if os.getenv("ENABLE_SPECULATIVE", "false").lower() == "true":
+                draft_model = os.getenv("SPECULATIVE_DRAFT_MODEL")
+                if draft_model:
+                    # Safety: only enable for local LM Studio endpoints
+                    if not getattr(self, "_is_local_llm", False):
+                        logger.info("⛔ Speculative requested but base_url not local; skipping")
+                        return kwargs
+                    speculative = {"model": draft_model}
+                    # Optional tuning via env
+                    max_draft = os.getenv("SPECULATIVE_MAX_DRAFT_TOKENS")
+                    min_draft = os.getenv("SPECULATIVE_MIN_DRAFT_TOKENS")
+                    if max_draft and max_draft.isdigit():
+                        speculative["max_draft_tokens"] = int(max_draft)
+                    if min_draft and min_draft.isdigit():
+                        speculative["min_draft_tokens"] = int(min_draft)
+
+                    kwargs["speculative"] = speculative
+                    logger.info(f"⚡ Speculative decoding enabled (draft='{draft_model}')")
+        except Exception as e:
+            logger.warning(f"Failed to set speculative params: {e}")
+
+        return kwargs

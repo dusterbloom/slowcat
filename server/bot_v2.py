@@ -103,6 +103,8 @@ def main():
     parser.add_argument("--stt", dest="stt_model", default=None, 
                        choices=["TINY", "MEDIUM", "LARGE_V3", "LARGE_V3_TURBO", "LARGE_V3_TURBO_Q4", "DISTIL_LARGE_V3"],
                        help="STT model to use")
+    parser.add_argument("--draft", dest="draft_model", default=None,
+                       help="Draft model for speculative decoding (LM Studio)")
     parser.add_argument("--mode", choices=["server", "standalone"], default="server",
                        help="Run as server (default) or standalone pipeline")
     args = parser.parse_args()
@@ -115,6 +117,11 @@ def main():
         logger.info(f"🤖 LLM Model: {args.llm_model}")
     if args.stt_model:
         logger.info(f"🎤 STT Model: {args.stt_model}")
+    if args.draft_model:
+        logger.info(f"⚡ Draft Model (speculative): {args.draft_model}")
+        # Signal speculative decoding to services via environment
+        os.environ["ENABLE_SPECULATIVE"] = "true"
+        os.environ["SPECULATIVE_DRAFT_MODEL"] = args.draft_model
     
     # MCP tools are handled natively by LM Studio via mcp.json
     if config.mcp.enabled:

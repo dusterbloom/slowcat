@@ -128,6 +128,30 @@ echo "   ✅ All critical dependencies satisfied"
 echo "🧠 Memory system configuration:"
 
 # ---------------------------------------------
+# Speculative decoding (draft model) shortcuts
+# ---------------------------------------------
+# Users can export DRAFT_MODEL, or set ENABLE_SPECULATIVE + SPECULATIVE_DRAFT_MODEL in .env
+
+# Detect if user already provided --draft on the CLI
+HAS_CLI_DRAFT=false
+for arg in "$@"; do
+  if [ "$arg" = "--draft" ]; then
+    HAS_CLI_DRAFT=true
+    break
+  fi
+done
+
+DRAFT_ARGS=()
+
+if [ -n "${DRAFT_MODEL:-}" ] && [ "$HAS_CLI_DRAFT" = false ]; then
+  echo "⚡ Using draft model from env: $DRAFT_MODEL"
+  DRAFT_ARGS=(--draft "$DRAFT_MODEL")
+elif [ "${ENABLE_SPECULATIVE:-false}" = "true" ] && [ -n "${SPECULATIVE_DRAFT_MODEL:-}" ] && [ "$HAS_CLI_DRAFT" = false ]; then
+  echo "⚡ Speculative decoding enabled via env; draft: $SPECULATIVE_DRAFT_MODEL"
+  DRAFT_ARGS=(--draft "$SPECULATIVE_DRAFT_MODEL")
+fi
+
+# ---------------------------------------------
 # Simplified high-level configuration switches
 # ---------------------------------------------
 # MEMORY_BACKEND: sqlite | surreal | stateless
@@ -341,6 +365,9 @@ fi
 echo "   - MCP integration: $ENABLE_MCP"
 echo "   - Python: $PYTHON_VERSION"
 echo "   - Working directory: $PWD"
+if [ ${#DRAFT_ARGS[@]} -gt 0 ]; then
+  echo "   - Draft model (speculative): ${DRAFT_ARGS[1]}"
+fi
 echo ""
 
 # Optional feature hints
@@ -399,7 +426,7 @@ run_bot_with_error_handling() {
 
 # Run with error monitoring
 echo "▶️  Launching bot_v2.py..."
-run_bot_with_error_handling "$@"
+run_bot_with_error_handling "$@" "${DRAFT_ARGS[@]}"
 
 exit_code=$?
 
