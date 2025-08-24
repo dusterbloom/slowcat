@@ -605,7 +605,9 @@ class DynamicTapeHead:
     async def seek(self, 
                    query: str, 
                    budget: int = 2000,
-                   context: Optional[List] = None) -> ContextBundle:
+                   context: Optional[List] = None,
+                   speaker_id: Optional[str] = None,
+                   debug_selection: Optional[bool] = None) -> ContextBundle:
         """
         Intelligently select memories within token budget using symbol-enhanced scoring
         """
@@ -625,9 +627,16 @@ class DynamicTapeHead:
         query_embedding = self._get_embedding(query) if self.encoder else None
         query_entities = self._extract_entities(query)
         query_symbols = self.symbol_detector.detect_symbols(query) if self.symbol_detector else {}
+        # Lightweight intent cues from question words for query-aware boosts
+        q_lower = (query or '').strip().lower()
+        intent = 'other'
+        for kw in ('who', 'where', 'when', 'why', 'how', 'what'):
+            if q_lower.startswith(kw) or f" {kw} " in q_lower:
+                intent = kw
+                break
         
         # Get candidate memories
-        candidates = await self._get_candidates(query, query_embedding)
+        candidates = await self._get_candidates(query, query_embedding, speaker_id=speaker_id)
         
         # Extract symbols from candidates (optimized: only if symbols enabled)
         if self.policy['ablation']['use_symbols']:
@@ -650,6 +659,15 @@ class DynamicTapeHead:
                 query_symbols,
                 context or []
             )
+            # Intent-aware nudges: boost entity overlap for who/where/when; boost
+            # semantic/symbolic for why/how questions
+            try:
+                if intent in ('who', 'where', 'when'):
+                    score += 0.10 * components.get('E', 0.0)
+                elif intent in ('why', 'how'):
+                    score += 0.08 * components.get('S', 0.0) + 0.05 * components.get('SYM', 0.0)
+            except Exception:
+                pass
             memory.score = score
             memory.score_components = components
             scored_memories.append(memory)
@@ -691,7 +709,19 @@ class DynamicTapeHead:
         logger.debug(f"🧠 DTH: Selected {len(bundle.verbatim)} verbatim, "
                     f"{len(bundle.shadows)} shadows with {len(bundle.active_symbols)} active symbols "
                     f"in {latency_ms:.1f}ms")
-        
+        # Optional debug: list selected memories with scores
+        try:
+            dbg = debug_selection
+            if dbg is None:
+                dbg = os.getenv('DTH_DEBUG_SELECTION', 'false').lower() == 'true'
+            if dbg:
+                from loguru import logger as _log
+                _log.info("[DTH] Selected verbatim for <dth_memories>:")
+                for i, m in enumerate(bundle.verbatim):
+                    _log.info(f"  {i+1}. score={m.score:.3f} tokens={m.tokens} speaker={m.speaker_id} :: {m.content[:120]}")
+        except Exception:
+            pass
+
         return bundle
     
     def _score_memory_with_symbols(self, 
@@ -828,7 +858,7 @@ class DynamicTapeHead:
         
         return base_score, components
     
-    async def _get_candidates(self, query: str, query_embedding: Optional[np.ndarray]) -> List[MemorySpan]:
+    async def _get_candidates(self, query: str, query_embedding: Optional[np.ndarray], speaker_id: Optional[str] = None) -> List[MemorySpan]:
         """Get candidate memories from storage"""
         candidates = []
         # Lightweight counters for observability
@@ -869,7 +899,9 @@ class DynamicTapeHead:
                     content = entry.get('content') if isinstance(entry, dict) else getattr(entry, 'content', '')
                     ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', time.time())
                     role = entry.get('role') if isinstance(entry, dict) else getattr(entry, 'role', 'user')
-                    speaker_id = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
+                    spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
+                    if speaker_id and spk != speaker_id:
+                        continue
                     
                     # Skip empty content
                     if not content:
@@ -882,7 +914,7 @@ class DynamicTapeHead:
                         content=content_str,
                         ts=ts,
                         role=role,
-                        speaker_id=speaker_id,
+                        speaker_id=spk,
                         source_id=f"tape_{ts}",
                         source_hash=hashlib.sha256(content_str.encode()).hexdigest(),
                         tokens=self.token_counter.count_tokens(content_str),
@@ -894,12 +926,14 @@ class DynamicTapeHead:
             # Prefer SurrealDB KNN helper if available (does its own embedding)
             if hasattr(self.memory, 'knn_tape') and callable(getattr(self.memory, 'knn_tape')):
                 try:
-                    knn = await self.memory.knn_tape(query, limit=self.policy['parameters']['knn_k'], scan=int(self.policy.get('parameters', {}).get('knn_scan_recent', 100)))
+                    knn = await self.memory.knn_tape(query, limit=self.policy['parameters']['knn_k'], scan=int(self.policy.get('parameters', {}).get('knn_scan_recent', 100)), speaker_id=speaker_id)
                     for entry in knn:
                         content = entry.get('content', '')
                         ts = entry.get('ts', time.time())
                         role = entry.get('role', 'user')
-                        speaker_id = entry.get('speaker_id', 'user')
+                        spk = entry.get('speaker_id', 'user')
+                        if speaker_id and spk != speaker_id:
+                            continue
                         if any(abs(c.ts - ts) < 1e-6 for c in candidates):
                             continue
                         
@@ -910,7 +944,7 @@ class DynamicTapeHead:
                             content=content_str,
                             ts=ts,
                             role=role,
-                            speaker_id=speaker_id,
+                            speaker_id=spk,
                             source_id=f"tape_{ts}",
                             source_hash=hashlib.sha256(content_str.encode()).hexdigest(),
                             tokens=self.token_counter.count_tokens(content_str),
@@ -948,7 +982,9 @@ class DynamicTapeHead:
                         content = entry.get('content') if isinstance(entry, dict) else getattr(entry, 'content', '')
                         ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', time.time())
                         role = entry.get('role') if isinstance(entry, dict) else getattr(entry, 'role', 'user')
-                        speaker_id = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
+                    spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
+                    if speaker_id and spk != speaker_id:
+                        continue
                         # Ensure content is a string for hashing
                         content_str = str(content) if content is not None else ''
                         
@@ -956,7 +992,7 @@ class DynamicTapeHead:
                             content=content_str,
                             ts=ts,
                             role=role,
-                            speaker_id=speaker_id,
+                            speaker_id=spk,
                             source_id=f"tape_{ts}",
                             source_hash=hashlib.sha256(content_str.encode()).hexdigest(),
                             tokens=self.token_counter.count_tokens(content_str),
@@ -996,7 +1032,9 @@ class DynamicTapeHead:
                     if not any(abs(c.ts - ent_ts) < 1e-6 for c in candidates):
                         content = entry.get('content') if isinstance(entry, dict) else getattr(entry, 'content', '')
                         role = entry.get('role') if isinstance(entry, dict) else getattr(entry, 'role', 'user')
-                        speaker_id = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
+                    spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
+                    if speaker_id and spk != speaker_id:
+                        continue
                         
                         # Ensure content is a string for hashing
                         content_str = str(content) if content is not None else ''
@@ -1005,7 +1043,7 @@ class DynamicTapeHead:
                             content=content_str,
                             ts=ent_ts,
                             role=role,
-                            speaker_id=speaker_id,
+                            speaker_id=spk,
                             source_id=f"tape_{ent_ts}",
                             source_hash=hashlib.sha256(content_str.encode()).hexdigest(),
                             tokens=self.token_counter.count_tokens(content_str),
@@ -1072,8 +1110,20 @@ class DynamicTapeHead:
         pool.sort(key=symbol_priority, reverse=True)
         pool = pool[:50]  # Limit for performance
 
-        # Simple greedy selection (prioritizing symbol-rich memories)
+        # Simple greedy selection with diversity constraint
         for memory in pool:
+            # Diversity: avoid near-duplicates among selected verbatim
+            is_diverse = True
+            for chosen in bundle.verbatim:
+                try:
+                    sim = self._text_similarity(memory.content, chosen.content)
+                    if sim >= float(self.policy['parameters'].get('diversity_max_similarity', 0.6)):
+                        is_diverse = False
+                        break
+                except Exception:
+                    pass
+            if not is_diverse:
+                continue
             if tokens_used + memory.tokens <= budget:
                 bundle.verbatim.append(memory)
                 tokens_used += memory.tokens

@@ -745,7 +745,7 @@ class SurrealMemory:
             logger.error(f"SurrealDB get_recent failed: {e}")
             return []
 
-    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200) -> List[Dict]:
+    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200, speaker_id: str | None = None) -> List[Dict]:
         """Return top-K tape entries by cosine similarity to query text.
 
         Requires either a local encoder (will be created if needed) or that
@@ -771,13 +771,23 @@ class SurrealMemory:
             return []
 
         try:
-            sql = """
-                SELECT id, ts, speaker_id, role, content, embedding FROM tape 
-                WHERE embedding != NONE
-                ORDER BY ts DESC
-                LIMIT $scan
-            """
-            res = await self.db.query(sql, {'scan': scan})
+            if speaker_id:
+                sql = """
+                    SELECT id, ts, speaker_id, role, content, embedding FROM tape 
+                    WHERE embedding != NONE AND speaker_id = $speaker_id
+                    ORDER BY ts DESC
+                    LIMIT $scan
+                """
+                params = {'scan': scan, 'speaker_id': speaker_id}
+            else:
+                sql = """
+                    SELECT id, ts, speaker_id, role, content, embedding FROM tape 
+                    WHERE embedding != NONE
+                    ORDER BY ts DESC
+                    LIMIT $scan
+                """
+                params = {'scan': scan}
+            res = await self.db.query(sql, params)
             rows = self._rows_from_query(res)
             try:
                 from loguru import logger as _log

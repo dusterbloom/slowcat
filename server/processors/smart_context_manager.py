@@ -447,7 +447,14 @@ class SmartContextManager(FrameProcessor):
             try:
                 # Reserve up to half of facts_context budget for DTH verbatim
                 dth_budget = max(100, self.budget.facts_context // 2)
-                bundle = await self.tape_head.seek(user_input, budget=dth_budget)
+                # Pass current speaker_id and optional debug flag
+                bundle = await self.tape_head.seek(
+                    user_input,
+                    budget=dth_budget,
+                    context=None,
+                    speaker_id=self._speaker_key(),
+                    debug_selection=None,
+                )
                 try:
                     # Observability: brief summary of what DTH returned
                     logger.debug(
