@@ -348,6 +348,12 @@ class SmartContextManager(FrameProcessor):
             # 5. Update the shared context object with our fixed context
             # The context aggregator will use this when processing the TranscriptionFrame
             if self.context:
+                try:
+                    roles = [m.get('role', '?') for m in messages if isinstance(m, dict)]
+                    logger.debug(f"[SCM] Roles in context for LLM call: {roles}")
+                    logger.debug(f"[SCM] recent_exchanges={len(self.recent_exchanges)} summary_present={bool(self.summary_text)}")
+                except Exception:
+                    pass
                 self.context.set_messages(messages)
             
             # 6. Forward the original transcription frame to trigger normal LLM processing

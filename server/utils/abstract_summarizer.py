@@ -103,7 +103,22 @@ def summarize_dialogue(
     logger = logging.getLogger(__name__)
     
     provider = (provider or os.getenv('SUMMARIZER_PROVIDER', 'lmstudio')).lower()
-    model = model or os.getenv('SUMMARIZER_MODEL', 'dolphin3.0-llama3.2-3b')
+    # Prefer explicit env override; else reuse main LLM model; else pick a sane local default
+    try:
+        if not model:
+            model = os.getenv('SUMMARIZER_MODEL')
+        if not model:
+            # Try the main LLM model env/CLI pass-through
+            model = os.getenv('LLM_MODEL')
+        if not model:
+            # Try server config default
+            from config import config as _cfg
+            model = _cfg.models.default_llm_model
+        if not model:
+            # Final safe default commonly available in LM Studio
+            model = 'qwen2.5-0.5b-instruct-mlx'
+    except Exception:
+        model = os.getenv('SUMMARIZER_MODEL', 'qwen2.5-0.5b-instruct-mlx')
 
     # Preprocess messages to remove duplicates and improve quality
     original_count = len(messages)
@@ -132,7 +147,13 @@ def summarize_dialogue(
     payload_messages = [{"role": "system", "content": system_prompt}] + messages
 
     if provider == 'lmstudio':
-        base = os.getenv('LMSTUDIO_BASE_URL', 'http://localhost:1234/v1')
+        # Unify base URL with OpenAI-compatible setting used elsewhere
+        try:
+            from config import config as _cfg
+            default_base = getattr(_cfg.network, 'llm_base_url', 'http://localhost:1234/v1')
+        except Exception:
+            default_base = 'http://localhost:1234/v1'
+        base = os.getenv('OPENAI_BASE_URL', os.getenv('LMSTUDIO_BASE_URL', default_base))
         url = f"{base.rstrip('/')}/chat/completions"
         data = {
             "model": model,
@@ -141,8 +162,13 @@ def summarize_dialogue(
             "max_tokens": max_tokens,
             "stream": False,
         }
-        res = _http_post(url, data)
-        text = res.get('choices', [{}])[0].get('message', {}).get('content', '')
+        # First attempt
+        try:
+            res = _http_post(url, data)
+        except Exception as e:
+            logger.error(f"❌ Summarizer HTTP error: {e}")
+            res = {"choices": [{"message": {"content": ""}}]}
+        text = (res.get('choices', [{}])[0].get('message', {}) or {}).get('content', '')
         
         # Log response quality for debugging
         logger.info(f"📊 Summarizer response: {len(text)} chars")
@@ -178,6 +204,19 @@ def summarize_dialogue(
                     return fallback_text.strip()
             except Exception as e:
                 logger.error(f"❌ Fallback attempt failed: {e}")
+            
+            # Second fallback: try an alternate lightweight model if configured/available
+            alt_model = os.getenv('ALTERNATE_SUMMARIZER_MODEL', 'qwen2.5-0.5b-instruct-mlx')
+            if alt_model and alt_model != model:
+                try:
+                    alt_data = dict(fallback_data, model=alt_model)
+                    alt_res = _http_post(url, alt_data)
+                    alt_text = alt_res.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    if alt_text.strip():
+                        logger.info(f"✅ Alternate model succeeded ({alt_model}): {alt_text[:100]}...")
+                        return alt_text.strip()
+                except Exception as e:
+                    logger.error(f"❌ Alternate model attempt failed: {e}")
             
             # Ultimate fallback: return a generic summary
             return "Brief conversation with minimal substantive content."

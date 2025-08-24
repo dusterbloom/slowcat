@@ -37,6 +37,11 @@ class ResponseFormatterProcessor(FrameProcessor):
             lambda m: self._merge_spaced_name(m)),  # Multi-letter splits
             (re.compile(r"\b([A-Z])\s+([A-Z])\s+([A-Z])\s+([A-Z])\s+([A-Z])\b"),
             lambda m: m.group(1) + m.group(2) + m.group(3) + m.group(4) + m.group(5)),  # All caps
+            # NEW: Titlecase + lowercase short tail (e.g., "Pot ola" -> "Potola")
+            # Also handle two-token proper names split like "Pe ppy" -> "Peppy"
+            (re.compile(r"\b([A-Z][a-z]{1,2})\s+([a-z]{2,4})\b"), r"\1\2"),
+            # NEW: Fix spaced apostrophes (e.g., "How 's" -> "How's")
+            (re.compile(r"(\b[A-Za-z])\s*'\s*([A-Za-z]\b)"), r"\1'\2"),
         ]
     
 
@@ -182,6 +187,11 @@ class ResponseFormatterProcessor(FrameProcessor):
                 if text3 != text:
                     logger.debug("✂️ Added missing space after punctuation for readability/TTS")
                     text = text3
+                # Remove stray spaces before punctuation ("Ah ," -> "Ah,")
+                text2 = re.sub(r"\s+([,.;:!?])", r"\1", text)
+                if text2 != text:
+                    logger.debug("✂️ Removed stray spaces before punctuation")
+                    text = text2
             if self.mode == 'full':
                 # Convert [text](url) to HTML
                 text3 = self._markdown_link_pattern.sub(

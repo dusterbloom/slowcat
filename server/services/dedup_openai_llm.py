@@ -148,4 +148,13 @@ class DedupOpenAILLMService(OpenAILLMService):
         except Exception as e:
             logger.warning(f"Failed to set speculative params: {e}")
 
+        # Log roles being sent for visibility
+        try:
+            msgs = getattr(context, 'messages', None)
+            if isinstance(msgs, list):
+                roles = [m.get('role', '?') for m in msgs if isinstance(m, dict)]
+                logger.debug(f"[LLM] Roles in request: {roles}")
+        except Exception:
+            pass
+
         return kwargs
