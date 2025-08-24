@@ -33,3 +33,7 @@ server/mcp*.json
 server/models/sherpa-*/
 *.onnx
 *.tar.bz2
+
+# Debug artifacts (do not commit)
+server/server/debug/
+server/server/history.txt
