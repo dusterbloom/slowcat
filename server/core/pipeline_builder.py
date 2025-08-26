@@ -529,8 +529,12 @@ class PipelineBuilder:
             # SmartContextManager updates context, then context_aggregator triggers LLM
             smart_ctx,
             context_aggregator.user(),  # Triggers LLM with SmartContextManager's updated context
+            # Ensure clean, alternating message history before calling the LLM
+            processors.get('message_deduplicator'),
             # processors['memory_injector'],  # Traditional memory injector (None for stateless)  
             services['llm'], # Main LLM using memory aware context
+            # Fix cumulative duplication patterns in streaming tokens from the LLM
+            processors.get('streaming_deduplicator'),
             # Optional greeting filter to suppress redundant introductions
             processors['greeting_filter'],
             # Normalize spacing and links before feeding to TapeStore and TTS

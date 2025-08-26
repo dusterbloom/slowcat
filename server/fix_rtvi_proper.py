@@ -68,6 +68,36 @@ def fix_rtvi_processor():
             return original_check_started(self, frame)
         
         FrameProcessor._check_started = silent_check_started
+
+        # Fix 4: Demote benign SmallWebRTC media read warnings to DEBUG
+        # These warnings happen when the mic/video track is toggled or closed during normal use.
+        try:
+            from pipecat.transports.network import small_webrtc as _sw
+            _orig_warn = _sw.logger.warning
+
+            def _filtered_warning(msg, *args, **kwargs):
+                try:
+                    text = str(msg).lower()
+                except Exception:
+                    text = ""
+                benign = (
+                    "received an unexpected media stream error while reading the audio" in text or
+                    "timeout: no audio frame received within the specified time" in text or
+                    "timeout: no video frame received within the specified time" in text
+                )
+                if benign:
+                    # Downgrade these to DEBUG to avoid noisy logs during normal track toggles
+                    try:
+                        _sw.logger.debug(msg, *args, **kwargs)
+                    except Exception:
+                        pass
+                else:
+                    _orig_warn(msg, *args, **kwargs)
+
+            _sw.logger.warning = _filtered_warning
+        except Exception:
+            # If anything goes wrong, continue without altering warnings
+            pass
         
         print("✅ Definitive StartFrame race condition fix applied (transport-level buffering)")
         return True
