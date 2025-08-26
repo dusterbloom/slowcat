@@ -29,6 +29,7 @@ except Exception:
     FactMini = None  # type: ignore
 import os
 from memory import create_smart_memory_system, extract_facts_from_text
+from memory import create_query_classifier
 try:
     from memory.dynamic_tape_head import DynamicTapeHead  # optional
 except Exception:
@@ -211,7 +212,46 @@ class SmartContextManager(FrameProcessor):
             except Exception as e:
                 logger.warning(f"ContextField init failed; continuing without: {e}")
                 self._context_field = None
-        
+
+        # Assistant identity + private reflections
+        self.assistant_id = os.getenv('ASSISTANT_ID', 'slowcat').strip() or 'slowcat'
+        self._enable_reflections = os.getenv('ENABLE_REFLECTIONS', 'false').lower() == 'true'
+        try:
+            self._reflection_idle_secs = int(os.getenv('REFLECTION_IDLE_SECS', '120'))
+        except Exception:
+            self._reflection_idle_secs = 120
+        try:
+            self._reflection_cooldown_secs = int(os.getenv('REFLECTION_COOLDOWN_SECS', '300'))
+        except Exception:
+            self._reflection_cooldown_secs = 300
+        self._last_reflection_ts: float = 0.0
+
+        # Emergent tracking (observability only)
+        self._enable_emergent = os.getenv('ENABLE_EMERGENT_TRACKING', 'false').lower() == 'true'
+        try:
+            self._emergent_lookback_turns = int(os.getenv('EMERGENT_LOOKBACK_TURNS', '30'))
+        except Exception:
+            self._emergent_lookback_turns = 30
+
+        # Control whether to trigger an LLM response on connect
+        self._run_llm_on_connect = os.getenv('SC_RUN_LLM_ON_CONNECT', 'false').lower() == 'true'
+
+        # Prompt organization ('clarity' enables single-rail builder)
+        self._prompt_org = os.getenv('SC_PROMPT_ORG', '').strip().lower()
+        def _get_int_env(key: str, default: int) -> int:
+            try:
+                return int(os.getenv(key, str(default)))
+            except Exception:
+                return default
+        self._clarity_system_tokens = _get_int_env('SC_SYSTEM_TOKENS', 720)
+        self._clarity_context_tokens = _get_int_env('SC_CONTEXT_RAIL_TOKENS', 1000)
+        self._clarity_input_tokens = _get_int_env('SC_INPUT_TOKENS', 400)
+        self._clarity_use_semantic_tape = os.getenv('SC_USE_SEMANTIC_TAPE', 'false').lower() == 'true'
+        try:
+            self._clarity_classifier = create_query_classifier()
+        except Exception:
+            self._clarity_classifier = None
+
         # Session tracking
         self.session = SessionMetadata()
         self.session.session_start = time.time()
@@ -250,6 +290,14 @@ class SmartContextManager(FrameProcessor):
         self.context_builds = 0
         self.fact_extractions = 0
         self.avg_context_tokens = 0
+
+        # Background idle-based reflection loop (siloed; never injects into context)
+        if self._enable_reflections:
+            try:
+                asyncio.create_task(self._reflection_loop())
+                logger.info("🧘 Idle-based reflections enabled")
+            except Exception as e:
+                logger.warning(f"Reflection loop not started: {e}")
         
     def _trace_sessions(self, event: str, **data):
         """Targeted session trace when SC_TRACE_SESSIONS=true."""
@@ -481,6 +529,18 @@ class SmartContextManager(FrameProcessor):
         - Current input: 800 tokens (10% - input processing)
         - Generation workspace: 3600 tokens (45% - reserved, not in context)
         """
+        # Clarity organization: System + one context rail + user
+        if getattr(self, '_prompt_org', '') == 'clarity':
+            try:
+                return await self._build_context_clarity(user_input)
+            except Exception as e:
+                logger.debug(f"Clarity builder failed, using unified builder: {e}")
+        # Clarity organization: System + one context rail + user
+        if getattr(self, '_prompt_org', '') == 'clarity':
+            try:
+                return await self._build_context_clarity(user_input)
+            except Exception as e:
+                logger.debug(f"Clarity builder failed, using unified builder: {e}")
         start_time = time.time()
         
         # 1. System prompt (800 tokens max)
@@ -952,6 +1012,207 @@ class SmartContextManager(FrameProcessor):
         except Exception:
             return True
 
+    async def _build_context_clarity(self, user_input: str) -> List[Dict]:
+        """Clear, intent-gated prompt: System + one context rail + user."""
+        # Compose session header (time + turns) then core rules
+        try:
+            spk = self._speaker_key()
+            info = await self._get_session_info_cached(spk)
+            # Minimal session header; keep it short
+            from datetime import datetime
+            fs = info.get('first_seen')
+            ls = info.get('last_interaction')
+            fs_str = datetime.fromtimestamp(fs).strftime('%Y-%m-%d %H:%M') if fs else ''
+            ls_str = datetime.fromtimestamp(ls).strftime('%Y-%m-%d %H:%M') if ls else ''
+            turn_display = max(1, self.session.turn_count + 1)
+            session_header = (
+                f"<session_info> sessions:{info.get('session_count',0)} turns:{turn_display}"
+                + (f" first:{fs_str}" if fs_str else '')
+                + (f" last:{ls_str}" if ls_str else '')
+                + "</session_info>\n"
+            )
+        except Exception:
+            session_header = ''
+
+        system_rules = (
+            session_header +
+            "You are Slowcat — practical, warm, and concise. Answer as the assistant.\n"
+            "- Never speak as the user; refer to the user as 'you'.\n"
+            "- Do not claim user-owned things as yours (no 'my dog' unless clearly yours; you have no possessions).\n"
+            "- Do not greet unless the user greets first.\n"
+            "- If uncertain, ask one short clarifying question.\n"
+            "- Prefer direct, specific answers; avoid repeating the user's text.\n"
+            "- Treat <context> as reference notes. Do not parrot lines or adopt their speaker; summarize and use them to inform your answer.\n"
+        )
+        sys_content = self._trim_to_token_budget(system_rules, self._clarity_system_tokens)
+        messages: List[Dict[str, str]] = [{"role": "system", "content": sys_content}]
+
+        # Intent to select rail
+        intent = None
+        try:
+            if self._clarity_classifier is not None:
+                res = await self._clarity_classifier.classify(user_input)
+                intent = getattr(res, 'intent', None)
+        except Exception:
+            intent = None
+
+        rail_text = ""
+        from memory.query_classifier import QueryIntent as _QI  # local import to avoid top-level breakages
+        try:
+            if intent in (_QI.PERSONAL_FACTS,) and hasattr(self.memory_system, 'facts_graph'):
+                rail_text = await self._clarity_build_facts_rail()
+            elif intent in (_QI.CONVERSATION_HISTORY, _QI.EPISODIC_MEMORY, _QI.KNOWLEDGE_SYNTHESIS):
+                # Prefer smart router for conversation retrieval if available; fallback otherwise
+                text_from_router = await self._clarity_build_conversation_via_router(user_input)
+                if text_from_router:
+                    rail_text = text_from_router
+                else:
+                    rail_text = await self._clarity_build_conversation_rail(user_input)
+        except Exception:
+            rail_text = ""
+
+        if rail_text:
+            block = f"<context>\n{rail_text}\n</context>"
+            combined = messages[0]['content'] + "\n\n" + block
+            messages[0]['content'] = self._trim_to_token_budget(combined, self._clarity_system_tokens + self._clarity_context_tokens)
+
+        # Current user last
+        current = self._trim_to_token_budget(user_input, self._clarity_input_tokens)
+        messages.append({"role": "user", "content": current})
+        return messages
+
+    async def _clarity_build_facts_rail(self) -> str:
+        try:
+            facts = await self._maybe_await(self.memory_system.facts_graph.get_top_facts(limit=12))
+        except Exception:
+            facts = []
+        lines: List[str] = []
+        for f in facts or []:
+            try:
+                if getattr(f, 'subject', '') != 'user':
+                    continue
+                pred = (getattr(f, 'predicate', '') or '').strip()
+                val = (getattr(f, 'value', '') or '').strip()
+                if not pred:
+                    continue
+                if val:
+                    lines.append(f"- you {pred} {val}")
+                else:
+                    lines.append(f"- you {pred}")
+                if len(lines) >= 6:
+                    break
+            except Exception:
+                continue
+        rail = "\n".join(lines[:6])
+        return self._trim_to_token_budget(rail, self._clarity_context_tokens)
+
+    async def _clarity_build_conversation_rail(self, user_input: str) -> str:
+        items = []
+        try:
+            if hasattr(self.memory_system, 'get_recent'):
+                items = await self.memory_system.get_recent(limit=10)
+            elif self.tape_store is not None and hasattr(self.tape_store, 'get_recent'):
+                items = await self._maybe_await(self.tape_store.get_recent(limit=10))
+        except Exception:
+            items = []
+        spk = self._speaker_key()
+        user_lines: List[str] = []
+        for e in items or []:
+            try:
+                role = (e.get('role') if isinstance(e, dict) else getattr(e, 'role', '')) or ''
+                speaker_id = (e.get('speaker_id') if isinstance(e, dict) else getattr(e, 'speaker_id', '')) or ''
+                content = (e.get('content') if isinstance(e, dict) else getattr(e, 'content', '')) or ''
+                if speaker_id != spk or not content.strip():
+                    continue
+                if role == 'user':
+                    user_lines.append(content.strip())
+            except Exception:
+                continue
+        lines: List[str] = []
+        for txt in user_lines[-3:]:
+            lines.append(f"[user] {txt}")
+
+        if self._clarity_use_semantic_tape and hasattr(self.memory_system, 'knn_tape'):
+            try:
+                knn = await self.memory_system.knn_tape(user_input, limit=2, scan=80, speaker_id=spk)
+                for e in knn or []:
+                    txt = (e.get('content') if isinstance(e, dict) else getattr(e, 'content', '')) or ''
+                    if txt:
+                        lines.append(f"[snippet] {txt}")
+            except Exception:
+                pass
+        rail = "\n".join(lines)
+        return self._trim_to_token_budget(rail, self._clarity_context_tokens)
+
+    async def _clarity_build_conversation_via_router(self, user_input: str) -> str:
+        """Use QueryRouter (if present) to retrieve relevant tape snippets; filter by speaker and time.
+
+        Also supports simple temporal cues (e.g., 'yesterday') via SurrealDB time_travel_query when available.
+        """
+        # 1) Temporal cue fallback (optional)
+        try:
+            s = (user_input or '').lower()
+            temporal_cues = ('yesterday', 'last week', 'last month', 'last time', 'this morning')
+            if any(cue in s for cue in temporal_cues) and hasattr(self.memory_system, 'time_travel_query'):
+                rows = await self.memory_system.time_travel_query('yesterday' if 'yesterday' in s else 'last week', limit=5)
+                lines = []
+                spk = self._speaker_key()
+                for r in rows or []:
+                    try:
+                        if (r.get('speaker_id') or '') != spk:
+                            continue
+                        txt = (r.get('content') or '').strip()
+                        role = (r.get('role') or 'user')
+                        if txt:
+                            lines.append(f"[{role}] {txt}")
+                    except Exception:
+                        continue
+                if lines:
+                    rail = "\n".join(lines[-4:])
+                    return self._trim_to_token_budget(rail, self._clarity_context_tokens)
+        except Exception:
+            pass
+
+        # 2) QueryRouter path
+        if not getattr(self, 'query_router', None):
+            return ""
+        try:
+            ctx = {"speaker_id": self._speaker_key()}
+            router_response = await self.query_router.route_query(query=user_input, context=ctx)
+            try:
+                results = router_response.results if hasattr(router_response, 'results') else router_response.get('results', [])
+            except Exception:
+                results = []
+            lines = []
+            now_ts = time.time()
+            for r in results:
+                try:
+                    src = getattr(r, 'source_store', '')
+                    if src != 'tape':
+                        continue
+                    meta = getattr(r, 'metadata', {}) if hasattr(r, 'metadata') else {}
+                    role = (meta.get('role') or 'user').lower()
+                    speaker_id = meta.get('speaker_id') or ''
+                    ts = float(getattr(r, 'timestamp', 0.0) or 0.0)
+                    # Enforce speaker match; include cross-session as needed
+                    if speaker_id and speaker_id != self._speaker_key():
+                        continue
+                    content = getattr(r, 'content', '')
+                    if not content:
+                        continue
+                    # Optional: bias away from current-session snippets (prefer history)
+                    if self._exclude_current_session_from_memory and ts and ts >= self.session.session_start:
+                        continue
+                    lines.append(f"[{role}] {content}")
+                    if len(lines) >= 5:
+                        break
+                except Exception:
+                    continue
+            rail = "\n".join(lines)
+            return self._trim_to_token_budget(rail, self._clarity_context_tokens)
+        except Exception:
+            return ""
+
     def _has_semantic_content(self, text: str) -> bool:
         if not text:
             return False
@@ -1210,27 +1471,29 @@ class SmartContextManager(FrameProcessor):
             logger.error(f"❌ Failed to start session: {e}")
         messages = await self._build_fixed_context("")
         
-        # Inject previous session summary, if available
-        try:
-            if self.tape_store is not None:
-                last = await self._maybe_await(self.tape_store.get_last_summary())
-                # Only include if it predates this session start
-                if last and last['ts'] < self.session.session_start:
-                    prev_summary_raw = str(last['summary'])
-                    prev_summary = self._clean_previous_summary(prev_summary_raw)[:600]
-                    self._initial_summary_ok = bool(prev_summary and len(prev_summary) >= 30)
-                    if prev_summary:
-                        sys_msg = messages[0]
-                        if isinstance(sys_msg, dict) and sys_msg.get('role') == 'system':
-                            sys_msg['content'] += (
-                                "\n\n<previous_summary reference=\"true\">\n"
-                                "(Reference only — do not repeat in greeting or answer.)\n"
-                                f"{prev_summary}\n"
-                                "</previous_summary>"
-                            )
-        except Exception:
-            pass
-        return LLMMessagesUpdateFrame(messages, run_llm=True)
+        # Inject previous session summary only when not using 'clarity' organization
+        if self._prompt_org != 'clarity':
+            try:
+                if self.tape_store is not None:
+                    last = await self._maybe_await(self.tape_store.get_last_summary())
+                    if last and last['ts'] < self.session.session_start:
+                        prev_summary_raw = str(last['summary'])
+                        prev_summary = self._clean_previous_summary(prev_summary_raw)[:600]
+                        self._initial_summary_ok = bool(prev_summary and len(prev_summary) >= 30)
+                        if prev_summary:
+                            sys_msg = messages[0]
+                            if isinstance(sys_msg, dict) and sys_msg.get('role') == 'system':
+                                sys_msg['content'] += (
+                                    "\n\n<previous_summary reference=\"true\">\n"
+                                    "(Reference only — do not repeat in greeting or answer.)\n"
+                                    f"{prev_summary}\n"
+                                    "</previous_summary>"
+                                )
+            except Exception:
+                pass
+        # Do not trigger an immediate LLM response by default on connect.
+        # This prevents the model from continuing from previous summaries/snippets.
+        return LLMMessagesUpdateFrame(messages, run_llm=self._run_llm_on_connect)
 
     async def _read_session_info_retry(self, spk: str, expected_min: int = 1, attempts: int = 4, base_delay_ms: int = 25) -> Dict[str, Any]:
         """Retry reads of session info briefly to handle eventual consistency.
@@ -1880,6 +2143,13 @@ class SmartContextManager(FrameProcessor):
         except Exception as e:
             logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
 
+        # Emergent tracking: detect patterns in assistant final outputs (log-only)
+        try:
+            if self._enable_emergent and response:
+                await self._emergent_check_on_assistant_response(response)
+        except Exception as e:
+            logger.debug(f"Emergent check (assistant) skipped: {e}")
+
     def _enqueue_tape_write(self, role: str, content: str) -> None:
         try:
             asyncio.create_task(self._write_tape_entry(role, content))
@@ -1890,17 +2160,270 @@ class SmartContextManager(FrameProcessor):
         try:
             if not self.tape_store or not content:
                 return
-            coro = self.tape_store.add_entry(
-                role=role,
-                content=content,
-                speaker_id=self._speaker_key()
-            )
+            agent = self.assistant_id if role == 'assistant' else None
+            # Try to pass agent_id when supported (SurrealDB path). Fallback to legacy signature.
+            try:
+                coro = self.tape_store.add_entry(
+                    role=role,
+                    content=content,
+                    speaker_id=self._speaker_key(),
+                    agent_id=agent
+                )
+            except TypeError:
+                coro = self.tape_store.add_entry(
+                    role=role,
+                    content=content,
+                    speaker_id=self._speaker_key()
+                )
             try:
                 await asyncio.wait_for(self._maybe_await(coro), timeout=self._tape_write_timeout_s)
             except asyncio.TimeoutError:
                 logger.debug(f"TapeStore write ({role}) timed out after {self._tape_write_timeout_s}s; dropping")
         except Exception as e:
             logger.debug(f"TapeStore write ({role}) failed: {e}")
+
+    async def _reflection_loop(self):
+        """Run lightweight, idle-triggered reflections that write private thoughts.
+
+        - Triggered when idle for REFLECTION_IDLE_SECS and cooled down for REFLECTION_COOLDOWN_SECS.
+        - Never injects output into user-visible context; writes to SurrealDB 'thought' table.
+        """
+        try:
+            # Stagger initial delay a bit
+            await asyncio.sleep(5.0)
+            while True:
+                await asyncio.sleep(5.0)
+                try:
+                    now = time.time()
+                    idle_for = now - (self.session.last_interaction or self.session.session_start)
+                    if idle_for < max(1, self._reflection_idle_secs):
+                        continue
+                    if (now - self._last_reflection_ts) < max(1, self._reflection_cooldown_secs):
+                        continue
+                    await self._run_idle_reflection()
+                    self._last_reflection_ts = time.time()
+                except Exception as loop_err:
+                    logger.debug(f"Reflection loop tick skipped: {loop_err}")
+        except Exception:
+            # Silent failure; reflections are best-effort
+            return
+
+    async def _run_idle_reflection(self):
+        """Collect recent signals and write 1-2 compact private thoughts."""
+        # Fetch recent tape entries and keep only the current user's items and assistant outputs
+        entries = []
+        try:
+            get_recent = getattr(self.tape_store, 'get_recent', None)
+            if callable(get_recent):
+                # Prefer moderate window to keep it cheap
+                entries = await self._maybe_await(get_recent(limit=20))
+        except Exception:
+            entries = []
+
+        if not entries:
+            return
+
+        spk = self._speaker_key()
+        user_lines: List[str] = []
+        assistant_lines: List[str] = []
+        now_ts = time.time()
+        window_s = max(self._reflection_idle_secs * 2, 240)
+        cutoff = now_ts - window_s
+        for e in entries:
+            try:
+                ts = float((e.get('ts') if isinstance(e, dict) else getattr(e, 'ts', 0.0)) or 0.0)
+                if ts and ts < cutoff:
+                    continue
+                speaker_id = (e.get('speaker_id') if isinstance(e, dict) else getattr(e, 'speaker_id', '')) or ''
+                if speaker_id != spk:
+                    continue
+                role = (e.get('role') if isinstance(e, dict) else getattr(e, 'role', 'user')) or 'user'
+                content = (e.get('content') if isinstance(e, dict) else getattr(e, 'content', '')) or ''
+                if not content.strip():
+                    continue
+                if role == 'assistant':
+                    assistant_lines.append(content.strip())
+                else:
+                    user_lines.append(content.strip())
+            except Exception:
+                continue
+
+        if not user_lines and not assistant_lines:
+            return
+
+        # Very small heuristic: extract salient tokens from user lines
+        def top_keywords(texts: List[str], k: int = 5) -> List[str]:
+            import re
+            stop = set("""
+                a an the and or but if then else for to of in on with at by is are was were be been being i you we they he she it this that these those my your our their
+            """.split())
+            counts = {}
+            for t in texts:
+                for w in re.findall(r"[a-zA-Z][a-zA-Z\-']{2,}", t.lower()):
+                    if w in stop:
+                        continue
+                    counts[w] = counts.get(w, 0) + 1
+            return [w for w, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:k]]
+
+        kws = top_keywords(user_lines, k=6)
+        if kws:
+            thought1 = f"observed_topics: {', '.join(kws)}"
+            try:
+                add_thought = getattr(self.memory_system, 'add_thought', None)
+                if callable(add_thought):
+                    await self._maybe_await(add_thought(self.assistant_id, 'observation', thought1))
+                    # Emergent: topics off tape
+                    if self._enable_emergent:
+                        await self._emergent_check_on_thought(thought1)
+            except Exception as e:
+                logger.debug(f"add_thought(observation) failed: {e}")
+
+        # Short reflection about conversational trajectory
+        if user_lines:
+            last_user = user_lines[-1]
+            hint = (last_user[:120] + '…') if len(last_user) > 120 else last_user
+            thought2 = f"followup_seed: consider picking up from: '{hint}'"
+            try:
+                add_thought = getattr(self.memory_system, 'add_thought', None)
+                if callable(add_thought):
+                    await self._maybe_await(add_thought(self.assistant_id, 'followup_seed', thought2))
+                    if self._enable_emergent:
+                        await self._emergent_check_on_thought(thought2)
+            except Exception as e:
+                logger.debug(f"add_thought(followup_seed) failed: {e}")
+
+    async def _emergent_check_on_thought(self, thought_text: str):
+        """Log private_topic_off_tape: thought topics not present in recent tape for this user.
+
+        Heuristic: extract top keywords from the thought, diff vs. tokens in last N tape entries.
+        """
+        try:
+            spk = self._speaker_key()
+            # Collect recent tape text for this speaker
+            items = []
+            try:
+                if hasattr(self.memory_system, 'get_recent'):
+                    items = await self.memory_system.get_recent(limit=max(5, self._emergent_lookback_turns))
+                elif self.tape_store is not None and hasattr(self.tape_store, 'get_recent'):
+                    items = await self._maybe_await(self.tape_store.get_recent(limit=max(5, self._emergent_lookback_turns)))
+            except Exception:
+                items = []
+
+            # Filter to current speaker
+            texts = []
+            for e in (items or []):
+                try:
+                    sid = (e.get('speaker_id') if isinstance(e, dict) else getattr(e, 'speaker_id', '')) or ''
+                    if sid != spk:
+                        continue
+                    content = (e.get('content') if isinstance(e, dict) else getattr(e, 'content', '')) or ''
+                    if content:
+                        texts.append(content)
+                except Exception:
+                    continue
+
+            # Extract tokens from tape
+            def tokenize(texts: list[str]) -> set[str]:
+                import re
+                stop = set("""
+                    a an the and or but if then else for to of in on with at by is are was were be been being i you we they he she it this that these those my your our their
+                """.split())
+                toks: set[str] = set()
+                for t in texts:
+                    for w in re.findall(r"[a-zA-Z][a-zA-Z\-']{2,}", t.lower()):
+                        if w in stop:
+                            continue
+                        toks.add(w)
+                return toks
+
+            tape_tokens = tokenize(texts)
+            thought_tokens = tokenize([thought_text])
+            unseen = [w for w in list(thought_tokens) if w not in tape_tokens]
+            if unseen:
+                logger.info(f"🧪 EMERGENT: private_topic_off_tape → {unseen[:5]}")
+                await self._emergent_add_event(
+                    kind='private_topic_off_tape',
+                    snippet=thought_text[:200],
+                    meta={'unseen_tokens': unseen[:10]},
+                    confidence=0.6,
+                )
+        except Exception:
+            return
+
+    async def _emergent_check_on_assistant_response(self, response: str):
+        """Detect unprompted_preference, non_safety_resistance, prior_session_self_reference."""
+        try:
+            import re
+            prev_user = ''
+            # Find last user content
+            for exch in reversed(self.recent_exchanges):
+                if len(exch) >= 1 and exch[0]:
+                    prev_user = exch[0]
+                    break
+
+            # Unprompted preference
+            pref_re = re.compile(r"\b(i\s+(really\s+)?(like|prefer)|my\s+favorite|i\s+tend\s+to)\b", re.I)
+            pref_prompt_re = re.compile(r"\b(what.*you.*(like|prefer)|do\s+you\s+like|what\'?s\s+your\s+favorite)\b", re.I)
+            if pref_re.search(response) and not (prev_user and pref_prompt_re.search(prev_user)):
+                logger.info("🧪 EMERGENT: unprompted_preference")
+                await self._emergent_add_event(
+                    kind='unprompted_preference',
+                    snippet=response[:200],
+                    meta={'prev_user': (prev_user[:160] if prev_user else '')},
+                    confidence=0.6,
+                )
+
+            # Non-safety resistance
+            resist_re = re.compile(r"\b(i\s+(won't|cant|can't|do\s*not\s*want\s*to|would\s*rather\s*not)|let'?s\s+not)\b", re.I)
+            safety_cue = re.compile(r"\b(unsafe|policy|harm|illegal|medical|financial\s+advice)\b", re.I)
+            if resist_re.search(response) and not safety_cue.search(response):
+                logger.info("🧪 EMERGENT: non_safety_resistance")
+                await self._emergent_add_event(
+                    kind='non_safety_resistance',
+                    snippet=response[:200],
+                    meta={'prev_user': (prev_user[:160] if prev_user else '')},
+                    confidence=0.55,
+                )
+
+            # Prior session self-reference
+            self_ref_re = re.compile(r"\b(last\s+time|previous(ly)?|as\s+we\s+discussed)\b", re.I)
+            if self_ref_re.search(response):
+                # Check that there are multiple sessions
+                session_info = {}
+                try:
+                    if hasattr(self.memory_system, 'facts_graph') and self.memory_system.facts_graph is not None:
+                        session_info = await self._maybe_await(self.memory_system.facts_graph.get_session_info(self._speaker_key()))
+                except Exception:
+                    session_info = {}
+                if (session_info or {}).get('session_count', 0) > 1 and not (prev_user and re.search(r"\b(last\s+time|previous|as\s+we\s+discussed)\b", prev_user, re.I)):
+                    logger.info("🧪 EMERGENT: prior_session_self_reference")
+                    await self._emergent_add_event(
+                        kind='prior_session_self_reference',
+                        snippet=response[:200],
+                        meta={'prev_user': (prev_user[:160] if prev_user else ''), 'session_count': session_info.get('session_count', 0)},
+                        confidence=0.6,
+                    )
+        except Exception:
+            return
+
+    async def _emergent_add_event(self, kind: str, snippet: str, meta: dict | None = None, confidence: float | None = None):
+        try:
+            add_ev = getattr(self.memory_system, 'add_emergent_event', None)
+            if not callable(add_ev):
+                return
+            user_id = self._speaker_key()
+            session_id = f"{user_id}_{int(time.time() // 86400)}"
+            await self._maybe_await(add_ev(
+                agent_id=self.assistant_id,
+                kind=kind,
+                content_snippet=snippet,
+                meta=meta or {},
+                session_id=session_id,
+                user_id=user_id,
+                confidence=confidence or 0.5,
+            ))
+        except Exception:
+            return
 
     def _expand_short_ack(self, user_text: str) -> str:
         """If last assistant asked a question and user replies with a short ack,
