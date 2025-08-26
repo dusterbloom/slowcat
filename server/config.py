@@ -29,7 +29,7 @@ class AudioConfig:
     
     # VAD parameters - Balanced for natural conversation flow
     vad_stop_secs: float = 0.4   # Increased to allow natural pauses (was 0.08s)
-    vad_start_secs: float = 0.05  # Keep responsive speech detection
+    vad_start_secs: float = 0.2  # Keep responsive speech detection
     
     # Smart turn management
     enable_smart_turn_management: bool = field(default_factory=lambda: os.getenv("ENABLE_SMART_TURN_MANAGEMENT", "true").lower() == "true")
