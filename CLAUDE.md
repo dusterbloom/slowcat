@@ -161,6 +161,17 @@ python test_tts_sanitization.py       # TTS text processing tests
 - All searches must be generic and data-driven
 - Fix root causes, not symptoms with hardcoded workarounds
 
+**Coding Standards:**
+- Python: Follow PEP 8, 4-space indent, prefer type hints and docstrings
+- Files use `snake_case.py`; classes use `PascalCase`
+- Keep imports local to feature areas, avoid circular dependencies across `core/`, `processors/`, `services/`
+- TypeScript/React: Components `PascalCase.tsx`; hooks/utilities `camelCase.ts`
+
+**Commit Guidelines:**
+- Follow Conventional Commits: `feat:`, `fix:`, `refactor:`, `docs:`
+- PRs must include clear description, rationale, test coverage
+- Ensure `pytest` passes and `npm run lint` is clean before review
+
 ## Debugging and Troubleshooting
 
 **Debug Scripts**:
@@ -589,3 +600,20 @@ ROUTER_THRESHOLD_LOW=0.4    # Hybrid search confidence
 - `test_smart_memory.py`: Component testing
 - `test_smart_memory_integration.py`: End-to-end testing with LM Studio
 - `docs/TASK_99_FIXED_CONTEXT_SMART_MEMORY.md`: Complete implementation guide
+
+### SurrealDB Integration (Current Branch: feature/surrealdb-memory)
+
+**New Memory Backend**: Enhanced memory system using SurrealDB multi-model database:
+- `server/memory/surreal_memory.py`: SurrealDB memory implementation
+- `server/scripts/reflection_daemon.py`: Background reflection process
+- `server/utils/private_reflector.py`: Private fact reflection utilities
+
+**Configuration**:
+- Copy `server/env.example` to `server/.env` and set required variables
+- Key environment variables: `USER_ID`, `FACTS_DB_PATH`, `PIPELINE_IDLE_TIMEOUT_SECS`
+- Memory creation via `create_smart_memory_system()` in query router
+
+**Security Notes**:
+- Never commit `.env` files
+- Grant microphone permission on macOS for voice input
+- All processing remains local - no cloud dependencies
