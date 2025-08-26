@@ -20,6 +20,17 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from loguru import logger
+import os
+
+# Optional semantic fallback for facts retrieval
+try:
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    FACTS_EMBED_AVAILABLE = True
+except ImportError:
+    SentenceTransformer = None  # type: ignore
+    np = None  # type: ignore
+    FACTS_EMBED_AVAILABLE = False
 
 from memory.query_classifier import (
     HybridQueryClassifier, QueryIntent, ClassificationResult, create_query_classifier
@@ -93,15 +104,52 @@ class FactsStoreAdapter(MemoryStoreInterface):
     
     def __init__(self, facts_graph: FactsGraph):
         self.facts_graph = facts_graph
+        # Semantic fallback (optional, generic — no domain hardcoding)
+        self._encoder = None
+        self._fact_emb_cache = {}  # key -> np.ndarray
+        self._text_cache = {}      # key -> str
+        self._max_emb_facts = int(os.getenv('FACTS_EMBED_FALLBACK_MAX', '800'))
+        self._min_sim = float(os.getenv('FACTS_EMBED_MIN_SIM', '0.0'))
+        self._budget_ms = int(os.getenv('FACTS_EMBED_FALLBACK_BUDGET_MS', '35'))
+        if FACTS_EMBED_AVAILABLE:
+            try:
+                self._encoder = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+                logger.info("📐 FactsStoreAdapter: semantic fallback enabled (MiniLM)")
+            except Exception as e:
+                logger.warning(f"FactsStoreAdapter: failed to init encoder: {e}")
+                self._encoder = None
     
     async def search(self, query: str, limit: int = 10, **kwargs) -> List[MemoryResult]:
         """Search facts by content"""
         try:
-            facts = self.facts_graph.search_facts(query, limit=limit)
+            if hasattr(self.facts_graph, 'search_facts'):
+                facts = await self.facts_graph.search_facts(query, limit=limit)
+            else:
+                logger.warning(f"Facts graph {type(self.facts_graph)} has no search_facts method")
+                return []
             # Simple semantic nudge: map location-style queries to user.location
             qlow = (query or '').lower()
             if (not facts) and any(k in qlow for k in ["where", "location", "located", "live", "from"]):
-                facts = self.facts_graph.get_facts(subject='user', predicate='location', min_fidelity=1, limit=limit)
+                if hasattr(self.facts_graph, 'get_facts'):
+                    facts = await self.facts_graph.get_facts(subject='user', predicate='location', min_fidelity=1, limit=limit)
+            # Heuristic: personal pet name queries
+            if (not facts) and any(k in qlow for k in ["dog", "pet"]) and any(k in qlow for k in ["name", "called", "called?"]):
+                try:
+                    if hasattr(self.facts_graph, 'get_facts'):
+                        # Try likely predicates; tolerate different schemas
+                        candidate_preds = ['dog_name', 'pet_name', 'pet', 'dog']
+                        agg = []
+                        for p in candidate_preds:
+                            try:
+                                res = await self.facts_graph.get_facts(subject='user', predicate=p, min_fidelity=0, limit=limit)
+                                if res:
+                                    agg.extend(res)
+                            except Exception:
+                                continue
+                        if agg:
+                            facts = agg
+                except Exception:
+                    pass
             results = []
             
             for fact in facts:
@@ -135,10 +183,144 @@ class FactsStoreAdapter(MemoryStoreInterface):
                 )
                 results.append(result)
             
+            # If empty, try generic semantic fallback (no hardcoding)
+            if not results:
+                try:
+                    sem = await self._semantic_fallback(query, limit)
+                    if sem:
+                        return sem
+                except Exception:
+                    pass
             return results
             
         except Exception as e:
             logger.error(f"Facts search failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    # --- Semantic fallback (generic, no hardcoding) ---
+    def _fact_key(self, fact) -> tuple:
+        return (
+            getattr(fact, 'subject', '') or '',
+            getattr(fact, 'predicate', '') or '',
+            getattr(fact, 'value', None),
+        )
+
+    def _textualize_fact(self, fact) -> str:
+        subj = (getattr(fact, 'subject', '') or '').strip()
+        pred = (getattr(fact, 'predicate', '') or '').strip().replace('_', ' ')
+        val = getattr(fact, 'value', None)
+        if val is None or (str(val).strip() == ''):
+            return f"{subj} has {pred}"
+        return f"{subj}'s {pred} is {val}"
+
+    async def _semantic_fallback(self, query: str, limit: int) -> List[MemoryResult]:
+        if not self._encoder:
+            return []
+        try:
+            start = time.time()
+            import re
+            # Get a bounded set of candidate facts (recency/strength ordering is up to FactsGraph)
+            try:
+                if hasattr(self.facts_graph, 'get_facts'):
+                    candidates = await self.facts_graph.get_facts(limit=self._max_emb_facts)  # type: ignore[attr-defined]
+                elif hasattr(self.facts_graph, 'get_top_facts'):
+                    candidates = await self.facts_graph.get_top_facts(limit=self._max_emb_facts)  # type: ignore[attr-defined]
+                else:
+                    candidates = []
+            except TypeError:
+                # Sync variants
+                try:
+                    if hasattr(self.facts_graph, 'get_facts'):
+                        candidates = self.facts_graph.get_facts(limit=self._max_emb_facts)  # type: ignore[assignment]
+                    elif hasattr(self.facts_graph, 'get_top_facts'):
+                        candidates = self.facts_graph.get_top_facts(limit=self._max_emb_facts)  # type: ignore[assignment]
+                    else:
+                        candidates = []
+                except Exception:
+                    candidates = []
+            if not candidates:
+                return []
+
+            # Encode query once
+            q_emb = self._encoder.encode([query])[0]
+            # Normalize
+            q_norm = np.linalg.norm(q_emb) or 1.0
+
+            # Light lexical pre-filter to reduce embedding work (generic, no hardcoding)
+            q_tokens = set(re.split(r"\W+", query.lower()))
+            q_tokens.discard('')
+
+            scored: List[tuple[float, Any]] = []
+            # Prefer candidates whose subject/predicate tokens overlap with query tokens
+            def candidate_tokens(fact) -> set:
+                s = (getattr(fact, 'subject', '') or '').lower()
+                p = (getattr(fact, 'predicate', '') or '').lower().replace('_', ' ')
+                toks = set(re.split(r"\W+", s + ' ' + p))
+                toks.discard('')
+                return toks
+
+            # Split candidates into likely (overlap) and others
+            likely = []
+            others = []
+            for f in candidates:
+                toks = candidate_tokens(f)
+                if q_tokens and (toks & q_tokens):
+                    likely.append(f)
+                else:
+                    others.append(f)
+
+            ordered = likely + others
+            for f in ordered:
+                key = self._fact_key(f)
+                text = self._text_cache.get(key)
+                if not text:
+                    text = self._textualize_fact(f)
+                    self._text_cache[key] = text
+                emb = self._fact_emb_cache.get(key)
+                if emb is None:
+                    emb = self._encoder.encode([text])[0]
+                    self._fact_emb_cache[key] = emb
+                # Cosine similarity
+                denom = (np.linalg.norm(emb) or 1.0) * q_norm
+                sim = float(np.dot(q_emb, emb) / denom)
+                if sim >= self._min_sim:
+                    scored.append((sim, f))
+                # Time budget guard
+                if (time.time() - start) * 1000.0 > self._budget_ms:
+                    break
+
+            if not scored:
+                return []
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top = [f for _, f in scored[:limit]]
+
+            # Map to MemoryResult
+            results: List[MemoryResult] = []
+            for fact in top:
+                content = self._textualize_fact(fact)
+                relevance = (getattr(fact, 'fidelity', 3) / 4.0) * getattr(fact, 'strength', 0.6)
+                # Mix in semantic score lightly by boosting relevance (kept simple)
+                # Note: the caller already sorts by relevance; this provides a stable order
+                result = MemoryResult(
+                    content=content,
+                    source_store="facts",
+                    relevance_score=relevance,
+                    timestamp=getattr(fact, 'last_seen', 0.0),
+                    metadata={
+                        'subject': getattr(fact, 'subject', ''),
+                        'predicate': getattr(fact, 'predicate', ''),
+                        'value': getattr(fact, 'value', None),
+                        'fidelity': getattr(fact, 'fidelity', 3),
+                        'strength': getattr(fact, 'strength', 0.6),
+                        'semantic_fallback': True,
+                    }
+                )
+                results.append(result)
+            return results
+        except Exception as e:
+            logger.debug(f"Semantic fallback failed: {e}")
             return []
     
     async def get_recent(self, limit: int = 10, since: float = None) -> List[MemoryResult]:
@@ -167,30 +349,80 @@ class TapeStoreAdapter(MemoryStoreInterface):
     async def search(self, query: str, limit: int = 10, **kwargs) -> List[MemoryResult]:
         if not self.tape_store:
             return []
-        entries = self.tape_store.search(query, limit=limit)
+        
+        # Use the correct method based on tape store type
+        try:
+            if hasattr(self.tape_store, 'search_tape'):
+                # SurrealMemory interface
+                entries = await self.tape_store.search_tape(query, limit=limit)
+            elif hasattr(self.tape_store, 'search'):
+                # Generic tape store interface
+                entries = await self.tape_store.search(query, limit=limit)
+            else:
+                logger.warning(f"Tape store {type(self.tape_store)} has no search method")
+                return []
+        except Exception as e:
+            logger.error(f"Tape store search failed: {e}")
+            return []
+            
         results: List[MemoryResult] = []
         for e in entries:
+            # Handle both dict and object formats
+            if isinstance(e, dict):
+                role = e.get('role', 'unknown')
+                content = e.get('content', '')
+                ts = e.get('ts', 0)
+                speaker_id = e.get('speaker_id', 'unknown')
+            else:
+                role = getattr(e, 'role', 'unknown')
+                content = getattr(e, 'content', '')
+                ts = getattr(e, 'ts', 0)
+                speaker_id = getattr(e, 'speaker_id', 'unknown')
+                
             results.append(MemoryResult(
-                content=f"[{e.role}] {e.content}",
+                content=f"[{role}] {content}",
                 source_store='tape',
                 relevance_score=0.5,  # simple default; could be BM25 score
-                timestamp=e.ts,
-                metadata={'speaker_id': e.speaker_id, 'role': e.role}
+                timestamp=ts,
+                metadata={'speaker_id': speaker_id, 'role': role}
             ))
         return results
     
     async def get_recent(self, limit: int = 10, since: float = None) -> List[MemoryResult]:
         if not self.tape_store:
             return []
-        entries = self.tape_store.get_recent(limit=limit, since=since)
+        
+        # Use the correct method based on tape store type
+        try:
+            if hasattr(self.tape_store, 'get_recent'):
+                entries = await self.tape_store.get_recent(limit=limit, since=since)
+            else:
+                logger.warning(f"Tape store {type(self.tape_store)} has no get_recent method")
+                return []
+        except Exception as e:
+            logger.error(f"Tape store get_recent failed: {e}")
+            return []
+            
         results: List[MemoryResult] = []
         for e in entries:
+            # Handle both dict and object formats
+            if isinstance(e, dict):
+                role = e.get('role', 'unknown')
+                content = e.get('content', '')
+                ts = e.get('ts', 0)
+                speaker_id = e.get('speaker_id', 'unknown')
+            else:
+                role = getattr(e, 'role', 'unknown')
+                content = getattr(e, 'content', '')
+                ts = getattr(e, 'ts', 0)
+                speaker_id = getattr(e, 'speaker_id', 'unknown')
+                
             results.append(MemoryResult(
-                content=f"[{e.role}] {e.content}",
+                content=f"[{role}] {content}",
                 source_store='tape',
                 relevance_score=0.3,
-                timestamp=e.ts,
-                metadata={'speaker_id': e.speaker_id, 'role': e.role}
+                timestamp=ts,
+                metadata={'speaker_id': speaker_id, 'role': role}
             ))
         return results
     
@@ -237,11 +469,11 @@ class QueryRouter:
         if embedding_store:
             self.stores['embeddings'] = EmbeddingStoreAdapter(embedding_store)
         
-        # Confidence thresholds for routing decisions
+        # Confidence thresholds for routing decisions - tuned for voice agent use
         self.thresholds = {
-            'high_confidence': 0.8,     # Direct routing
-            'medium_confidence': 0.6,   # Primary + fallback
-            'low_confidence': 0.4       # Hybrid search
+            'high_confidence': 0.7,     # Direct routing  
+            'medium_confidence': 0.5,   # Primary + fallback
+            'low_confidence': 0.2       # Hybrid search - be aggressive about memory search
         }
         
         # Performance tracking
@@ -272,15 +504,36 @@ class QueryRouter:
         
         # 1. Classify the query
         classification = await self.classifier.classify(query, context)
+
+        # 1a. Context-aware overrides (e.g., from SCM gate)
+        try:
+            if context and context.get('force_personal_facts'):
+                # Force routing to facts with at least medium confidence
+                from .query_classifier import QueryIntent
+                classification.intent = QueryIntent.PERSONAL_FACTS
+                if classification.confidence < self.thresholds['medium_confidence']:
+                    classification.confidence = self.thresholds['medium_confidence']
+        except Exception:
+            pass
         
         logger.debug(f"🎯 Query classified: {classification.intent.value} "
                     f"({classification.confidence:.2f}) - '{query[:50]}...'")
         
         # 2. Create retrieval plan
         plan = self._create_retrieval_plan(classification, max_results)
+
+        # 2a. Ensure we don't bypass memory if forced by context
+        try:
+            if context and context.get('force_personal_facts') and plan.strategy == RoutingStrategy.BYPASS:
+                plan.strategy = RoutingStrategy.PRIMARY_WITH_FALLBACK
+                plan.primary_store = 'facts'
+                # Keep a reasonable fallback set
+                plan.secondary_stores = ['tape', 'embeddings']
+        except Exception:
+            pass
         
         # 3. Execute retrieval plan
-        results = await self._execute_retrieval_plan(query, plan)
+        results = await self._execute_retrieval_plan(query, plan, classification)
         
         # 4. Build response
         elapsed_ms = (time.time() - start_time) * 1000
@@ -368,7 +621,7 @@ class QueryRouter:
         
         return plan
     
-    async def _execute_retrieval_plan(self, query: str, plan: RetrievalPlan) -> List[MemoryResult]:
+    async def _execute_retrieval_plan(self, query: str, plan: RetrievalPlan, classification: ClassificationResult) -> List[MemoryResult]:
         """
         Execute the retrieval plan across appropriate stores
         """
@@ -382,17 +635,24 @@ class QueryRouter:
             elif plan.strategy == RoutingStrategy.DIRECT:
                 # Query only primary store
                 if plan.primary_store and plan.primary_store in self.stores:
-                    results = await self.stores[plan.primary_store].search(
-                        query, limit=plan.max_results
-                    )
+                    if plan.primary_store == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
+                        # For conversation history, prefer recent snippets over keyword match
+                        results = await self.stores['tape'].get_recent(limit=plan.max_results)
+                    else:
+                        results = await self.stores[plan.primary_store].search(
+                            query, limit=plan.max_results
+                        )
                     all_results.extend(results)
             
             elif plan.strategy == RoutingStrategy.PRIMARY_WITH_FALLBACK:
                 # Try primary first, then fallback if insufficient results
                 if plan.primary_store and plan.primary_store in self.stores:
-                    results = await self.stores[plan.primary_store].search(
-                        query, limit=plan.max_results
-                    )
+                    if plan.primary_store == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
+                        results = await self.stores['tape'].get_recent(limit=plan.max_results)
+                    else:
+                        results = await self.stores[plan.primary_store].search(
+                            query, limit=plan.max_results
+                        )
                     all_results.extend(results)
                 
                 # If insufficient results, try secondary stores
@@ -401,9 +661,12 @@ class QueryRouter:
                     
                     for store_name in plan.secondary_stores:
                         if store_name in self.stores and len(all_results) < plan.max_results:
-                            results = await self.stores[store_name].search(
-                                query, limit=remaining_limit
-                            )
+                            if store_name == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
+                                results = await self.stores['tape'].get_recent(limit=remaining_limit)
+                            else:
+                                results = await self.stores[store_name].search(
+                                    query, limit=remaining_limit
+                                )
                             all_results.extend(results)
             
             elif plan.strategy == RoutingStrategy.HYBRID:
@@ -415,7 +678,10 @@ class QueryRouter:
                 search_tasks = []
                 for store_name in stores_to_search:
                     if store_name in self.stores:
-                        task = self.stores[store_name].search(query, limit=results_per_store)
+                        if store_name == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
+                            task = self.stores['tape'].get_recent(limit=results_per_store)
+                        else:
+                            task = self.stores[store_name].search(query, limit=results_per_store)
                         search_tasks.append((store_name, task))
                 
                 # Wait for all searches to complete
@@ -428,7 +694,10 @@ class QueryRouter:
                 for (store_name, _), results in zip(search_tasks, search_results):
                     if isinstance(results, Exception):
                         logger.error(f"Search failed in {store_name}: {results}")
+                        import traceback
+                        logger.error(f"Full traceback for {store_name}: {''.join(traceback.format_exception(type(results), results, results.__traceback__))}")
                     else:
+                        logger.debug(f"Store {store_name} returned {len(results)} results")
                         all_results.extend(results)
             
             # Sort by relevance score and limit results

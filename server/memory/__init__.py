@@ -133,51 +133,108 @@ class SurrealMemorySystemAdapter:
         self.surreal_memory = surreal_memory
         self.facts_graph = surreal_memory  # SurrealDB provides facts interface
         self.tape_store = surreal_memory   # SurrealDB provides tape interface
-        self.query_router = None           # TODO: Create SurrealDB query router
+        
+        # Prefer the standard QueryRouter wired to SurrealDB stores for consistency
+        try:
+            from .query_router import create_query_router
+            self.query_router = create_query_router(
+                facts_graph=surreal_memory,
+                tape_store=surreal_memory,
+                embedding_store=None
+            )
+        except Exception as e:
+            logger.warning(f"Standard QueryRouter not available for SurrealDB: {e}")
+            self.query_router = None
     
     async def process_query(self, query: str, context: dict = None):
-        """Process query using SurrealDB capabilities"""
-        # For now, simple fact search - will enhance with proper routing
-        raw_results = await self.surreal_memory.search_facts(query)
+        """Process query using SurrealDB native query router"""
+        if self.query_router:
+            # Use native SurrealDB query router for intelligent routing
+            response = await self.query_router.route_query(query, context)
+            
+            # Convert SurrealMemoryResult back to SimpleResult for compatibility
+            class SimpleResult:
+                def __init__(self, surreal_result):
+                    self.subject = surreal_result.subject or ''
+                    self.predicate = surreal_result.predicate or ''
+                    self.value = surreal_result.value
+                    self.species = None
+                    self.fidelity = surreal_result.fidelity or 3
+                    self.strength = surreal_result.relevance_score
+                    self.last_seen = surreal_result.timestamp
+                    self.created = surreal_result.timestamp
+                    self.access_count = 0
+                    self.source_text = surreal_result.content
+                    self.source_store = surreal_result.source_store
+            
+            results = [SimpleResult(r) for r in response.results]
+            
+            # Return enhanced response with SurrealDB routing metadata
+            class SurrealResponse:
+                def __init__(self, results, response):
+                    self.results = results
+                    self.total_results = response.total_results
+                    self.retrieval_time_ms = response.retrieval_time_ms
+                    self.strategy_used = response.strategy_used
+                    self.stores_queried = response.stores_queried
+                    self.classification = response.classification or self._default_classification()
+                
+                def _default_classification(self):
+                    class SimpleClassification:
+                        def __init__(self):
+                            self.intent = SimpleIntent()
+                            self.confidence = 0.8
+                    
+                    class SimpleIntent:
+                        def __init__(self):
+                            self.name = 'SURREAL_UNIFIED'
+                    
+                    return SimpleClassification()
+            
+            return SurrealResponse(results, response)
         
-        # Wrap results to include source_store for compatibility with SCM filters
-        class SimpleResult:
-            def __init__(self, fact_obj):
-                # Expect a SurrealFact-like object with attributes
-                self.subject = getattr(fact_obj, 'subject', '')
-                self.predicate = getattr(fact_obj, 'predicate', '')
-                self.value = getattr(fact_obj, 'value', None)
-                self.species = getattr(fact_obj, 'species', None)
-                self.fidelity = getattr(fact_obj, 'fidelity', 3)
-                self.strength = getattr(fact_obj, 'strength', 0.6)
-                self.last_seen = getattr(fact_obj, 'last_seen', 0)
-                self.created = getattr(fact_obj, 'created', 0)
-                self.access_count = getattr(fact_obj, 'access_count', 0)
-                self.source_text = getattr(fact_obj, 'source_text', '')
-                self.source_store = 'facts'
-        
-        results = [SimpleResult(f) for f in raw_results]
-        
-        # Create a simple object with .results attribute for compatibility
-        class SimpleResponse:
-            def __init__(self, results, classification=None):
-                self.results = results
-                self.total_results = len(results)
-                self.retrieval_time_ms = 0
-                self.strategy_used = 'direct'
-                self.stores_queried = ['surreal_facts']
-                self.classification = classification or SimpleClassification()
-        
-        class SimpleClassification:
-            def __init__(self):
-                self.intent = SimpleIntent()
-                self.confidence = 0.8
-        
-        class SimpleIntent:
-            def __init__(self):
-                self.name = 'PERSONAL_FACTS'
-        
-        return SimpleResponse(results)
+        else:
+            # Fallback to simple fact search if query router not available
+            raw_results = await self.surreal_memory.search_facts(query)
+            
+            class SimpleResult:
+                def __init__(self, fact_obj):
+                    self.subject = getattr(fact_obj, 'subject', '')
+                    self.predicate = getattr(fact_obj, 'predicate', '')
+                    self.value = getattr(fact_obj, 'value', None)
+                    self.species = getattr(fact_obj, 'species', None)
+                    self.fidelity = getattr(fact_obj, 'fidelity', 3)
+                    self.strength = getattr(fact_obj, 'strength', 0.6)
+                    self.last_seen = getattr(fact_obj, 'last_seen', 0)
+                    self.created = getattr(fact_obj, 'created', 0)
+                    self.access_count = getattr(fact_obj, 'access_count', 0)
+                    self.source_text = getattr(fact_obj, 'source_text', '')
+                    self.source_store = 'facts'
+            
+            results = [SimpleResult(f) for f in raw_results]
+            
+            class SimpleResponse:
+                def __init__(self, results):
+                    self.results = results
+                    self.total_results = len(results)
+                    self.retrieval_time_ms = 0
+                    self.strategy_used = 'fallback_direct'
+                    self.stores_queried = ['surreal_facts']
+                    self.classification = self._default_classification()
+                
+                def _default_classification(self):
+                    class SimpleClassification:
+                        def __init__(self):
+                            self.intent = SimpleIntent()
+                            self.confidence = 0.6
+                    
+                    class SimpleIntent:
+                        def __init__(self):
+                            self.name = 'PERSONAL_FACTS'
+                    
+                    return SimpleClassification()
+            
+            return SimpleResponse(results)
     
     async def store_facts(self, text: str) -> int:
         """Extract and store facts from text using SurrealDB"""
@@ -199,10 +256,10 @@ class SurrealMemorySystemAdapter:
             pass
 
     # --- Pass-throughs for DTH / retrieval helpers ---
-    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200):
+    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200, speaker_id: str | None = None):
         """Expose SurrealDB-side KNN to DynamicTapeHead."""
         try:
-            return await self.surreal_memory.knn_tape(query, limit=limit, scan=scan)
+            return await self.surreal_memory.knn_tape(query, limit=limit, scan=scan, speaker_id=speaker_id)
         except Exception:
             return []
 

@@ -141,8 +141,8 @@ def summarize_dialogue(
 
     # Enhanced system prompt with better guidance for handling various input types
     system_prompt = (
-        "Summarize this conversation in 1-2 sentences. Do NOT roleplay. Do NOT repeat any messages. "
-        "Focus only on the main topics discussed."
+        "Please summarize this conversation in 1-2 clear, concise sentences. "
+        "Focus on the main topics and key points discussed."
     )
     payload_messages = [{"role": "system", "content": system_prompt}] + messages
 
@@ -183,8 +183,8 @@ def summarize_dialogue(
             logger.warning(f"⚠️ Empty response from {provider}, attempting fallback with simpler prompt")
             # Try a simpler, more direct prompt as fallback
             fallback_prompt = (
-                "Summarize this conversation in 1-2 sentences. Do NOT roleplay. Do NOT repeat any messages. "
-                "Focus only on the main topics discussed."
+                "Summarize this conversation in 1-2 sentences. "
+                "What were the main topics discussed?"
             )
             fallback_messages = [{"role": "system", "content": fallback_prompt}] + messages
             
@@ -268,8 +268,8 @@ def summarize_dialogue(
                 logger.warning(f"⚠️ Empty response from {provider}, attempting fallback with simpler prompt")
                 # Try a simpler, more direct prompt as fallback
                 fallback_prompt = (
-                    "Summarize this conversation in 1-2 sentences. Do NOT roleplay. Do NOT repeat any messages. "
-                    "Focus only on the main topics discussed."
+                    "Summarize this conversation in 1-2 sentences. "
+                    "What were the main topics discussed?"
                 )
                 fallback_messages = [{"role": "system", "content": fallback_prompt}] + messages
                 

@@ -166,23 +166,10 @@ class PipelineBuilder:
             from tools import set_memory_processor
             set_memory_processor(memory_processor)
             
-            # Check if this is a stateless memory processor by class name to avoid import issues
-            if memory_processor.__class__.__name__ in ['StatelessMemoryProcessor', 'EnhancedStatelessMemoryProcessor']:
-                # Stateless memory handles injection internally, no separate injector needed
-                logger.info(f"🧠 Using stateless memory processor (self-injecting): {type(memory_processor)}")
-                processors['memory_processor'] = memory_processor
-                processors['memory_injector'] = None
-            else:
-                # Traditional memory needs a separate context injector
-                logger.info("📝 Using traditional memory with context injector")
-                from processors import MemoryContextInjector
-                memory_injector = MemoryContextInjector(
-                    memory_processor=memory_processor,
-                    system_prompt=config.memory.context_system_prompt,
-                    inject_as_system=True
-                )
-                processors['memory_processor'] = memory_processor
-                processors['memory_injector'] = memory_injector
+            # Memory is now handled by SmartContextManager integrated with SurrealDB
+            logger.info(f"🧠 Using unified memory processor: {type(memory_processor)}")
+            processors['memory_processor'] = memory_processor
+            processors['memory_injector'] = None
         else:
             processors['memory_processor'] = None
             processors['memory_injector'] = None
@@ -493,22 +480,12 @@ class PipelineBuilder:
             # Get memory processor for context integration
             memory_processor = processors.get('memory_processor')
             
-            # Use memory-aware context if memory processor is available (standard or enhanced)
-            if memory_processor and memory_processor.__class__.__name__ in ['StatelessMemoryProcessor', 'EnhancedStatelessMemoryProcessor']:
-                logger.info("🧠 Using memory-aware context with integrated injection")
-                from processors.memory_context_aggregator import create_memory_context
-                context = create_memory_context(
-                    initial_messages=[{"role": "system", "content": final_system_prompt}],
-                    memory_processor=memory_processor,
-                    max_context_tokens=memory_processor.max_context_tokens * 4,  # Allow for larger context
-                    tools=tools_schema
-                )
-            else:
-                logger.info("📝 Using standard context (no memory integration)")
-                context = OpenAILLMContext(
-                    [{"role": "system", "content": final_system_prompt}],
-                    tools=tools_schema
-                )
+            # Use standard context - SmartContextManager handles memory integration
+            logger.info("📝 Using standard context with SmartContextManager memory integration")
+            context = OpenAILLMContext(
+                [{"role": "system", "content": final_system_prompt}],
+                tools=tools_schema
+            )
         
         logger.debug(f"Final System Prompt:\n{final_system_prompt}")
         context_aggregator = llm_service.create_context_aggregator(context)

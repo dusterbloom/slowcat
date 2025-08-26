@@ -982,9 +982,9 @@ class DynamicTapeHead:
                         content = entry.get('content') if isinstance(entry, dict) else getattr(entry, 'content', '')
                         ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', time.time())
                         role = entry.get('role') if isinstance(entry, dict) else getattr(entry, 'role', 'user')
-                    spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
-                    if speaker_id and spk != speaker_id:
-                        continue
+                        spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
+                        if speaker_id and spk != speaker_id:
+                            continue
                         # Ensure content is a string for hashing
                         content_str = str(content) if content is not None else ''
                         

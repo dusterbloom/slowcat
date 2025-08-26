@@ -43,3 +43,6 @@ surrealdb>=1.0.6
 
 # --- Semantic retrieval / reranking ---
 sentence-transformers>=2.2.2
+
+# --- DSPy for self-optimization (optional) ---
+dspy-ai>=2.4.0
