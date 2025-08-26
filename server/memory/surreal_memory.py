@@ -188,6 +188,7 @@ class SurrealMemory:
             DEFINE FIELD created ON fact TYPE datetime VALUE time::now();
             DEFINE FIELD access_count ON fact TYPE number DEFAULT 0;
             DEFINE FIELD source_text ON fact TYPE string DEFAULT '';
+            DEFINE FIELD agent_id ON fact TYPE option<string>;
         """)
         
         # Conversation tape with temporal capabilities
@@ -198,8 +199,33 @@ class SurrealMemory:
             DEFINE FIELD role ON tape TYPE string;
             DEFINE FIELD content ON tape TYPE string;
             DEFINE FIELD session_id ON tape TYPE option<string>;
+            DEFINE FIELD agent_id ON tape TYPE option<string>;
             DEFINE FIELD embedding ON tape TYPE option<array<number>>;
             DEFINE FIELD metadata ON tape TYPE object DEFAULT {};
+        """)
+        
+        # Private thoughts for agents (siloed; never surfaced directly)
+        await self.db.query("""
+            DEFINE TABLE thought SCHEMAFULL;
+            DEFINE FIELD ts ON thought TYPE datetime VALUE time::now();
+            DEFINE FIELD agent_id ON thought TYPE string;
+            DEFINE FIELD thought_type ON thought TYPE string;
+            DEFINE FIELD content ON thought TYPE string;
+            DEFINE FIELD links ON thought TYPE array<string> DEFAULT [];
+            DEFINE FIELD visibility ON thought TYPE string DEFAULT 'private';
+        """)
+
+        # Emergent events (observability only, no behavioral effects)
+        await self.db.query("""
+            DEFINE TABLE emergent_event SCHEMAFULL;
+            DEFINE FIELD ts ON emergent_event TYPE datetime VALUE time::now();
+            DEFINE FIELD agent_id ON emergent_event TYPE string;
+            DEFINE FIELD kind ON emergent_event TYPE string;              -- e.g., private_topic_off_tape
+            DEFINE FIELD content_snippet ON emergent_event TYPE string;   -- short excerpt
+            DEFINE FIELD meta_json ON emergent_event TYPE object DEFAULT {}; -- extra info
+            DEFINE FIELD session_id ON emergent_event TYPE option<string>;
+            DEFINE FIELD user_id ON emergent_event TYPE option<string>;
+            DEFINE FIELD confidence ON emergent_event TYPE number DEFAULT 0.5;
         """)
         
         # Session summaries and metadata
@@ -273,20 +299,39 @@ class SurrealMemory:
             now = time.time()
             
             # Check if fact exists
-            query = """
-                SELECT * FROM fact 
-                WHERE subject = $subject 
-                AND predicate = $predicate 
-                AND value = $value 
-                AND species = $species
-            """
+            # Scope by agent_id when provided, otherwise match facts without considering agent_id
+            if fact_data.get('agent_id') is not None:
+                query = """
+                    SELECT * FROM fact 
+                    WHERE subject = $subject 
+                    AND predicate = $predicate 
+                    AND value = $value 
+                    AND species = $species
+                    AND agent_id = $agent_id
+                """
+                params = {
+                    'subject': fact_data['subject'],
+                    'predicate': fact_data['predicate'],
+                    'value': fact_data.get('value'),
+                    'species': fact_data.get('species'),
+                    'agent_id': fact_data.get('agent_id')
+                }
+            else:
+                query = """
+                    SELECT * FROM fact 
+                    WHERE subject = $subject 
+                    AND predicate = $predicate 
+                    AND value = $value 
+                    AND species = $species
+                """
+                params = {
+                    'subject': fact_data['subject'],
+                    'predicate': fact_data['predicate'],
+                    'value': fact_data.get('value'),
+                    'species': fact_data.get('species')
+                }
             
-            result = await self.db.query(query, {
-                'subject': fact_data['subject'],
-                'predicate': fact_data['predicate'],
-                'value': fact_data.get('value'),
-                'species': fact_data.get('species')
-            })
+            result = await self.db.query(query, params)
             
             if result and len(result) > 0:
                 # Existing fact - reinforce it
@@ -333,6 +378,7 @@ class SurrealMemory:
                         created = time::now(),
                         last_seen = time::now(),
                         source_text = $source_text,
+                        agent_id = $agent_id,
                         decay_rate = $decay_rate,
                         tags = $tags
                 """
@@ -350,6 +396,7 @@ class SurrealMemory:
                     'fidelity': fact_data.get('fidelity', 3),
                     'strength': strength,
                     'source_text': fact_data.get('source_text', ''),
+                    'agent_id': fact_data.get('agent_id'),
                     'decay_rate': fact_data.get('decay_rate', 1.0),
                     'tags': fact_data.get('tags', [])
                 })
@@ -600,7 +647,7 @@ class SurrealMemory:
     # TapeStore Interface Compatibility
     # ========================================
     
-    async def add_entry(self, role: str, content: str, speaker_id: str = "default_user", ts: Optional[float] = None):
+    async def add_entry(self, role: str, content: str, speaker_id: str = "default_user", ts: Optional[float] = None, agent_id: Optional[str] = None):
         """
         Add conversation entry to tape (TapeStore compatibility)
         """
@@ -617,6 +664,7 @@ class SurrealMemory:
                     role = $role,
                     content = $content,
                     session_id = $session_id,
+                    agent_id = $agent_id,
                     embedding = $embedding,
                     metadata = $metadata
             """
@@ -644,6 +692,7 @@ class SurrealMemory:
                 'role': role,
                 'content': content,
                 'session_id': session_id,
+                'agent_id': agent_id,
                 'embedding': embedding_vec,
                 'metadata': {}
             })
@@ -653,7 +702,7 @@ class SurrealMemory:
         except Exception as e:
             logger.error(f"SurrealDB tape add_entry failed: {e}")
     
-    async def search_tape(self, query: str, limit: int = 10) -> List[Dict]:
+    async def search_tape(self, query: str, limit: int = 10, agent_id: Optional[str] = None) -> List[Dict]:
         """
         Search conversation tape (TapeStore compatibility)
         """
@@ -661,17 +710,25 @@ class SurrealMemory:
             await self.connect()
         
         try:
-            search_query = """
-                SELECT * FROM tape 
-                WHERE string::contains(string::lowercase(content), string::lowercase($query))
-                ORDER BY ts DESC
-                LIMIT $limit
-            """
+            if agent_id:
+                search_query = """
+                    SELECT * FROM tape 
+                    WHERE string::contains(string::lowercase(content), string::lowercase($query))
+                    AND agent_id = $agent_id
+                    ORDER BY ts DESC
+                    LIMIT $limit
+                """
+                params = {'query': query, 'limit': limit, 'agent_id': agent_id}
+            else:
+                search_query = """
+                    SELECT * FROM tape 
+                    WHERE string::contains(string::lowercase(content), string::lowercase($query))
+                    ORDER BY ts DESC
+                    LIMIT $limit
+                """
+                params = {'query': query, 'limit': limit}
             
-            result = await self.db.query(search_query, {
-                'query': query,
-                'limit': limit
-            })
+            result = await self.db.query(search_query, params)
             
             entries = []
             if result and len(result) > 0:
@@ -690,7 +747,7 @@ class SurrealMemory:
             logger.error(f"SurrealDB tape search failed: {e}")
             return []
     
-    async def get_recent(self, limit: int = 10, since: Optional[float] = None) -> List[Dict]:
+    async def get_recent(self, limit: int = 10, since: Optional[float] = None, agent_id: Optional[str] = None) -> List[Dict]:
         """
         Get recent tape entries (TapeStore compatibility)
         """
@@ -699,20 +756,38 @@ class SurrealMemory:
         
         try:
             if since is None:
-                query = """
-                    SELECT * FROM tape 
-                    ORDER BY ts DESC 
-                    LIMIT $limit
-                """
-                params = {'limit': limit}
+                if agent_id:
+                    query = """
+                        SELECT * FROM tape 
+                        WHERE agent_id = $agent_id
+                        ORDER BY ts DESC 
+                        LIMIT $limit
+                    """
+                    params = {'limit': limit, 'agent_id': agent_id}
+                else:
+                    query = """
+                        SELECT * FROM tape 
+                        ORDER BY ts DESC 
+                        LIMIT $limit
+                    """
+                    params = {'limit': limit}
             else:
-                query = """
-                    SELECT * FROM tape 
-                    WHERE ts >= time::from::secs($since)
-                    ORDER BY ts DESC 
-                    LIMIT $limit
-                """
-                params = {'since': since, 'limit': limit}
+                if agent_id:
+                    query = """
+                        SELECT * FROM tape 
+                        WHERE ts >= time::from::secs($since) AND agent_id = $agent_id
+                        ORDER BY ts DESC 
+                        LIMIT $limit
+                    """
+                    params = {'since': since, 'limit': limit, 'agent_id': agent_id}
+                else:
+                    query = """
+                        SELECT * FROM tape 
+                        WHERE ts >= time::from::secs($since)
+                        ORDER BY ts DESC 
+                        LIMIT $limit
+                    """
+                    params = {'since': since, 'limit': limit}
             
             result = await self.db.query(query, params)
             
@@ -745,7 +820,7 @@ class SurrealMemory:
             logger.error(f"SurrealDB get_recent failed: {e}")
             return []
 
-    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200, speaker_id: str | None = None) -> List[Dict]:
+    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200, speaker_id: str | None = None, agent_id: Optional[str] = None) -> List[Dict]:
         """Return top-K tape entries by cosine similarity to query text.
 
         Requires either a local encoder (will be created if needed) or that
@@ -779,6 +854,14 @@ class SurrealMemory:
                     LIMIT $scan
                 """
                 params = {'scan': scan, 'speaker_id': speaker_id}
+            elif agent_id:
+                sql = """
+                    SELECT id, ts, speaker_id, role, content, embedding FROM tape 
+                    WHERE embedding != NONE AND agent_id = $agent_id
+                    ORDER BY ts DESC
+                    LIMIT $scan
+                """
+                params = {'scan': scan, 'agent_id': agent_id}
             else:
                 sql = """
                     SELECT id, ts, speaker_id, role, content, embedding FROM tape 
@@ -839,6 +922,147 @@ class SurrealMemory:
         except Exception as e:
             logger.error(f"SurrealDB knn_tape failed: {e}")
             return []
+
+    # ========================================
+    # Private thoughts APIs (siloed)
+    # ========================================
+    async def add_thought(self, agent_id: str, thought_type: str, content: str, links: Optional[List[str]] = None, visibility: str = 'private', ts: Optional[float] = None):
+        """Store a private thought for an agent.
+
+        Notes:
+        - Thoughts are siloed and never injected into user-visible context by default.
+        - Links can reference tape entry IDs or external refs (opaque strings).
+        """
+        if not self.connected:
+            await self.connect()
+        try:
+            insert = """
+                CREATE thought SET
+                    ts = time::from::secs($ts),
+                    agent_id = $agent_id,
+                    thought_type = $thought_type,
+                    content = $content,
+                    links = $links,
+                    visibility = $visibility
+            """
+            await self.db.query(insert, {
+                'ts': int(ts or time.time()),
+                'agent_id': agent_id,
+                'thought_type': thought_type,
+                'content': content,
+                'links': links or [],
+                'visibility': visibility,
+            })
+        except Exception as e:
+            logger.error(f"SurrealDB add_thought failed: {e}")
+
+    async def get_recent_thoughts(self, agent_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not self.connected:
+            await self.connect()
+        try:
+            q = """
+                SELECT * FROM thought
+                WHERE agent_id = $agent_id
+                ORDER BY ts DESC
+                LIMIT $limit
+            """
+            res = await self.db.query(q, {'agent_id': agent_id, 'limit': limit})
+            rows = self._rows_from_query(res)
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                ts_value = row.get('ts')
+                if hasattr(ts_value, 'timestamp'):
+                    ts_float = ts_value.timestamp()
+                elif isinstance(ts_value, (int, float)):
+                    ts_float = float(ts_value)
+                else:
+                    ts_float = time.time()
+                out.append({
+                    'ts': ts_float,
+                    'agent_id': row.get('agent_id', ''),
+                    'thought_type': row.get('thought_type', ''),
+                    'content': row.get('content', ''),
+                    'links': row.get('links', []),
+                    'visibility': row.get('visibility', 'private'),
+                })
+            return out
+        except Exception as e:
+            logger.error(f"SurrealDB get_recent_thoughts failed: {e}")
+            return []
+
+    async def search_thoughts(self, agent_id: str, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not self.connected:
+            await self.connect()
+        try:
+            q = """
+                SELECT * FROM thought
+                WHERE agent_id = $agent_id
+                AND string::contains(string::lowercase(content), string::lowercase($query))
+                ORDER BY ts DESC
+                LIMIT $limit
+            """
+            res = await self.db.query(q, {'agent_id': agent_id, 'query': query, 'limit': limit})
+            rows = self._rows_from_query(res)
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                ts_value = row.get('ts')
+                if hasattr(ts_value, 'timestamp'):
+                    ts_float = ts_value.timestamp()
+                elif isinstance(ts_value, (int, float)):
+                    ts_float = float(ts_value)
+                else:
+                    ts_float = time.time()
+                out.append({
+                    'ts': ts_float,
+                    'agent_id': row.get('agent_id', ''),
+                    'thought_type': row.get('thought_type', ''),
+                    'content': row.get('content', ''),
+                    'links': row.get('links', []),
+                    'visibility': row.get('visibility', 'private'),
+                })
+            return out
+        except Exception as e:
+            logger.error(f"SurrealDB search_thoughts failed: {e}")
+            return []
+
+    # ========================================
+    # Emergent behavior tracking (observability only)
+    # ========================================
+    async def add_emergent_event(self,
+                                 agent_id: str,
+                                 kind: str,
+                                 content_snippet: str,
+                                 meta: Optional[Dict[str, Any]] = None,
+                                 session_id: Optional[str] = None,
+                                 user_id: Optional[str] = None,
+                                 confidence: Optional[float] = None,
+                                 ts: Optional[float] = None) -> None:
+        if not self.connected:
+            await self.connect()
+        try:
+            q = """
+                CREATE emergent_event SET
+                    ts = time::from::secs($ts),
+                    agent_id = $agent_id,
+                    kind = $kind,
+                    content_snippet = $content_snippet,
+                    meta_json = $meta_json,
+                    session_id = $session_id,
+                    user_id = $user_id,
+                    confidence = $confidence
+            """
+            await self.db.query(q, {
+                'ts': int(ts or time.time()),
+                'agent_id': agent_id,
+                'kind': kind,
+                'content_snippet': content_snippet[:400],
+                'meta_json': meta or {},
+                'session_id': session_id,
+                'user_id': user_id,
+                'confidence': float(confidence) if confidence is not None else 0.5,
+            })
+        except Exception as e:
+            logger.error(f"SurrealDB add_emergent_event failed: {e}")
     
     async def get_entries_since(self, since_ts: float) -> List[Dict]:
         """
@@ -890,6 +1114,72 @@ class SurrealMemory:
             
         except Exception as e:
             logger.error(f"SurrealDB get_entries_since failed: {e}")
+            return []
+
+    async def get_recent_for_speaker(self, speaker_id: str, limit: int = 20) -> List[Dict]:
+        """Get recent tape entries for a specific speaker_id (most recent first)."""
+        if not self.connected:
+            await self.connect()
+        try:
+            sql = """
+                SELECT * FROM tape
+                WHERE speaker_id = $speaker_id
+                ORDER BY ts DESC
+                LIMIT $limit
+            """
+            res = await self.db.query(sql, { 'speaker_id': speaker_id, 'limit': limit })
+            rows = self._rows_from_query(res)
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                ts_value = row.get('ts')
+                if hasattr(ts_value, 'timestamp'):
+                    ts_float = ts_value.timestamp()
+                elif isinstance(ts_value, (int, float)):
+                    ts_float = float(ts_value)
+                else:
+                    ts_float = 0.0
+                out.append({
+                    'ts': ts_float,
+                    'speaker_id': row.get('speaker_id', ''),
+                    'role': row.get('role', ''),
+                    'content': row.get('content', ''),
+                })
+            return out
+        except Exception as e:
+            logger.error(f"SurrealDB get_recent_for_speaker failed: {e}")
+            return []
+
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """Return all session records (speaker_id, last_interaction, session_count, total_turns)."""
+        if not self.connected:
+            await self.connect()
+        try:
+            sql = """
+                SELECT speaker_id, session_count, last_interaction, first_seen, total_turns
+                FROM sessions
+            """
+            res = await self.db.query(sql)
+            rows = self._rows_from_query(res)
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                li = row.get('last_interaction')
+                fs = row.get('first_seen')
+                def to_ts(v):
+                    if hasattr(v, 'timestamp'):
+                        return v.timestamp()
+                    if isinstance(v, (int, float)):
+                        return float(v)
+                    return None
+                out.append({
+                    'speaker_id': row.get('speaker_id', ''),
+                    'session_count': row.get('session_count', 0),
+                    'last_interaction': to_ts(li),
+                    'first_seen': to_ts(fs),
+                    'total_turns': row.get('total_turns', 0),
+                })
+            return out
+        except Exception as e:
+            logger.error(f"SurrealDB list_sessions failed: {e}")
             return []
     
     async def add_summary(self, session_id: str, summary: str, keywords_json: str = '[]', turns: int = 0, duration_s: int = 0):

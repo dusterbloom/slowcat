@@ -256,24 +256,73 @@ class SurrealMemorySystemAdapter:
             pass
 
     # --- Pass-throughs for DTH / retrieval helpers ---
-    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200, speaker_id: str | None = None):
+    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200, speaker_id: str | None = None, agent_id: str | None = None):
         """Expose SurrealDB-side KNN to DynamicTapeHead."""
         try:
-            return await self.surreal_memory.knn_tape(query, limit=limit, scan=scan, speaker_id=speaker_id)
+            return await self.surreal_memory.knn_tape(query, limit=limit, scan=scan, speaker_id=speaker_id, agent_id=agent_id)
         except Exception:
             return []
 
-    async def search_tape(self, query: str, limit: int = 10):
+    async def search_tape(self, query: str, limit: int = 10, agent_id: str | None = None):
         """Expose keyword search over tape to DynamicTapeHead."""
         try:
-            return await self.surreal_memory.search_tape(query, limit=limit)
+            return await self.surreal_memory.search_tape(query, limit=limit, agent_id=agent_id)
         except Exception:
             return []
 
-    async def get_recent(self, limit: int = 10, since: float | None = None):
+    async def get_recent(self, limit: int = 10, since: float | None = None, agent_id: str | None = None):
         """Expose recent tape retrieval for candidates."""
         try:
-            return await self.surreal_memory.get_recent(limit=limit, since=since)
+            return await self.surreal_memory.get_recent(limit=limit, since=since, agent_id=agent_id)
+        except Exception:
+            return []
+
+    # --- Private thoughts pass-throughs ---
+    async def add_thought(self, agent_id: str, thought_type: str, content: str, links: list[str] | None = None, visibility: str = 'private'):
+        try:
+            return await self.surreal_memory.add_thought(agent_id=agent_id, thought_type=thought_type, content=content, links=links, visibility=visibility)
+        except Exception:
+            return None
+
+    async def get_recent_thoughts(self, agent_id: str, limit: int = 20):
+        try:
+            return await self.surreal_memory.get_recent_thoughts(agent_id=agent_id, limit=limit)
+        except Exception:
+            return []
+
+    async def search_thoughts(self, agent_id: str, query: str, limit: int = 20):
+        try:
+            return await self.surreal_memory.search_thoughts(agent_id=agent_id, query=query, limit=limit)
+        except Exception:
+            return []
+
+    # Emergent events
+    async def add_emergent_event(self, agent_id: str, kind: str, content_snippet: str,
+                                 meta: dict | None = None, session_id: str | None = None,
+                                 user_id: str | None = None, confidence: float | None = None):
+        try:
+            return await self.surreal_memory.add_emergent_event(
+                agent_id=agent_id,
+                kind=kind,
+                content_snippet=content_snippet,
+                meta=meta,
+                session_id=session_id,
+                user_id=user_id,
+                confidence=confidence,
+            )
+        except Exception:
+            return None
+
+    # Session/tape helpers for daemon
+    async def list_sessions(self):
+        try:
+            return await self.surreal_memory.list_sessions()
+        except Exception:
+            return []
+
+    async def get_recent_for_speaker(self, speaker_id: str, limit: int = 20):
+        try:
+            return await self.surreal_memory.get_recent_for_speaker(speaker_id, limit=limit)
         except Exception:
             return []
     

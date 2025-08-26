@@ -223,11 +223,13 @@ class LinguisticQueryClassifier:
         # Initialize NLP pipeline if available
         if NLP_AVAILABLE:
             try:
-                # Multilingual pipeline
-                self.nlp = stanza.Pipeline('multilingual', processors='tokenize,pos,ner', verbose=False)
-                logger.info("🔤 Linguistic classifier initialized with multilingual NLP")
+                import os as _os
+                # Prefer explicit language (default: English). Stanza does not ship a 'multilingual' pack.
+                lang = (_os.getenv('CLASSIFIER_NLP_LANG', 'en') or 'en').strip()
+                self.nlp = stanza.Pipeline(lang, processors='tokenize,pos,ner', verbose=False)
+                logger.info(f"🔤 Linguistic classifier initialized with stanza ({lang})")
             except Exception as e:
-                logger.warning(f"Failed to load stanza: {e}, using simplified analysis")
+                logger.warning(f"Failed to load stanza pipeline: {e} — falling back to simplified analysis")
                 self.nlp = None
         else:
             self.nlp = None
