@@ -141,8 +141,7 @@ def summarize_dialogue(
 
     # Enhanced system prompt with better guidance for handling various input types
     system_prompt = (
-        "Please summarize this conversation in 1-2 clear, concise sentences. "
-        "Focus on the main topics and key points discussed."
+        "Please summarize this conversation. Focus on the main topics and key points discussed. NO VERBATIM ALLOWED"
     )
     payload_messages = [{"role": "system", "content": system_prompt}] + messages
 
