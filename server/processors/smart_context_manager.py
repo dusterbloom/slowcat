@@ -162,6 +162,15 @@ class SmartContextManager(FrameProcessor):
         # Deterministic greeting injection (pipeline adds the greeting once)
         self._enforce_greeting = os.getenv('SC_ENFORCE_GREETING', 'false').lower() == 'true'
         self._greeted = False
+        # Memory safety: never treat current session utterances as "memories"
+        self._exclude_current_session_from_memory = os.getenv('SC_EXCLUDE_CURRENT_SESSION_FROM_MEMORY', 'true').lower() == 'true'
+        # Optionally exclude assistant-authored snippets from memory injection
+        self._memory_include_assistant = os.getenv('SC_MEMORY_INCLUDE_ASSISTANT', 'false').lower() == 'true'
+        # Optional cooldown (seconds) to avoid instant re-injection even across sessions
+        try:
+            self._memory_cooldown_s = int(os.getenv('SC_MEMORY_COOLDOWN_S', '0'))
+        except Exception:
+            self._memory_cooldown_s = 0
         try:
             # Default: persist turns with >=3 alpha words
             self._tape_min_words = int(os.getenv('TAPE_MIN_USEFUL_WORDS', '3'))
@@ -540,8 +549,37 @@ class SmartContextManager(FrameProcessor):
                 except Exception:
                     rr_list = []
 
-                # Build a compact verified facts block (schema-agnostic textualization)
+                # Filter out current-session and assistant-authored tape results to prevent loops
+                filtered_results = []
+                now_ts = time.time()
                 for r in rr_list:
+                    try:
+                        src = getattr(r, 'source_store', '')
+                        ts = float(getattr(r, 'timestamp', 0.0) or 0.0)
+                        meta = getattr(r, 'metadata', {}) if hasattr(r, 'metadata') else {}
+                        role = (meta.get('role') or '').lower()
+                        spk = meta.get('speaker_id')
+                        # Exclude assistant-authored tape by default
+                        if src == 'tape' and (not self._memory_include_assistant) and role == 'assistant':
+                            continue
+                        # Only include current user's tape when speaker_id is present
+                        if src == 'tape' and spk and spk != self._speaker_key():
+                            continue
+                        # Exclude entries from the current session window
+                        if src == 'tape' and self._exclude_current_session_from_memory:
+                            if ts and ts >= self.session.session_start:
+                                continue
+                        # Optional cooldown to avoid immediate re-injection
+                        if src == 'tape' and self._memory_cooldown_s > 0:
+                            if ts and ts >= (now_ts - self._memory_cooldown_s):
+                                continue
+                        filtered_results.append(r)
+                    except Exception:
+                        # Be conservative; only include if we can't prove it's current session
+                        filtered_results.append(r)
+
+                # Build a compact verified facts block (schema-agnostic textualization)
+                for r in filtered_results:
                     src = getattr(r, 'source_store', '')
                     content = getattr(r, 'content', '')
                     subj = getattr(r, 'metadata', {}).get('subject') if hasattr(r, 'metadata') else None
@@ -561,20 +599,20 @@ class SmartContextManager(FrameProcessor):
                         # Use tape as supporting snippets (not authoritative)
                         if strict_answer_mode and content:
                             dth_candidates.append(content)
-                if hasattr(router_response, 'results') and router_response.results:
-                    for result in router_response.results:
+                if filtered_results:
+                    for result in filtered_results:
                         # Each MemoryResult has content and source_store metadata
                         if hasattr(result, 'content') and result.content:
                             dth_candidates.append(str(result.content))
                             
                     # Log what we found
                     sources = {}
-                    for result in router_response.results:
+                    for result in filtered_results:
                         source = getattr(result, 'source_store', 'unknown')
                         sources[source] = sources.get(source, 0) + 1
                     
                     logger.info(f"   🔍 Router sources: {dict(sources)}")
-                
+
                 logger.info(f"   📊 Smart Router found: {len(dth_candidates)} memory candidates")
                 
             except Exception as e:
@@ -595,21 +633,35 @@ class SmartContextManager(FrameProcessor):
                     debug_selection=None,
                 )
                 
-                # Extract text candidates from DTH bundle
+                # Extract text candidates from DTH bundle (filtering current session and assistant role)
                 dth_candidates = []
+                def _accept_span(span) -> bool:
+                    try:
+                        ts = float(getattr(span, 'ts', 0.0) or 0.0)
+                        role = (getattr(span, 'role', '') or '').lower()
+                        spk = getattr(span, 'speaker_id', None)
+                        if (not self._memory_include_assistant) and role == 'assistant':
+                            return False
+                        if spk and spk != self._speaker_key():
+                            return False
+                        if self._exclude_current_session_from_memory and ts and ts >= self.session.session_start:
+                            return False
+                        if self._memory_cooldown_s > 0 and ts and ts >= (time.time() - self._memory_cooldown_s):
+                            return False
+                        return True
+                    except Exception:
+                        return False
                 if hasattr(dth_bundle, 'verbatim') and dth_bundle.verbatim:
                     for item in dth_bundle.verbatim:
-                        if hasattr(item, 'content'):
+                        if hasattr(item, 'content') and _accept_span(item):
                             dth_candidates.append(str(item.content))
-                
                 if hasattr(dth_bundle, 'shadows') and dth_bundle.shadows:
                     for item in dth_bundle.shadows:
-                        if hasattr(item, 'content'):
+                        if hasattr(item, 'content') and _accept_span(item):
                             dth_candidates.append(str(item.content))
-                
                 if 'dth_bundle' in locals() and hasattr(dth_bundle, 'recents') and dth_bundle.recents:
                     for item in dth_bundle.recents:
-                        if hasattr(item, 'content'):
+                        if hasattr(item, 'content') and _accept_span(item):
                             dth_candidates.append(str(item.content))
                 
                 # Use DSPy to optimize selection from DTH candidates
@@ -692,21 +744,40 @@ class SmartContextManager(FrameProcessor):
             # Secondary fallback: include a tiny slice of recent tape if available
             try:
                 recent_candidates: List[str] = []
+                now_ts = time.time()
+                # Fetch raw recent items
                 if hasattr(self.memory_system, 'get_recent'):
-                    items = await self.memory_system.get_recent(limit=4)
+                    items = await self.memory_system.get_recent(limit=8)
                 elif self.tape_store is not None and hasattr(self.tape_store, 'get_recent'):
-                    items = await self._maybe_await(self.tape_store.get_recent(limit=4))
+                    items = await self._maybe_await(self.tape_store.get_recent(limit=8))
                 else:
                     items = []
+                # Filter: same speaker, user-only (by default), prior sessions only, optional cooldown
+                spk = self._speaker_key()
+                def _accept_item(e) -> bool:
+                    try:
+                        role = (e.get('role') if isinstance(e, dict) else getattr(e, 'role', '')) or ''
+                        role = role.lower()
+                        content = (e.get('content') if isinstance(e, dict) else getattr(e, 'content', '')) or ''
+                        speaker_id = (e.get('speaker_id') if isinstance(e, dict) else getattr(e, 'speaker_id', None))
+                        ts = float((e.get('ts') if isinstance(e, dict) else getattr(e, 'ts', 0.0)) or 0.0)
+                        if (not self._memory_include_assistant) and role == 'assistant':
+                            return False
+                        if speaker_id and speaker_id != spk:
+                            return False
+                        if self._exclude_current_session_from_memory and ts and ts >= self.session.session_start:
+                            return False
+                        if self._memory_cooldown_s > 0 and ts and ts >= (now_ts - self._memory_cooldown_s):
+                            return False
+                        return bool(content.strip())
+                    except Exception:
+                        return False
                 for e in (items or []):
-                    if isinstance(e, dict):
-                        txt = e.get('content', '')
-                    else:
-                        txt = getattr(e, 'content', '')
-                    if txt:
+                    if _accept_item(e):
+                        txt = (e.get('content') if isinstance(e, dict) else getattr(e, 'content', ''))
                         recent_candidates.append(str(txt))
                 if recent_candidates:
-                    contextual_memory = "\n\n".join(recent_candidates)
+                    contextual_memory = "\n\n".join(recent_candidates[:4])
                     contextual_tokens = self.token_counter.count_tokens(contextual_memory)
             except Exception:
                 pass
