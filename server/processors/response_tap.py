@@ -27,15 +27,20 @@ class ResponseTap(FrameProcessor):
         self._in_response: bool = False
         self._buffer: str = ""
         self._announced: bool = False
+        self._last_text_ts: float = 0.0
+        self._last_len: int = 0
+        self._committed_once: bool = False
         logger.info("🧲 ResponseTap initialized (will capture final assistant responses)")
         # Fallback commit if some providers never emit LLMFullResponseEndFrame
         self._debounce_task: Optional[asyncio.Task] = None
-        self._last_text_ts: float = 0.0
         try:
             import os
             self._debounce_ms = int(os.getenv('RESPONSETAP_COMMIT_DEBOUNCE_MS', '400'))
+            # Extra grace to prefer sentence-complete commits when no end frame exists
+            self._min_stable_ms = int(os.getenv('RESPONSETAP_MIN_STABLE_MS', '300'))
         except Exception:
             self._debounce_ms = 400
+            self._min_stable_ms = 300
 
     async def _schedule_fallback_commit(self):
         if self._debounce_task:
@@ -47,9 +52,25 @@ class ResponseTap(FrameProcessor):
                 # If still in response and buffer has content, commit
                 if self._in_response and (self._buffer or '').strip():
                     text = self._buffer.strip()
+                    # Prefer committing at sentence boundaries or after stability
+                    import time, re
+                    now = time.time()
+                    stable_enough = (now - self._last_text_ts) * 1000.0 >= self._min_stable_ms
+                    ends_sentence = bool(re.search(r"[\.!?][\]\)\"']?$", text))
+                    # If we already committed once for this response, avoid repeated fallback commits
+                    if self._committed_once and not ends_sentence and not stable_enough:
+                        return
+                    # Commit only on sentence end or when content stopped changing for a bit
+                    if not (ends_sentence or stable_enough):
+                        # Re-arm a shorter fallback to check again soon
+                        await asyncio.sleep(max(0.05, self._min_stable_ms/1000.0))
+                        if not self._in_response:
+                            return
+                        text = self._buffer.strip()
                     try:
                         await self.smart_context_manager.add_assistant_response(text)
                         logger.debug(f"🧲 ResponseTap fallback-committed assistant response ({len(text)} chars)")
+                        self._committed_once = True
                     except Exception as e:
                         logger.debug(f"ResponseTap: fallback commit failed: {e}")
                     finally:
@@ -66,6 +87,8 @@ class ResponseTap(FrameProcessor):
         if isinstance(frame, LLMFullResponseStartFrame) and direction == FrameDirection.DOWNSTREAM:
             self._in_response = True
             self._buffer = ""
+            self._committed_once = False
+            self._last_len = 0
             if not self._announced:
                 self._announced = True
                 logger.info("🧲 ResponseTap engaged: detected LLM response start (downstream)")
@@ -95,6 +118,7 @@ class ResponseTap(FrameProcessor):
                             self._buffer += ' '
                         self._buffer += text
                     self._last_text_ts = time.time()
+                    self._last_len = len(self._buffer)
                     # Schedule fallback commit in case end frame never arrives
                     await self._schedule_fallback_commit()
             # For TTSTextFrame, do nothing here (only pass through below)
@@ -105,6 +129,7 @@ class ResponseTap(FrameProcessor):
                     try:
                         await self.smart_context_manager.add_assistant_response(final_text)
                         logger.debug(f"🧲 ResponseTap committed assistant response ({len(final_text)} chars)")
+                        self._committed_once = True
                     except Exception as e:
                         logger.debug(f"ResponseTap: add_assistant_response (final) failed: {e}")
                 # Reset state

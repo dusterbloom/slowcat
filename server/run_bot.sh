@@ -4,6 +4,7 @@
 
 # Store process PIDs for cleanup
 MCPO_PID=""
+REFLECTION_DAEMON_PID=""
 SURREALDB_STARTED_BY_US=false
 
 # Function to handle script exit
@@ -22,6 +23,13 @@ on_exit() {
         echo "🔥 Stopping MCPO server (PID: $MCPO_PID)"
         kill "$MCPO_PID" 2>/dev/null
         wait "$MCPO_PID" 2>/dev/null
+    fi
+    
+    # Kill reflection daemon if running
+    if [ ! -z "$REFLECTION_DAEMON_PID" ]; then
+        echo "🧘 Stopping reflection daemon (PID: $REFLECTION_DAEMON_PID)"
+        kill "$REFLECTION_DAEMON_PID" 2>/dev/null
+        wait "$REFLECTION_DAEMON_PID" 2>/dev/null
     fi
     
     # Kill any remaining mcpo processes started by this user
@@ -334,6 +342,7 @@ mkdir -p data/tool_memory
 mkdir -p data/dictation
 mkdir -p data/speaker_profiles
 mkdir -p data/surrealdb
+mkdir -p logs
 echo "✅ Directories created"
 
 # Set production-ready environment variables
@@ -369,6 +378,24 @@ if [ ${#DRAFT_ARGS[@]} -gt 0 ]; then
   echo "   - Draft model (speculative): ${DRAFT_ARGS[1]}"
 fi
 echo ""
+echo "   - Reflections: ENABLE_REFLECTIONS=${ENABLE_REFLECTIONS:-false}, BACKGROUND=${ENABLE_BACKGROUND_REFLECTIONS:-true}, LLM=${ENABLE_LLM_REFLECTIONS:-false}, IDLE=${REFLECTION_IDLE_SECS:-120}s, COOLDOWN=${REFLECTION_COOLDOWN_SECS:-300}s"
+
+# Optionally start background reflection daemon (SurrealDB-only)
+if [ "$USE_SURREALDB" = "true" ] && [ "${ENABLE_REFLECTIONS:-false}" = "true" ] && [ "${ENABLE_BACKGROUND_REFLECTIONS:-true}" = "true" ]; then
+    echo "🧘 Starting reflection daemon (idle=${REFLECTION_IDLE_SECS:-120}s, cooldown=${REFLECTION_COOLDOWN_SECS:-300}s, agent=${ASSISTANT_ID:-slowcat})..."
+    # Ensure any previous instance is not running
+    pkill -f "python -m scripts.reflection_daemon" 2>/dev/null || true
+    # Start daemon in background, redirect logs
+    python -m scripts.reflection_daemon > logs/reflection_daemon.log 2>&1 &
+    REFLECTION_DAEMON_PID=$!
+    sleep 1
+    if kill -0 $REFLECTION_DAEMON_PID 2>/dev/null; then
+        echo "✅ Reflection daemon started (PID: $REFLECTION_DAEMON_PID) — logs: logs/reflection_daemon.log"
+    else
+        echo "⚠️  Reflection daemon failed to start (see logs/reflection_daemon.log)"
+        REFLECTION_DAEMON_PID=""
+    fi
+fi
 
 # Optional feature hints
 if [ "${ENABLE_DTH:-false}" = "true" ]; then
