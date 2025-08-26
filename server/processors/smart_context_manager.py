@@ -21,6 +21,12 @@ from loguru import logger
 from pipecat.frames.frames import Frame, TranscriptionFrame, LLMMessagesFrame, LLMMessagesUpdateFrame, UserStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from processors.token_counter import get_token_counter
+try:
+    # Optional deterministic planner (feature-flagged)
+    from context.context_field import ContextField, FactMini
+except Exception:
+    ContextField = None  # type: ignore
+    FactMini = None  # type: ignore
 import os
 from memory import create_smart_memory_system, extract_facts_from_text
 try:
@@ -30,8 +36,10 @@ except Exception:
 try:
     # For intent enum comparison in retrieval gating (optional)
     from memory.query_classifier import QueryIntent  # noqa: F401
+    from memory.query_router import QueryRouter
 except Exception:
     QueryIntent = None  # type: ignore
+    QueryRouter = None
 
 
 @dataclass
@@ -46,17 +54,21 @@ class SessionMetadata:
 
 @dataclass
 class TokenBudget:
-    """Fixed token allocation for 4096 total"""
-    system_prompt: int = 500
-    facts_context: int = 800
-    recent_conversation: int = 2000
-    current_input: int = 696
-    buffer: int = 100
+    """Unified token allocation for 8192 total - simplified approach"""
+    system_prompt: int = 800          # 10% - instructions & identity  
+    contextual_memory: int = 2800     # 35% - ONE smart memory system (DTH + recent + facts + summaries)
+    current_input: int = 800          # 10% - input processing
+    generation_workspace: int = 3600  # 45% - where the magic happens (reserved, not in context)
     
     @property
     def total(self) -> int:
-        return (self.system_prompt + self.facts_context + 
-                self.recent_conversation + self.current_input + self.buffer)
+        # Only count tokens that go into the context messages
+        return self.system_prompt + self.contextual_memory + self.current_input
+    
+    @property
+    def total_with_generation(self) -> int:
+        # Total including generation workspace
+        return self.system_prompt + self.contextual_memory + self.current_input + self.generation_workspace
 
 
 class SmartContextManager(FrameProcessor):
@@ -71,9 +83,9 @@ class SmartContextManager(FrameProcessor):
     """
     
     def __init__(self, 
-                 context,  # MemoryAwareOpenAILLMContext instance
-                 facts_db_path: str = "data/facts.db",
-                 max_tokens: int = 4096,
+                  context,  # MemoryAwareOpenAILLMContext instance
+                  facts_db_path: str = "data/facts.db",
+                 max_tokens: int = 8192,  # Updated for unified allocation (scaled below)
                  **kwargs):
         super().__init__(**kwargs)
         
@@ -92,16 +104,55 @@ class SmartContextManager(FrameProcessor):
         self.memory_system = create_smart_memory_system(final_db_path)
         self.tape_store = getattr(self.memory_system, 'tape_store', None)
 
-        # Optional Dynamic Tape Head integration (feature flag)
+        # Intelligent Memory Routing (Facts + Tape + DTH)
+        self._enable_smart_routing = os.getenv('ENABLE_SMART_ROUTING', 'true').lower() == 'true'
+        self.query_router = None
+        self.tape_head = None  # Keep as fallback
+        
+        if self._enable_smart_routing and QueryRouter is not None:
+            try:
+                # Extract components for QueryRouter initialization
+                facts_graph = getattr(self.memory_system, 'facts_graph', None)
+                tape_store = getattr(self.memory_system, 'tape_store', None)
+                
+                # Initialize query router for intelligent facts + tape routing
+                self.query_router = QueryRouter(
+                    facts_graph=facts_graph,
+                    tape_store=tape_store,
+                    embedding_store=None  # Not using embedding store yet
+                )
+                logger.info("🧠 Smart Memory Router enabled (Facts + Tape integration)")
+            except Exception as e:
+                logger.warning(f"Smart routing init failed, falling back to DTH: {e}")
+                import traceback
+                traceback.print_exc()
+                self.query_router = None
+        
+        # Optional Dynamic Tape Head integration (can be used alongside router)
         self._enable_dth = os.getenv('ENABLE_DTH', 'false').lower() == 'true'
         self.tape_head = None
         if self._enable_dth and DynamicTapeHead is not None:
             try:
                 self.tape_head = DynamicTapeHead(self.memory_system)
-                logger.info("🧠 DTH enabled in SmartContextManager")
+                logger.info("🧠 DTH enabled (alongside Smart Router)")
             except Exception as e:
-                logger.warning(f"DTH init failed; continuing without: {e}")
+                logger.warning(f"DTH init failed; continuing without DTH: {e}")
                 self.tape_head = None
+        
+        # DSPy Unified Memory Optimizer integration
+        self._enable_dspy = os.getenv('DSPY_OPTIMIZATION_ENABLED', 'false').lower() == 'true'
+        self.dspy_optimizer = None
+        if self._enable_dspy:
+            try:
+                from slowcat_dspy import DSPY_AVAILABLE, create_unified_memory_optimizer
+                if DSPY_AVAILABLE:
+                    self.dspy_optimizer = create_unified_memory_optimizer()
+                    logger.info("🚀 DSPy UnifiedMemoryOptimizer enabled in SmartContextManager")
+                else:
+                    logger.warning("DSPy optimization enabled but DSPy not available")
+            except Exception as e:
+                logger.warning(f"DSPy optimizer init failed: {e}")
+                self.dspy_optimizer = None
         
         # Feature toggles / thresholds (env-driven, default generic)
         self._enable_spelling_hints = os.getenv('ENABLE_SPELLING_HINTS', 'false').lower() == 'true'
@@ -125,6 +176,32 @@ class SmartContextManager(FrameProcessor):
         # Token allocation (allow env overrides)
         self.budget = self._load_budget_from_env()
         logger.info(f"🧠 Smart Context Manager initialized with {self.budget.total} token budget")
+
+        # Cache for prompt session info
+        self._session_info_cache_ts: float = 0.0
+        self._session_info_cache: Optional[dict] = None
+        try:
+            self._session_info_ttl_s = int(os.getenv('SC_SESSION_INFO_TTL_S', '30'))
+        except Exception:
+            self._session_info_ttl_s = 30
+
+        # Tape write timeout (to avoid blocking event loop on DB sockets)
+        try:
+            self._tape_write_timeout_s = max(0.05, int(os.getenv('TAPE_WRITE_TIMEOUT_MS', '200')) / 1000.0)
+        except Exception:
+            self._tape_write_timeout_s = 0.2
+
+        # Optional Context Field planner
+        self._use_context_field = os.getenv('USE_CONTEXT_FIELD', 'false').lower() == 'true'
+        self._context_field = None
+        self._unified_memory = os.getenv('SC_UNIFIED_MEMORY', 'false').lower() == 'true'
+        if self._use_context_field and ContextField is not None:
+            try:
+                self._context_field = ContextField(total_budget=max(1, int(self.max_tokens)))
+                logger.info("🧮 ContextField planner enabled (metrics only in MVP)")
+            except Exception as e:
+                logger.warning(f"ContextField init failed; continuing without: {e}")
+                self._context_field = None
         
         # Session tracking
         self.session = SessionMetadata()
@@ -308,22 +385,16 @@ class SmartContextManager(FrameProcessor):
             user_text = self._normalize_user_input(frame.text)
             logger.debug(f"🎤 Processing transcription: '{user_text[:50]}...'")
 
-            # 1. Extract facts from user input (background, non-blocking)
-            if self._has_semantic_content(user_text):
+            # 1. Extract facts from user input (background), but only when content is rich enough
+            if self._should_extract_facts(user_text):
                 asyncio.create_task(self._extract_facts_async(user_text))
 
             # 1b. Write user message to tape store
             try:
                 if self.tape_store is not None and self._is_semantically_useful(user_text):
-                    await self._maybe_await(
-                        self.tape_store.add_entry(
-                            role='user',
-                            content=user_text,
-                            speaker_id=self._speaker_key()
-                        )
-                    )
+                    self._enqueue_tape_write('user', user_text)
             except Exception as e:
-                logger.debug(f"TapeStore write (user) failed: {e}")
+                logger.debug(f"TapeStore write (user) enqueue failed: {e}")
             
             # 2. Update session in memory system
             try:
@@ -351,7 +422,7 @@ class SmartContextManager(FrameProcessor):
                 try:
                     roles = [m.get('role', '?') for m in messages if isinstance(m, dict)]
                     logger.debug(f"[SCM] Roles in context for LLM call: {roles}")
-                    logger.debug(f"[SCM] recent_exchanges={len(self.recent_exchanges)} summary_present={bool(self.summary_text)}")
+                    logger.debug(f"[SCM] recent_exchanges={len(self.recent_exchanges)} summary_present={bool(self.summary_text)} context_messages={len(messages)}")
                 except Exception:
                     pass
                 self.context.set_messages(messages)
@@ -395,125 +466,332 @@ class SmartContextManager(FrameProcessor):
     
     async def _build_fixed_context(self, user_input: str) -> List[Dict]:
         """
-        Build exactly 4096 tokens of context (never more, never less)
-        
-        Token allocation:
-        - System prompt: 500 tokens (dynamic, includes session info)
-        - Facts context: 800 tokens (structured knowledge)
-        - Recent conversation: 2000 tokens (sliding window)
-        - Current input: 696 tokens (user's current message)
-        - Buffer: 100 tokens (safety margin)
+        Build unified 8K context with simplified allocation:
+        - System prompt: 800 tokens (10% - instructions & identity)  
+        - Contextual memory: 2800 tokens (35% - ONE unified memory system via DTH + DSPy)
+        - Current input: 800 tokens (10% - input processing)
+        - Generation workspace: 3600 tokens (45% - reserved, not in context)
         """
         start_time = time.time()
         
-        # 1. Generate dynamic system prompt
+        # 1. System prompt (800 tokens max)
         system_prompt = await self._generate_dynamic_prompt()
-        system_tokens = self.token_counter.count_tokens(system_prompt)
-
-        # 1b. Running conversation summary (small)
-        summary_block = ''
-        if self.summary_text:
-            summary_block = f"\n\n[Conversation Summary]\n{self.summary_text[:600]}"  # keep tight
-        summary_tokens = self.token_counter.count_tokens(summary_block) if summary_block else 0
-
-        # 2. Get facts context if available
-        facts_context = ""
-        if self.memory_system:
-            facts = await self._get_relevant_facts(user_input)
-            logger.debug(f"🧠 Retrieved {len(facts)} facts for context")
-            facts = self._filter_and_dedupe_facts(facts)
-            facts_context = self._format_facts_context(facts)
-            logger.debug(f"📝 Facts context: '{facts_context[:100]}{'...' if len(facts_context) > 100 else ''}'")
+        # Optionally include a compact session summary inside the system section
+        try:
+            include_sum = os.getenv('SC_INCLUDE_SUMMARY', 'true').lower() == 'true'
+            max_sum_tokens = int(os.getenv('SC_SUMMARY_TOKENS', '180'))
+        except Exception:
+            include_sum, max_sum_tokens = True, 180
+        preamble = system_prompt
+        if include_sum and self.summary_text:
+            # Clean and trim summary
+            cleaned = self._clean_previous_summary(self.summary_text)
+            trimmed = self._trim_to_token_budget(cleaned, max_sum_tokens)
+            if trimmed:
+                preamble = f"{system_prompt}\n\n<session_summary>\n{trimmed}\n</session_summary>"
+        system_content = self._trim_to_token_budget(preamble, self.budget.system_prompt)
+        system_tokens = self.token_counter.count_tokens(system_content)
         
-        facts_tokens = self.token_counter.count_tokens(facts_context)
+        # 2. Contextual memory (budgeted) - gated retrieval to avoid unnecessary latency
+        contextual_memory = ""
+        contextual_tokens = 0
 
-        # 2b. Conversation snippets (separate block) when relevant
-        snippets_context = ""
-        if self.memory_system:
-            snippets = await self._get_conversation_snippets(user_input)
-            if snippets:
-                lines = ["<conversation_snippets>"]
-                for r in snippets[:3]:
-                    text = getattr(r, 'content', '')
-                    if text:
-                        lines.append(f"- {text}")
-                lines.append("</conversation_snippets>")
-                snippets_context = "\n".join(lines)
-        snippets_tokens = self.token_counter.count_tokens(snippets_context)
+        # Heuristic gate: only query memory when input likely needs it
+        should_query_memory = self._is_memory_candidate(user_input)
 
-        # 2c. Optional DTH memory block (uses its own budget from facts_context share)
-        dth_context = ""
-        if self.tape_head is not None and user_input:
+        # Try smart router first (Facts + Tape integration) if gated in
+        if should_query_memory and self.query_router is not None:
             try:
-                # Reserve up to half of facts_context budget for DTH verbatim
-                dth_budget = max(100, self.budget.facts_context // 2)
-                # Pass current speaker_id and optional debug flag
-                bundle = await self.tape_head.seek(
+                logger.info("🎯 Using Smart Memory Router (Facts + Tape)")
+                
+                # Route query through intelligent facts + tape system
+                # Detect router type and use appropriate parameters
+                if hasattr(self.query_router, '__class__') and 'SurrealQueryRouter' in str(self.query_router.__class__):
+                    # SurrealQueryRouter interface
+                    router_response = await self.query_router.route_query(
+                        query=user_input,
+                        context={
+                            "speaker_id": self._speaker_key(),
+                            "force_personal_facts": self._is_personal_facts_candidate(user_input)
+                        }
+                    )
+                else:
+                    # Standard QueryRouter interface
+                    router_response = await self.query_router.route_query(
+                        query=user_input,
+                        context={
+                            "speaker_id": self._speaker_key(),
+                            "force_personal_facts": self._is_personal_facts_candidate(user_input)
+                        },
+                        max_results=20  # Get more results for better selection
+                    )
+                
+                # Extract memory candidates and verified facts from router response
+                dth_candidates = []
+                verified_lines: List[str] = []
+                strict_answer_mode = self._is_personal_facts_candidate(user_input)
+                
+                # RetrievalResponse contains results from both facts and tape stores
+                try:
+                    if hasattr(router_response, 'results'):
+                        rr_list = router_response.results
+                    else:
+                        rr_list = router_response.get('results', [])
+                except Exception:
+                    rr_list = []
+
+                # Build a compact verified facts block (schema-agnostic textualization)
+                for r in rr_list:
+                    src = getattr(r, 'source_store', '')
+                    content = getattr(r, 'content', '')
+                    subj = getattr(r, 'metadata', {}).get('subject') if hasattr(r, 'metadata') else None
+                    pred = getattr(r, 'metadata', {}).get('predicate') if hasattr(r, 'metadata') else None
+                    val  = getattr(r, 'metadata', {}).get('value') if hasattr(r, 'metadata') else None
+                    if src == 'facts':
+                        if subj and pred:
+                            # Normalize predicate for readability
+                            ptxt = str(pred).replace('_', ' ')
+                            if val is not None and str(val).strip() != '':
+                                verified_lines.append(f"- {subj}'s {ptxt} is {val}")
+                            else:
+                                verified_lines.append(f"- {subj} has {ptxt}")
+                        elif content:
+                            verified_lines.append(f"- {content}")
+                    else:
+                        # Use tape as supporting snippets (not authoritative)
+                        if strict_answer_mode and content:
+                            dth_candidates.append(content)
+                if hasattr(router_response, 'results') and router_response.results:
+                    for result in router_response.results:
+                        # Each MemoryResult has content and source_store metadata
+                        if hasattr(result, 'content') and result.content:
+                            dth_candidates.append(str(result.content))
+                            
+                    # Log what we found
+                    sources = {}
+                    for result in router_response.results:
+                        source = getattr(result, 'source_store', 'unknown')
+                        sources[source] = sources.get(source, 0) + 1
+                    
+                    logger.info(f"   🔍 Router sources: {dict(sources)}")
+                
+                logger.info(f"   📊 Smart Router found: {len(dth_candidates)} memory candidates")
+                
+            except Exception as e:
+                logger.warning(f"Smart router failed, falling back to DTH: {e}")
+                dth_candidates = []
+        
+        # Fallback to DTH if smart router unavailable or failed
+        elif self.tape_head is not None:
+            try:
+                logger.info("🎯 Falling back to DTH (Smart Router unavailable)")
+                
+                # Get DTH candidates (already ranked by relevance)
+                dth_bundle = await self.tape_head.seek(
                     user_input,
-                    budget=dth_budget,
+                    budget=self.budget.contextual_memory,  # 2800 tokens
                     context=None,
                     speaker_id=self._speaker_key(),
                     debug_selection=None,
                 )
-                try:
-                    # Observability: brief summary of what DTH returned
-                    logger.debug(
-                        f"[SCM:retrieval] DTH verbatim={len(bundle.verbatim)}, shadows={len(bundle.shadows)}, recents={len(bundle.recents)}, tokens={bundle.token_count}/{dth_budget}"
+                
+                # Extract text candidates from DTH bundle
+                dth_candidates = []
+                if hasattr(dth_bundle, 'verbatim') and dth_bundle.verbatim:
+                    for item in dth_bundle.verbatim:
+                        if hasattr(item, 'content'):
+                            dth_candidates.append(str(item.content))
+                
+                if hasattr(dth_bundle, 'shadows') and dth_bundle.shadows:
+                    for item in dth_bundle.shadows:
+                        if hasattr(item, 'content'):
+                            dth_candidates.append(str(item.content))
+                
+                if 'dth_bundle' in locals() and hasattr(dth_bundle, 'recents') and dth_bundle.recents:
+                    for item in dth_bundle.recents:
+                        if hasattr(item, 'content'):
+                            dth_candidates.append(str(item.content))
+                
+                # Use DSPy to optimize selection from DTH candidates
+                if self.dspy_optimizer and dth_candidates:
+                    logger.info(f"🧠 CONTEXT BUILDING: DSPy optimization enabled")
+                    logger.info(f"   📚 DTH provided {len(dth_candidates)} memory candidates")
+                    
+                    dspy_result = self.dspy_optimizer(
+                        query=user_input,
+                        dth_candidates=dth_candidates,
+                        target_tokens=self.budget.contextual_memory,
+                        mode="chat"  # Could be dynamic based on current mode
                     )
-                except Exception:
-                    pass
-                if bundle.verbatim:
-                    lines = ["<dth_memories>"]
-                    for m in bundle.verbatim[:3]:
-                        lines.append(f"- {m.content}")
-                    lines.append("</dth_memories>")
-                    dth_context = "\n".join(lines)
+                    
+                    contextual_memory = dspy_result.get('selected_memory', '')
+                    logger.info(f"   ✅ DSPy selected {len(contextual_memory)} chars of contextual memory")
+                    logger.info(f"   💡 Selection reasoning: {dspy_result.get('selection_reasoning', 'N/A')[:100]}...")
+                    
+                else:
+                    # MMR-like selection for diversity
+                    logger.info("🧠 CONTEXT BUILDING: Using MMR fallback selection")
+                    selected = self._mmr_select(user_input, dth_candidates, self.budget.contextual_memory,
+                                                lambda_div=float(os.getenv('DTH_MMR_LAMBDA', '0.7')),
+                                                max_items=int(os.getenv('DTH_MMR_MAX_ITEMS', '6')))
+                    contextual_memory = "\n\n".join(selected)
+                    logger.info(f"   📝 MMR selected {len(selected)} items, ~{self.token_counter.count_tokens(contextual_memory)} tokens")
+                
+                # Prefer verified facts when present (authoritative over verbatim)
+                if verified_lines:
+                    contextual_memory = "\n".join(sorted(set(verified_lines)))
+                else:
+                    # If no verified facts, do not enforce strict mode
+                    strict_answer_mode = False
+                contextual_tokens = self.token_counter.count_tokens(contextual_memory)
+                logger.debug(f"🧠 DTH candidates: {len(dth_candidates)}, contextual tokens: {contextual_tokens}")
+                
             except Exception as e:
-                logger.debug(f"DTH block skipped: {e}")
-        dth_tokens = self.token_counter.count_tokens(dth_context)
+                logger.warning(f"DTH + DSPy memory selection failed: {e}")
+                dth_candidates = []
+        
+        else:
+            # No memory system available
+            if should_query_memory:
+                logger.warning("🚨 No memory system available (neither Smart Router nor DTH)")
+            dth_candidates = []
+        
+        # Process candidates (works for both Smart Router and DTH results)
+        if dth_candidates:
+            # Use DSPy to optimize selection from candidates
+            if self.dspy_optimizer:
+                logger.info(f"🧠 CONTEXT BUILDING: DSPy optimization enabled")
+                logger.info(f"   📚 Found {len(dth_candidates)} memory candidates")
+                
+                dspy_result = self.dspy_optimizer(
+                    query=user_input,
+                    dth_candidates=dth_candidates,
+                    target_tokens=self.budget.contextual_memory,
+                    mode="chat"  # Could be dynamic based on current mode
+                )
+                
+                contextual_memory = dspy_result.get('selected_memory', '')
+                logger.info(f"   ✅ DSPy selected {len(contextual_memory)} chars of contextual memory")
+                logger.info(f"   💡 Selection reasoning: {dspy_result.get('selection_reasoning', 'N/A')[:100]}...")
+                
+            else:
+                # MMR-like selection
+                logger.info("🧠 CONTEXT BUILDING: Using MMR fallback selection")
+                selected = self._mmr_select(user_input, dth_candidates, self.budget.contextual_memory,
+                                            lambda_div=float(os.getenv('DTH_MMR_LAMBDA', '0.7')),
+                                            max_items=int(os.getenv('DTH_MMR_MAX_ITEMS', '6')))
+                contextual_memory = "\n\n".join(selected)
+                logger.info(f"   📝 MMR selected {len(selected)} items, ~{self.token_counter.count_tokens(contextual_memory)} tokens")
+            
+            contextual_tokens = self.token_counter.count_tokens(contextual_memory)
+            logger.debug(f"🧠 Memory candidates: {len(dth_candidates)}, contextual tokens: {contextual_tokens}")
+            
+        else:
+            contextual_memory = ""
+            contextual_tokens = 0
+            # Secondary fallback: include a tiny slice of recent tape if available
+            try:
+                recent_candidates: List[str] = []
+                if hasattr(self.memory_system, 'get_recent'):
+                    items = await self.memory_system.get_recent(limit=4)
+                elif self.tape_store is not None and hasattr(self.tape_store, 'get_recent'):
+                    items = await self._maybe_await(self.tape_store.get_recent(limit=4))
+                else:
+                    items = []
+                for e in (items or []):
+                    if isinstance(e, dict):
+                        txt = e.get('content', '')
+                    else:
+                        txt = getattr(e, 'content', '')
+                    if txt:
+                        recent_candidates.append(str(txt))
+                if recent_candidates:
+                    contextual_memory = "\n\n".join(recent_candidates)
+                    contextual_tokens = self.token_counter.count_tokens(contextual_memory)
+            except Exception:
+                pass
+        
+        # 3. Recent conversation context (use remaining contextual memory budget)
+        # If we are answering a personal-facts question, reduce recency to avoid hallucinated carryover
+        strict_answer_mode = self._is_personal_facts_candidate(user_input)
+        remaining_contextual_budget = self.budget.contextual_memory - contextual_tokens
+        recent_context_messages = []
+        recent_context_tokens = 0
 
-        # 3. Build recent conversation context with dynamic budget
-        # Use remaining space after system + summary + facts + current input + buffer
-        current_tokens_est = self.token_counter.count_tokens(user_input)
-        dynamic_recent_budget = max(
-            0,
-            self.max_tokens - (system_tokens + summary_tokens + facts_tokens + snippets_tokens + dth_tokens + current_tokens_est + self.budget.buffer)
-        )
-        recent_tokens_budget = dynamic_recent_budget
-        recent_context = self._build_recent_context(recent_tokens_budget)
-        recent_tokens = self.token_counter.count_tokens(str(recent_context))
+        # When memory contributes, cap recents to avoid drowning it out
+        try:
+            recents_cap = int(os.getenv('SC_RECENTS_CAP_WITH_MEMORY_TOKENS', '300'))
+        except Exception:
+            recents_cap = 300
+        effective_recent_budget = remaining_contextual_budget
+        if contextual_tokens > 0 and recents_cap > 0:
+            effective_recent_budget = min(remaining_contextual_budget, recents_cap)
 
-        # 4. Current user input
-        # IMPORTANT: Do not include the current user message here, since the
-        # context aggregator will append it automatically when we forward the
-        # original TranscriptionFrame. Including it here would duplicate it.
-        current_user = None
-        current_tokens = self.token_counter.count_tokens(user_input)
+        if not strict_answer_mode and effective_recent_budget > 50:  # Only if we have meaningful space
+            recent_context_messages = self._build_recent_context(effective_recent_budget)
+            recent_context_tokens = sum(
+                self.token_counter.count_tokens(msg.get('content', '')) 
+                for msg in recent_context_messages
+            )
+        
+        # 4. Current input (budgeted)
+        current_content = self._trim_to_token_budget(user_input, self.budget.current_input)
+        current_tokens = self.token_counter.count_tokens(current_content)
 
-        # 5. Assemble final context
+        # 5. Assemble final context messages
         messages = []
         
-        # System message with facts
-        full_system = system_prompt
-        if summary_block:
-            full_system += summary_block
-        if facts_context:
-            full_system += f"\n\n{facts_context}"
-        if snippets_context:
-            full_system += f"\n\n{snippets_context}"
-        if dth_context:
-            full_system += f"\n\n{dth_context}"
+        # System message with retrieved memory (not recent conversation)
+        full_system_content = system_content
+        history_mode = self._is_history_candidate(user_input)
+        if contextual_memory:
+            if strict_answer_mode:
+                full_system_content += (
+                    "\n\n<verified_memory>\n" + contextual_memory + "\n</verified_memory>" 
+                    "\n<answer_policy>\n"
+                    "When answering about personal facts, base your answer ONLY on <verified_memory>.\n"
+                    "If the requested attribute is missing, say you don't have it recorded yet and ask if the user wants to add it.\n"
+                    "Do not infer age/breed/numbers; do not guess.\n"
+                    "</answer_policy>"
+                )
+            elif history_mode:
+                full_system_content += (
+                    "\n\n<conversation_snippets>\n" + contextual_memory + "\n</conversation_snippets>" 
+                    "\n<answer_policy>\n"
+                    "Continue naturally from the snippets in <conversation_snippets>.\n"
+                    "Use them as the immediate prior context.\n"
+                    "Do not greet; avoid repeating the snippets.\n"
+                    "</answer_policy>"
+                )
+            else:
+                full_system_content += f"\n\n<dth_memories>\n{contextual_memory}\n</dth_memories>"
+        else:
+            # Minimal facts include (tiny, always helpful) when no other memory present
+            try:
+                min_facts = int(os.getenv('SC_MIN_FACTS_IN_CONTEXT', '2'))
+            except Exception:
+                min_facts = 2
+            minimal_block = ""
+            if min_facts > 0 and hasattr(self.memory_system, 'facts_graph'):
+                try:
+                    top_facts = await self._maybe_await(self.memory_system.facts_graph.get_top_facts(limit=min_facts))
+                    if top_facts:
+                        minimal_block = self._format_facts_context(top_facts)
+                except Exception:
+                    minimal_block = ""
+            if minimal_block:
+                full_system_content += f"\n\n<facts_memory>\n{minimal_block}\n</facts_memory>"
         
-        messages.append({"role": "system", "content": full_system})
+        messages.append({"role": "system", "content": full_system_content})
         
-        # Recent conversation
-        messages.extend(recent_context)
+        # Add recent conversation exchanges as proper user/assistant message pairs
+        messages.extend(recent_context_messages)
         
-        # Do NOT append current user input here to avoid duplication.
-        
-        # 6. Verify token count
-        total_tokens = (system_tokens + summary_tokens + facts_tokens + snippets_tokens + 
-                       recent_tokens + current_tokens)
+        # Do NOT append current user input here.
+        # The context aggregator will attach the current TranscriptionFrame as the user turn.
+
+        # 6. Verify total tokens (should be exactly our budget)
+        total_tokens = system_tokens + contextual_tokens + recent_context_tokens + current_tokens
         
         # Track metrics
         self.context_builds += 1
@@ -522,16 +800,69 @@ class SmartContextManager(FrameProcessor):
         
         elapsed_ms = (time.time() - start_time) * 1000
         
-        logger.info(f"🧠 Built fixed context: {total_tokens}/{self.max_tokens} tokens "
-                   f"({elapsed_ms:.1f}ms)")
-        logger.debug(f"   System: {system_tokens}, Summary: {summary_tokens}, Facts: {facts_tokens}, Snippets: {snippets_tokens}, "
-                    f"Recent: {recent_tokens} (budget {recent_tokens_budget}), Current: {current_tokens}")
+        # Show final context summary
+        dspy_status = "DSPy✨" if self.dspy_optimizer and contextual_tokens > 0 else "Manual📝"
+        logger.info(f"🚀 UNIFIED CONTEXT BUILT: {total_tokens}/{self.budget.total} tokens ({elapsed_ms:.1f}ms)")
+        logger.info(f"   🎭 System: {system_tokens} tokens")
+        logger.info(f"   🧠 Retrieved Memory: {contextual_tokens} tokens ({dspy_status})")
+        logger.info(f"   💬 Recent Context: {recent_context_tokens} tokens ({len(recent_context_messages)} messages)")
+        logger.info(f"   📝 Current Input: {current_tokens} tokens")
+        logger.info(f"   🎯 Generation Workspace: {self.budget.generation_workspace} tokens (reserved)")
         
-        # Warn if over budget
-        if total_tokens > self.max_tokens:
-            logger.warning(f"⚠️  Context over budget: {total_tokens}/{self.max_tokens}")
-            
+        # Store metrics for observability
+        self._last_context_build_metrics = {
+            'unified_approach': True,
+            'dspy_enabled': self.dspy_optimizer is not None,
+            'block_tokens': {
+                'system_prompt': system_tokens,
+                'contextual_memory': contextual_tokens,
+                'current_input': current_tokens,
+                'total': total_tokens,
+                'generation_workspace_reserved': self.budget.generation_workspace
+            },
+            'performance': {
+                'build_time_ms': elapsed_ms,
+                'total_builds': self.context_builds,
+                'avg_tokens': self.avg_context_tokens
+            }
+        }
+        
         return messages
+    
+    def _trim_to_token_budget(self, text: str, max_tokens: int) -> str:
+        """Trim text to fit within token budget"""
+        if not text or max_tokens <= 0:
+            return ""
+        
+        current_tokens = self.token_counter.count_tokens(text)
+        if current_tokens <= max_tokens:
+            return text
+        
+        # Trim by sentences first, then by words if needed
+        sentences = text.split('. ')
+        if len(sentences) > 1:
+            # Try to keep complete sentences
+            result = ""
+            for sentence in sentences:
+                candidate = result + sentence + ". " if result else sentence + ". "
+                if self.token_counter.count_tokens(candidate.strip()) <= max_tokens:
+                    result = candidate
+                else:
+                    break
+            if result.strip():
+                return result.strip()
+        
+        # Fallback: trim by words
+        words = text.split()
+        result = ""
+        for word in words:
+            candidate = result + " " + word if result else word
+            if self.token_counter.count_tokens(candidate) <= max_tokens:
+                result = candidate
+            else:
+                break
+                
+        return result.strip() if result else text[:max_tokens * 3]  # Rough character fallback
 
     def _is_semantically_useful(self, text: str) -> bool:
         try:
@@ -555,6 +886,80 @@ class SmartContextManager(FrameProcessor):
             return False
         # Consider it semantic if it has any alphanumeric characters
         return any(ch.isalnum() for ch in text)
+
+    def _is_memory_candidate(self, text: str) -> bool:
+        """Cheap lexical gate to decide if we should hit memory.
+
+        Triggers for facts/history questions without running classifier:
+        - Contains a question mark
+        - Possessive/personal facts: 'my ', "what's my", 'where do I'
+        - History/continuation cues: 'we talked', 'last time', 'continue', 'resume',
+          'where we left', 'previous session', 'again'
+        """
+        try:
+            s = (text or '').strip().lower()
+            if not s:
+                return False
+            if '?' in s:
+                return True
+            # Possessive/personal
+            if any(k in s for k in (
+                'my ', "what's my", 'what is my', 'where do i', 'who is my', 'when did i'
+            )):
+                return True
+            # History/continuation or recall intents
+            if any(k in s for k in (
+                'we talked', 'we discussed', 'last time', 'continue', 'resume',
+                'where we left', 'previous session', 'again', 'remember', 'recall', 'remind'
+            )):
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _should_extract_facts(self, text: str) -> bool:
+        """Gate expensive fact extraction; skip short/noisy utterances."""
+        try:
+            s = (text or '').strip()
+            if not s:
+                return False
+            # Require a minimum of words and characters
+            words = [w for w in s.split() if any(c.isalpha() for c in w)]
+            if len(words) < max(3, self._tape_min_words):
+                return False
+            if len(s) < max(15, self._tape_min_len):
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _is_personal_facts_candidate(self, text: str) -> bool:
+        """Detect if the query likely targets personal facts (schema-agnostic)."""
+        try:
+            s = (text or '').strip().lower()
+            if not s:
+                return False
+            if any(k in s for k in ('my ', "what's my", 'what is my', 'who is my')):
+                if any(k in s for k in ('name', 'birthday', 'age', 'email', 'phone', 'address', 'dog', 'pet')):
+                    return True
+            if (('dog' in s or 'pet' in s) and ('name' in s or 'called' in s) and '?' in s):
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _is_history_candidate(self, text: str) -> bool:
+        try:
+            s = (text or '').strip().lower()
+            if not s:
+                return False
+            triggers = (
+                'continue', 'resume', 'pick up', 'where we left', 'last conversation',
+                'previous conversation', 'carry on', 'go on', 'keep going'
+            )
+            return any(t in s for t in triggers)
+        except Exception:
+            return False
 
     def _normalize_user_input(self, text: str) -> str:
         try:
@@ -615,6 +1020,83 @@ class SmartContextManager(FrameProcessor):
             return user_text
         except Exception:
             return user_text
+
+    def _mmr_select(self, query: str, candidates: List[str], token_budget: int,
+                     lambda_div: float = 0.7, max_items: int = 6) -> List[str]:
+        """Diversity-aware selection (MMR-like) without external models.
+
+        - Relevance: prefer complete, longer, user-led statements
+        - Diversity: penalize high lexical overlap with already-selected
+        """
+        try:
+            if not candidates or token_budget <= 0:
+                return []
+            # Deduplicate early
+            pool = list(dict.fromkeys(candidates))
+            # Simple relevance
+            def rel(text: str) -> float:
+                s = (text or '').strip()
+                score = 0.0
+                if s.endswith(('.', '?', '!')):
+                    score += 0.8
+                sl = s.lower()
+                if sl.startswith('i ') or sl.startswith('my '):
+                    score += 0.5
+                # Length in tokens (scaled)
+                try:
+                    score += min(1.0, self.token_counter.count_tokens(s) / 50.0)
+                except Exception:
+                    score += min(1.0, len(s) / 200.0)
+                return score
+            def jacc(a: set, b: set) -> float:
+                if not a or not b:
+                    return 0.0
+                inter = len(a & b)
+                union = len(a | b)
+                return inter / union if union else 0.0
+            selected: List[str] = []
+            selected_sets: List[set] = []
+            budget_left = token_budget
+            # Greedy loop
+            while pool and len(selected) < max_items and budget_left > 0:
+                best = None
+                best_score = -1e9
+                # Check first N to save time
+                for c in pool[:20]:
+                    c_set = set(c.lower().split())
+                    redundancy = max((jacc(c_set, s) for s in selected_sets), default=0.0)
+                    score = rel(c) - lambda_div * redundancy
+                    if score > best_score:
+                        best_score = score
+                        best = c
+                if best is None:
+                    break
+                tok = self.token_counter.count_tokens(best)
+                if tok > budget_left:
+                    pool.remove(best)
+                    continue
+                selected.append(best)
+                selected_sets.append(set(best.lower().split()))
+                budget_left -= tok
+                pool.remove(best)
+            return selected
+        except Exception:
+            return []
+
+    async def _get_session_info_cached(self, speaker_id: str) -> dict:
+        """Fetch session info with simple TTL cache to avoid per-turn DB reads."""
+        now = time.time()
+        if self._session_info_cache and (now - self._session_info_cache_ts) < self._session_info_ttl_s:
+            return self._session_info_cache
+        try:
+            info = await self._maybe_await(self.memory_system.facts_graph.get_session_info(speaker_id))
+            if isinstance(info, dict):
+                self._session_info_cache = info
+                self._session_info_cache_ts = now
+                return info
+        except Exception:
+            pass
+        return self._session_info_cache or {}
 
     async def get_initial_context_frame(self) -> LLMMessagesUpdateFrame:
         """Build an initial context frame using current facts and session status."""
@@ -764,19 +1246,52 @@ class SmartContextManager(FrameProcessor):
             return text or ''
 
     def _load_budget_from_env(self) -> TokenBudget:
-        """Load token budget from environment variables if set."""
-        def _get(name: str, default: int) -> int:
+        """Load unified token budget.
+
+        If explicit env overrides are present, use them. Otherwise, scale from
+        the configured `max_tokens` (model window) using sane defaults.
+        """
+        def _get_int(name: str) -> Optional[int]:
             try:
                 val = os.getenv(name)
-                return int(val) if val is not None else default
+                return int(val) if val is not None else None
             except Exception:
-                return default
+                return None
+
+        env_system = _get_int('SC_BUDGET_SYSTEM')
+        env_memory = _get_int('SC_BUDGET_MEMORY')
+        env_input = _get_int('SC_BUDGET_INPUT')
+        env_gen = _get_int('SC_BUDGET_GENERATION')
+
+        if any(v is not None for v in (env_system, env_memory, env_input, env_gen)):
+            # Use env-provided values with fallbacks to defaults
+            system = env_system if env_system is not None else int(self.max_tokens * 0.10)
+            memory = env_memory if env_memory is not None else int(self.max_tokens * 0.35)
+            current = env_input if env_input is not None else int(self.max_tokens * 0.10)
+            generation = env_gen if env_gen is not None else max(0, self.max_tokens - (system + memory + current))
+        else:
+            # Scale from model window
+            system = int(self.max_tokens * 0.12)      # 12% instructions & identity
+            memory = int(self.max_tokens * 0.30)      # 30% unified memory
+            current = int(self.max_tokens * 0.10)     # 10% current input
+            generation = max(0, self.max_tokens - (system + memory + current))
+
+        # Safety clamp (avoid exceeding model tokens)
+        used = system + memory + current
+        if used > self.max_tokens:
+            # Scale down proportionally
+            scale = max(0.1, self.max_tokens / float(used))
+            system = int(system * scale)
+            memory = int(memory * scale)
+            current = max(1, int(current * scale))
+            used = system + memory + current
+            generation = max(0, self.max_tokens - used)
+
         return TokenBudget(
-            system_prompt=_get('SC_BUDGET_SYSTEM', 500),
-            facts_context=_get('SC_BUDGET_FACTS', 800),
-            recent_conversation=_get('SC_BUDGET_RECENT', 2000),
-            current_input=_get('SC_BUDGET_INPUT', 696),
-            buffer=_get('SC_BUDGET_BUFFER', 100),
+            system_prompt=system,
+            contextual_memory=memory,
+            current_input=current,
+            generation_workspace=generation
         )
     
     async def _generate_dynamic_prompt(self) -> str:
@@ -837,11 +1352,11 @@ class SmartContextManager(FrameProcessor):
         display_name = (user_stated_name if (use_fact_name and user_stated_name) else spk)
         session_info += f"\nSpeaker: {display_name}"
 
-        # Total sessions (lifetime) from facts graph, if available
+        # Total sessions (lifetime) from facts graph, if available (cached)
         sessions_total = None
         try:
             if hasattr(self.memory_system, 'facts_graph'):
-                info = await self._maybe_await(self.memory_system.facts_graph.get_session_info(spk))
+                info = await self._get_session_info_cached(spk)
                 self._trace_sessions('dynamic_prompt_session_info', key=spk, info=info)
                 # Enhanced logging for session count debugging
                 logger.info(f"🔍 Session count debug - Speaker: {spk}, Info: {info}")
@@ -985,25 +1500,66 @@ class SmartContextManager(FrameProcessor):
             q = (query or '').strip()
             if not q:
                 return []
-            response = await self.memory_system.process_query(q)
-            
-            # Handle both object and dict response formats for classification
-            if hasattr(response, 'classification'):
-                intent_name = getattr(response.classification.intent, 'name', '').upper()
-            else:
-                classification = response.get('classification', {})
-                intent_name = classification.get('intent', '').upper()
-            
-            if intent_name not in ('CONVERSATION_HISTORY', 'EPISODIC_MEMORY'):
+
+            # Heuristic triggers for history retrieval
+            qlow = q.lower()
+            triggers = (
+                'we talked', 'we discussed', 'last time', 'previous session',
+                'pick up where', 'continue from', 'where we left', 'resume', 'again'
+            )
+            heuristic = any(t in qlow for t in triggers)
+
+            # Query memory system with speaker context (if supported)
+            ctx = {'speaker_id': self._speaker_key(), 'purpose': 'snippets'}
+            try:
+                response = await self.memory_system.process_query(q, context=ctx)  # type: ignore[arg-type]
+            except TypeError:
+                response = await self.memory_system.process_query(q)
+
+            # Classification intent (best-effort)
+            intent_name = ''
+            try:
+                if hasattr(response, 'classification'):
+                    intent_name = getattr(response.classification.intent, 'name', '').upper()
+                else:
+                    classification = response.get('classification', {})
+                    intent_name = classification.get('intent', '').upper()
+            except Exception:
+                intent_name = ''
+
+            allowed = heuristic or (intent_name in ('CONVERSATION_HISTORY', 'EPISODIC_MEMORY'))
+            reason = 'heuristic' if heuristic else ('classifier' if allowed else 'blocked')
+
+            if not allowed:
+                logger.debug(f"[SCM:snippets] Skipping snippets (reason={reason}, intent={intent_name})")
                 return []
-            
-            # Handle both object and dict response formats for results
-            if hasattr(response, 'results'):
-                results_list = response.results
-            else:
-                results_list = response.get('results', [])
-                
-            return [r for r in results_list if getattr(r, 'source_store', '') == 'tape'][:limit]
+
+            # Prefer tape results
+            try:
+                if hasattr(response, 'results'):
+                    results_list = response.results
+                else:
+                    results_list = response.get('results', [])
+            except Exception:
+                results_list = []
+
+            tape = [r for r in results_list if getattr(r, 'source_store', '') == 'tape']
+            if tape:
+                logger.debug(f"[SCM:snippets] Selected {len(tape[:limit])}/{len(tape)} tape results (reason={reason}, intent={intent_name})")
+                return tape[:limit]
+
+            # Fallback: last N recent tape entries if available
+            try:
+                if hasattr(self.memory_system, 'get_recent'):
+                    recent_items = await self.memory_system.get_recent(limit=limit)
+                    if recent_items:
+                        logger.debug(f"[SCM:snippets] Using fallback recent {len(recent_items)} items (reason={reason})")
+                        return recent_items[:limit]
+            except Exception:
+                pass
+
+            logger.debug(f"[SCM:snippets] No snippets found (reason={reason})")
+            return []
         except Exception:
             return []
     
@@ -1246,18 +1802,34 @@ class SmartContextManager(FrameProcessor):
         # Maintain sliding window
         if len(self.recent_exchanges) > self.max_recent_exchanges:
             self.recent_exchanges.pop(0)
-        # Also write to tape store
+        # Also write to tape store (non-blocking, with timeout)
         try:
             if self.tape_store is not None and response:
-                await self._maybe_await(
-                    self.tape_store.add_entry(
-                        role='assistant',
-                        content=response,
-                        speaker_id=self._speaker_key()
-                    )
-                )
+                self._enqueue_tape_write('assistant', response)
         except Exception as e:
-            logger.debug(f"TapeStore write (assistant) failed: {e}")
+            logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
+
+    def _enqueue_tape_write(self, role: str, content: str) -> None:
+        try:
+            asyncio.create_task(self._write_tape_entry(role, content))
+        except Exception:
+            pass
+
+    async def _write_tape_entry(self, role: str, content: str) -> None:
+        try:
+            if not self.tape_store or not content:
+                return
+            coro = self.tape_store.add_entry(
+                role=role,
+                content=content,
+                speaker_id=self._speaker_key()
+            )
+            try:
+                await asyncio.wait_for(self._maybe_await(coro), timeout=self._tape_write_timeout_s)
+            except asyncio.TimeoutError:
+                logger.debug(f"TapeStore write ({role}) timed out after {self._tape_write_timeout_s}s; dropping")
+        except Exception as e:
+            logger.debug(f"TapeStore write ({role}) failed: {e}")
 
     def _expand_short_ack(self, user_text: str) -> str:
         """If last assistant asked a question and user replies with a short ack,
@@ -1327,7 +1899,15 @@ class SmartContextManager(FrameProcessor):
                         role = 'user'
                         content = ln
                     chat.append({"role": role, "content": content})
-                summary = summarize_dialogue(chat)
+                # Offload blocking HTTP call to thread to avoid blocking event loop
+                import asyncio as _asyncio
+                summary = await _asyncio.get_event_loop().run_in_executor(None, lambda: summarize_dialogue(chat))
+                # Guard against overly short or generic summaries
+                try:
+                    if not summary or len(summary.strip()) < 80 or 'brief conversation' in summary.lower():
+                        summary = "\n".join(lines[-6:])
+                except Exception:
+                    pass
             except Exception as e:
                 logger.debug(f"Abstract summary failed, falling back: {e}")
         if not summary:
@@ -1377,7 +1957,7 @@ class SmartContextManager(FrameProcessor):
                 try:
                     from utils.abstract_summarizer import summarize_dialogue
                     chat = []
-                    for ln in lines[-12:]:
+                    for ln in lines[-18:]:
                         if ln.startswith('[assistant]'):
                             role = 'assistant'
                             content = ln[len('[assistant]'):].strip()
@@ -1388,8 +1968,16 @@ class SmartContextManager(FrameProcessor):
                             role = 'user'
                             content = ln
                         chat.append({"role": role, "content": content})
+                    # Use more lines for finalization to improve coverage
                     logger.info(f"🤖 Calling summarize_dialogue with {len(chat)} messages for session finalization")
-                    summary = summarize_dialogue(chat)
+                    import asyncio as _asyncio
+                    summary = await _asyncio.get_event_loop().run_in_executor(None, lambda: summarize_dialogue(chat))
+                    # Guard: prefer a more informative fallback if too short/generic
+                    try:
+                        if not summary or len(summary.strip()) < 80 or 'brief conversation' in summary.lower():
+                            summary = "\n".join(lines[-8:]) if lines else ''
+                    except Exception:
+                        pass
                     logger.info(f"✅ Successfully generated session summary: {len(summary)} chars")
                 except Exception as e:
                     logger.error(f"❌ Abstract summary on finalize failed, falling back: {e}")
@@ -1443,8 +2031,8 @@ class SmartContextManager(FrameProcessor):
 
 
 # Factory function for easy integration
-def create_smart_context_manager(context, facts_db_path="data/facts.db", max_tokens=4096):
-    """Create SmartContextManager instance"""
+def create_smart_context_manager(context, facts_db_path="data/facts.db", max_tokens=8192):
+    """Create SmartContextManager instance with unified 8K allocation"""
     return SmartContextManager(
         context=context,
         facts_db_path=facts_db_path,
