@@ -1,0 +1,107 @@
+{
+  "test_results": {
+    "total_field_energy": 4.52767830722024,
+    "strong_attractors": 1,
+    "field_states": {
+      "\u2606": {
+        "symbol": "\u2606",
+        "intensity": 1.0,
+        "gradient": [
+          -0.0759063942051465,
+          0.04766473023278449
+        ],
+        "attractor_strength": 0.49999999999999994,
+        "coupling": {
+          "\u25ef": 0.4,
+          "\u2727": 0.8
+        }
+      },
+      "\u2727": {
+        "symbol": "\u2727",
+        "intensity": 1.0,
+        "gradient": [
+          0.30207088016110084,
+          0.2109375947013685
+        ],
+        "attractor_strength": 0.49999999999999994,
+        "coupling": {
+          "\u26a1": 0.7,
+          "\u2606": 0.6
+        }
+      },
+      "\u25c8": {
+        "symbol": "\u25c8",
+        "intensity": 0.0032986122238118205,
+        "gradient": [
+          0.0,
+          0.0
+        ],
+        "attractor_strength": 0.0,
+        "coupling": {}
+      },
+      "\u221e": {
+        "symbol": "\u221e",
+        "intensity": 0.28747787482343673,
+        "gradient": [
+          0.0,
+          0.0
+        ],
+        "attractor_strength": 0.0,
+        "coupling": {
+          "\u25ef": 0.5,
+          "\u25b2": 0.4
+        }
+      },
+      "\u27f2": {
+        "symbol": "\u27f2",
+        "intensity": 0.0008779118985185653,
+        "gradient": [
+          0.0,
+          0.0
+        ],
+        "attractor_strength": 0.0,
+        "coupling": {}
+      },
+      "\u26a1": {
+        "symbol": "\u26a1",
+        "intensity": 0.7909210664395949,
+        "gradient": [
+          -0.033630955583550226,
+          -0.12809352014394693
+        ],
+        "attractor_strength": 0.44999999999999996,
+        "coupling": {
+          "\u25ef": 0.5,
+          "\u2727": 0.7
+        }
+      },
+      "\u25ef": {
+        "symbol": "\u25ef",
+        "intensity": 1.0,
+        "gradient": [
+          -0.1581587766399412,
+          0.1139273163851153
+        ],
+        "attractor_strength": 0.65,
+        "coupling": {
+          "\u26a1": 0.6,
+          "\u2606": 0.4
+        }
+      },
+      "\u25b2": {
+        "symbol": "\u25b2",
+        "intensity": 0.4451028418348781,
+        "gradient": [
+          -0.09360782915072441,
+          -0.02939994805109647
+        ],
+        "attractor_strength": 0.25,
+        "coupling": {
+          "\u221e": 0.4,
+          "\u2606": 0.5
+        }
+      }
+    },
+    "emergent_behaviors_detected": true
+  }
+}

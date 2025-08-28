@@ -353,6 +353,60 @@ class PipelineBuilder:
         voice_recognition.set_callbacks(on_speaker_changed, on_speaker_enrolled)
         processors['voice_recognition'] = voice_recognition
         
+        # Neural field voice processor for consciousness integration
+        neural_field_processor = None
+        if config.consciousness.enabled:
+            try:
+                from processors.neural_field_voice_processor import create_neural_field_voice_processor
+                
+                # Create neural field processor (consciousness will be set later by smart context manager)
+                neural_field_processor = create_neural_field_voice_processor(
+                    field_influence_strength=0.7,
+                    enable_prosody_mapping=True
+                )
+                processors['neural_field_processor'] = neural_field_processor
+                logger.info("🧠 Neural field voice processor enabled")
+                
+                # Enhanced mood analyzer with field integration
+                try:
+                    from processors.enhanced_mood_analyzer import attach_enhanced_mood_analyzer
+                    
+                    # Use the memory processor for tape_store (if available)
+                    tape_store = memory_processor if memory_processor else None
+                    
+                    if tape_store:
+                        enhanced_mood_analyzer = attach_enhanced_mood_analyzer(
+                            tee=audio_tee,
+                            vad_bridge=vad_bridge,
+                            tape_store=tape_store,
+                            neural_field_processor=neural_field_processor,
+                            sample_rate=config.audio.stt_sample_rate
+                        )
+                        processors['enhanced_mood_analyzer'] = enhanced_mood_analyzer
+                        logger.info("🎵🧠 Enhanced mood analyzer with field integration enabled")
+                    else:
+                        # Fallback to basic mood analyzer
+                        from processors.mood_analyzer import attach_mood_analyzer
+                        basic_mood_analyzer = attach_mood_analyzer(
+                            tee=audio_tee,
+                            vad_bridge=vad_bridge,
+                            tape_store=memory_processor if memory_processor else None,
+                            sample_rate=config.audio.stt_sample_rate
+                        )
+                        processors['mood_analyzer'] = basic_mood_analyzer
+                        logger.info("🎵 Basic mood analyzer enabled (no field integration)")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to setup enhanced mood analyzer: {e}")
+                    processors['enhanced_mood_analyzer'] = None
+                    
+            except Exception as e:
+                logger.warning(f"Failed to setup neural field voice processor: {e}")
+                processors['neural_field_processor'] = None
+        else:
+            processors['neural_field_processor'] = None
+            logger.info("🧠 Neural field voice processor disabled (consciousness disabled)")
+        
         return processors
     
     async def _setup_transport(self, webrtc_connection) -> SmallWebRTCTransport:
@@ -510,6 +564,34 @@ class PipelineBuilder:
         smart_ctx = self._create_smart_context_manager(context, processors.get('memory_processor'))
         # Keep a reference for initial context on client_ready
         self._smart_ctx_ref = smart_ctx
+        
+        # Link neural field processor with consciousness instance if available
+        neural_field_processor = processors.get('neural_field_processor')
+        if neural_field_processor and hasattr(smart_ctx, '_consciousness_instance'):
+            consciousness_instance = getattr(smart_ctx, '_consciousness_instance', None)
+            if consciousness_instance:
+                neural_field_processor.set_consciousness_instance(consciousness_instance)
+                logger.info("🧠 Neural field processor linked with consciousness instance")
+            
+            # Also link with hierarchical memory if available
+            hierarchical_memory = getattr(smart_ctx, 'hierarchical_memory', None)
+            if hierarchical_memory:
+                neural_field_processor.set_hierarchical_memory(hierarchical_memory)
+                logger.info("🧠 Neural field processor linked with hierarchical memory")
+        
+        # Create field response enhancer if neural field processor is available
+        field_response_enhancer = None
+        if neural_field_processor:
+            from processors.field_response_enhancer import create_field_response_enhancer
+            consciousness_instance = getattr(smart_ctx, '_consciousness_instance', None)
+            
+            field_response_enhancer = create_field_response_enhancer(
+                neural_field_processor=neural_field_processor,
+                consciousness_instance=consciousness_instance,
+                field_context_strength=0.6,
+                enable_tone_adaptation=True
+            )
+            logger.info("🧠📝 Field response enhancer created")
 
         components = [
             transport.input(),
@@ -517,6 +599,7 @@ class PipelineBuilder:
             processors['audio_tee'],
             processors['vad_bridge'],
             services['stt'],
+            processors.get('neural_field_processor'),  # Neural field consciousness processing - RIGHT AFTER STT
             processors['memory_processor'],  # Stateless memory processor - MOVED RIGHT AFTER STT
             processors['dictation_mode'],  # Must be after STT but before LLM
             processors['music_mode'],  # Music mode filtering (after STT, before LLM)
@@ -531,8 +614,10 @@ class PipelineBuilder:
             context_aggregator.user(),  # Triggers LLM with SmartContextManager's updated context
             # Ensure clean, alternating message history before calling the LLM
             processors.get('message_deduplicator'),
+            # Enhance LLM messages with neural field context for consciousness-aware responses
+            field_response_enhancer,  # Field-aware response generation - RIGHT BEFORE LLM
             # processors['memory_injector'],  # Traditional memory injector (None for stateless)  
-            services['llm'], # Main LLM using memory aware context
+            services['llm'], # Main LLM using memory aware context with field enhancement
             # Fix cumulative duplication patterns in streaming tokens from the LLM
             processors.get('streaming_deduplicator'),
             # Optional greeting filter to suppress redundant introductions

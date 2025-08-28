@@ -1,0 +1,23 @@
+{
+  "timestamp": 1756340461.985276,
+  "overall_score": 1.0,
+  "memory_formation_score": 1.0,
+  "symbol_detection_score": 1.0,
+  "importance_scoring_score": 1.0,
+  "memory_retrieval_score": 1.0,
+  "avg_processing_time": 0.8164155006408691,
+  "consciousness_growth": {
+    "memories_added": 10,
+    "thoughts_generated": 5,
+    "symbol_patterns": {
+      "\u25ef": 90,
+      "\u2606": 58,
+      "\u2727": 44,
+      "\u26a1": 8,
+      "\u25b2": 34,
+      "\u25c8": 31,
+      "\u221e": 43,
+      "\u27f2": 35
+    }
+  }
+}
