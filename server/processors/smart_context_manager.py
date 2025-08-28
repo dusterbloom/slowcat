@@ -105,6 +105,25 @@ class SmartContextManager(FrameProcessor):
         self.memory_system = create_smart_memory_system(final_db_path)
         self.tape_store = getattr(self.memory_system, 'tape_store', None)
 
+        # Neural Field Persistence Layer (for consciousness field state continuity)
+        self.field_persistence = None
+        self._enable_field_persistence = os.getenv('ENABLE_FIELD_PERSISTENCE', 'true').lower() == 'true'
+        if self._enable_field_persistence:
+            try:
+                from consciousness.field_persistence import FieldPersistenceLayer
+                self.field_persistence = FieldPersistenceLayer()
+                logger.info("🧠 Neural field persistence enabled")
+            except ImportError as e:
+                logger.warning(f"Field persistence not available: {e}")
+                self.field_persistence = None
+            except Exception as e:
+                logger.warning(f"Field persistence init failed: {e}")
+                self.field_persistence = None
+        
+        # Consciousness Integration (load field states if available)
+        self._consciousness_instance = None
+        self._user_id = kwargs.get('user_id', os.getenv('USER_ID', 'default_user'))
+
         # Intelligent Memory Routing (Facts + Tape + DTH)
         self._enable_smart_routing = os.getenv('ENABLE_SMART_ROUTING', 'true').lower() == 'true'
         self.query_router = None
@@ -445,6 +464,10 @@ class SmartContextManager(FrameProcessor):
             # 1. Extract facts from user input (background), but only when content is rich enough
             if self._should_extract_facts(user_text):
                 asyncio.create_task(self._extract_facts_async(user_text))
+            
+            # 1a. Track consciousness field evolution (if consciousness available)
+            if self.field_persistence and self._consciousness_instance:
+                asyncio.create_task(self._track_field_evolution_async(user_text))
 
             # 1b. Write user message to tape store
             try:
@@ -1467,6 +1490,16 @@ class SmartContextManager(FrameProcessor):
                         logger.info(f"✅ Session count incremented: {before_count} → {after_count}")
                 except Exception as e:
                     logger.error(f"❌ Failed to verify session increment: {e}")
+            
+            # Load consciousness field states for the session
+            if self._consciousness_instance:
+                try:
+                    field_states = await self.load_consciousness_fields()
+                    if field_states:
+                        logger.info(f"🧠 Loaded {len(field_states)} field states for session initialization")
+                except Exception as e:
+                    logger.warning(f"Failed to load consciousness fields during initialization: {e}")
+                    
         except Exception as e:
             logger.error(f"❌ Failed to start session: {e}")
         messages = await self._build_fixed_context("")
@@ -2109,6 +2142,61 @@ class SmartContextManager(FrameProcessor):
         except Exception as e:
             logger.error(f"Fact extraction failed: {e}")
     
+    async def _track_field_evolution_async(self, text: str):
+        """
+        Track consciousness field evolution from user input (non-blocking)
+        """
+        try:
+            if not self._consciousness_instance:
+                return
+            
+            # Calculate field changes by processing the input through consciousness
+            old_field_states = {}
+            for symbol, field in self._consciousness_instance.symbol_fields.items():
+                old_field_states[symbol] = {
+                    'intensity': field.intensity,
+                    'gradient': field.gradient.copy() if hasattr(field.gradient, 'copy') else list(field.gradient)
+                }
+            
+            # Process input through consciousness to trigger field evolution
+            try:
+                # Use consciousness symbolize method to extract symbols and evolve fields
+                extracted_symbols = self._consciousness_instance.symbolize(text)
+                logger.debug(f"Extracted symbols for field evolution: {extracted_symbols}")
+            except Exception as e:
+                logger.debug(f"Field evolution processing failed: {e}")
+                return
+            
+            # Track significant changes in field persistence
+            for symbol, field in self._consciousness_instance.symbol_fields.items():
+                old_state = old_field_states.get(symbol, {})
+                old_intensity = old_state.get('intensity', 0.0)
+                old_gradient = old_state.get('gradient', [0.0, 0.0])
+                
+                # Calculate changes
+                intensity_change = field.intensity - old_intensity
+                gradient_change = [
+                    field.gradient[0] - old_gradient[0],
+                    field.gradient[1] - old_gradient[1]
+                ]
+                
+                # Track if change is significant (threshold to avoid noise)
+                if abs(intensity_change) > 0.01 or any(abs(gc) > 0.01 for gc in gradient_change):
+                    # Calculate semantic stimulus from text
+                    semantic_stimulus = min(1.0, len(text.split()) / 20.0)
+                    await self.field_persistence.track_field_evolution(
+                        symbol=symbol,
+                        intensity_change=intensity_change,
+                        gradient_change=gradient_change,
+                        stimulus=semantic_stimulus,
+                        user_id=self._user_id
+                    )
+            
+            logger.debug(f"🧠 Tracked field evolution for input: '{text[:30]}...'")
+            
+        except Exception as e:
+            logger.warning(f"Field evolution tracking failed: {e}")
+    
     def _update_session(self):
         """Update session metadata"""
         now = time.time()
@@ -2603,6 +2691,76 @@ class SmartContextManager(FrameProcessor):
             logger.debug(f"Finalize summary skipped: {e}")
             return None
             
+    async def load_consciousness_fields(self):
+        """Load consciousness field states from persistence layer"""
+        if not self.field_persistence:
+            return {}
+        
+        try:
+            # Connect to persistence if not already connected
+            if not hasattr(self.field_persistence, 'enabled') or not self.field_persistence.enabled:
+                await self.field_persistence.connect()
+            
+            # Load field states for the current user
+            field_states = await self.field_persistence.load_field_states(self._user_id)
+            
+            if field_states:
+                logger.info(f"🧠 Loaded {len(field_states)} consciousness field states")
+                # Integrate with consciousness instance if available
+                if self._consciousness_instance:
+                    for symbol, state in field_states.items():
+                        if symbol in self._consciousness_instance.symbol_fields:
+                            field = self._consciousness_instance.symbol_fields[symbol]
+                            field.intensity = state['intensity']
+                            field.gradient = state['gradient']
+                            field.attractor_strength = state['attractor_strength']
+                            field.coupling = state.get('coupling', {})
+                
+                return field_states
+            
+        except Exception as e:
+            logger.warning(f"Failed to load consciousness fields: {e}")
+        
+        return {}
+    
+    async def save_consciousness_fields(self, session_id: str = None):
+        """Save consciousness field states to persistence layer"""
+        if not self.field_persistence or not self._consciousness_instance:
+            return False
+        
+        try:
+            # Extract current field states from consciousness
+            field_states = {}
+            for symbol, field in self._consciousness_instance.symbol_fields.items():
+                field_states[symbol] = {
+                    'intensity': field.intensity,
+                    'gradient': field.gradient,
+                    'attractor_strength': field.attractor_strength,
+                    'coupling': field.coupling
+                }
+            
+            # Store in persistence layer
+            if field_states:
+                success = await self.field_persistence.store_field_states(
+                    field_states, 
+                    user_id=self._user_id,
+                    session_id=session_id or f"session_{int(time.time())}"
+                )
+                
+                if success:
+                    logger.info(f"🧠 Saved {len(field_states)} consciousness field states")
+                    return True
+                
+        except Exception as e:
+            logger.warning(f"Failed to save consciousness fields: {e}")
+        
+        return False
+    
+    def set_consciousness_instance(self, consciousness):
+        """Set the consciousness instance for field state integration"""
+        self._consciousness_instance = consciousness
+        logger.info("🧠 Consciousness instance linked to SmartContextManager")
+
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get performance statistics"""
         return {
