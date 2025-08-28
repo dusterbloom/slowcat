@@ -37,3 +37,10 @@ server/models/sherpa-*/
 # Debug artifacts (do not commit)
 server/server/debug/
 server/server/history.txt
+ 
+# Backups and extracted data (do not commit)
+server/.env.backup.*
+server/memory/*.surql
+server/memory/extracted_data/
+server/scripts/extracted_data/
+server/*_report.json

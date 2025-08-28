@@ -13,6 +13,7 @@ Features:
 """
 
 import spacy
+import re
 from functools import lru_cache
 from typing import List, Dict
 from dataclasses import dataclass
@@ -55,6 +56,116 @@ def _load_spacy_model():
                 continue
         logger.error("❌ No spaCy models found! Install one, e.g.: python -m spacy download en_core_web_sm")
         raise
+
+
+def normalize_entity_text(entity_text: str) -> str:
+    """
+    Normalize entity text to fix fragmentation from STT
+    
+    Fixes:
+    - Spaced names: "Ant onio Mach ado" → "Antonio Machado"  
+    - Spaced words: "Pot ola" → "Potola"
+    - Excessive whitespace and cleanup
+    """
+    if not entity_text or not isinstance(entity_text, str):
+        return entity_text
+        
+    # Store original for comparison
+    original = entity_text.strip()
+    text = original
+    
+    # Step 1: Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Step 2: Fix spaced proper names (common patterns)
+    # Pattern: Capitalized word + space + short fragment + space + capitalized word
+    text = re.sub(r'\b([A-Z][a-z]+)\s+([a-z]{1,4})\s+([A-Z][a-z]+)\b', r'\1\2 \3', text)
+    
+    # Step 3: Enhanced name pattern detection
+    parts = text.split()
+    
+    if len(parts) == 2:
+        # Pattern: "Pe ppy" → "Peppy" (Cap + space + lowercase)
+        # Pattern: "pepp i" → "Peppi" (lowercase + space + lowercase)
+        if ((parts[0][0].isupper() and parts[1][0].islower()) or
+            (parts[0][0].islower() and parts[1][0].islower())) and \
+            len(parts[0]) <= 6 and len(parts[1]) <= 6:
+            # Check if it looks like a fragmented single name
+            total_length = len(parts[0]) + len(parts[1])
+            if 3 <= total_length <= 10:  # Reasonable name length
+                combined = ''.join(parts)
+                # Capitalize first letter if both parts were lowercase
+                if parts[0][0].islower():
+                    text = combined[0].upper() + combined[1:] if combined else text
+                else:
+                    text = combined
+    
+    elif len(parts) == 3:
+        # Pattern: "Pe p py" → "Peppy" (Cap + short + short)
+        if (parts[0][0].isupper() and 
+            all(len(part) <= 4 for part in parts[1:]) and
+            all(part[0].islower() for part in parts[1:])):
+            # Looks like a triple-fragmented name
+            total_length = sum(len(part) for part in parts)
+            if 3 <= total_length <= 10:  # Reasonable name length
+                text = ''.join(parts)
+        
+        # Pattern: "J ohn S mith" → "John Smith" (preserve surnames)
+        elif (parts[0][0].isupper() and parts[2][0].isupper() and
+              len(parts[1]) <= 4 and parts[1][0].islower()):
+            text = parts[0] + parts[1] + ' ' + parts[2]
+    
+    elif len(parts) == 4:
+        # Pattern: "p e p p i" → "Peppi" (all lowercase fragments)  
+        if (all(len(part) <= 3 for part in parts) and
+            all(part[0].islower() for part in parts)):
+            total_length = sum(len(part) for part in parts)
+            if 4 <= total_length <= 12:  # Reasonable name length
+                # Capitalize first letter of combined name
+                combined = ''.join(parts)
+                text = combined[0].upper() + combined[1:] if combined else text
+    
+    # Step 4: Clean up any remaining excessive spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Log significant changes
+    if text != original and len(original) > 3:
+        logger.debug(f"Entity normalized: '{original}' → '{text}'")
+    
+    return text
+
+
+def is_low_quality_entity(entity_text: str, entity_type: str) -> bool:
+    """
+    Filter out low-quality entities that are likely STT artifacts
+    
+    Returns True if entity should be filtered out
+    """
+    if not entity_text or len(entity_text.strip()) <= 1:
+        return True
+        
+    text = entity_text.strip()
+    
+    # Filter single characters or digits
+    if len(text) == 1:
+        return True
+        
+    # Filter pure numbers unless they look like years
+    if text.isdigit():
+        num = int(text)
+        if not (1900 <= num <= 2100):  # Keep reasonable years
+            return True
+    
+    # Filter entities that are mostly single letters with spaces
+    if len(text.replace(' ', '')) <= 2:
+        return True
+        
+    # Filter common STT artifacts
+    artifacts = {'the', 'and', 'or', 'but', 'a', 'an', 'i', 'you', 'we', 'they'}
+    if text.lower() in artifacts:
+        return True
+    
+    return False
 
 
 class HighAccuracyFactExtractor:
@@ -479,14 +590,22 @@ class HighAccuracyFactExtractor:
     
     
     def _extract_entity_facts(self, doc, source_text: str) -> List[Fact]:
-        """Extract facts from named entities"""
+        """Extract facts from named entities with normalization and quality filtering"""
         facts = []
         
         for ent in doc.ents:
-            # Create type facts for entities
+            # Apply entity normalization
+            normalized_text = normalize_entity_text(ent.text)
+            
+            # Filter out low-quality entities
+            if is_low_quality_entity(normalized_text, ent.label_):
+                logger.debug(f"Filtered low-quality entity: '{ent.text}' ({ent.label_})")
+                continue
+            
+            # Create type facts for high-quality entities
             if ent.label_ in ["PERSON", "ORG", "GPE", "PRODUCT"]:
                 facts.append(Fact(
-                    subject=ent.text,
+                    subject=normalized_text,  # Use normalized text
                     predicate="type",
                     value=ent.label_.lower(),
                     confidence=0.8,

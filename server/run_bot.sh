@@ -87,8 +87,8 @@ export LOGURU_LEVEL="${LOGURU_LEVEL:-INFO}"
 # Suppress deprecation about LLMMessagesFrame until we migrate frames
 export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:LLMMessagesFrame is deprecated:DeprecationWarning}"
 
-# Memory system configuration
-export USE_STATELESS_MEMORY=${USE_STATELESS_MEMORY:-true}  # Default to true now
+# Memory system configuration (Surreal-first)
+# Do not pre-set USE_STATELESS_MEMORY here; it's derived from MEMORY_BACKEND below.
 
 # Check Python version (must be 3.12 or earlier for MLX)
 PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -162,8 +162,8 @@ fi
 # ---------------------------------------------
 # Simplified high-level configuration switches
 # ---------------------------------------------
-# MEMORY_BACKEND: sqlite | surreal | stateless
-MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
+# MEMORY_BACKEND: sqlite | surreal | stateless (only honored high-level switch)
+MEMORY_BACKEND=${MEMORY_BACKEND:-surreal}
 # GREETING_MODE: pipeline | model | off
 GREETING_MODE=${GREETING_MODE:-pipeline}
 # FACTS_PROMPT_STYLE: clean | raw
@@ -183,6 +183,10 @@ case "$MEMORY_BACKEND" in
     export USE_SURREALDB=false
     export USE_STATELESS_MEMORY=false ;;
 esac
+
+# Default schema mode for SurrealDB integrations
+# Use graph-native message/session tables unless explicitly overridden
+export SC_SCHEMA_MODE=${SC_SCHEMA_MODE:-graph}
 
 case "$GREETING_MODE" in
   pipeline)
@@ -205,10 +209,6 @@ case "$FACTS_PROMPT_STYLE" in
     export INCLUDE_NAME_IN_FACTS=true ;;
 esac
 
-# Check if SurrealDB memory is enabled
-# Accept alias USE_SLOWCAT_MEMORY=true for backward compatibility
-USE_SURREALDB=${USE_SURREALDB:-${USE_SLOWCAT_MEMORY:-false}}
-
 if [ "$USE_SURREALDB" = "true" ]; then
     echo "   Using SURREALDB memory system (multi-model, time-travel)"
     export USE_SURREALDB=true
@@ -218,7 +218,7 @@ if [ "$USE_SURREALDB" = "true" ]; then
     export SURREALDB_USER="${SURREALDB_USER:-root}"
     export SURREALDB_PASS="${SURREALDB_PASS:-slowcat_secure_2024}"
     export SURREALDB_NAMESPACE="${SURREALDB_NAMESPACE:-slowcat}"
-    export SURREALDB_DATABASE="${SURREALDB_DATABASE:-memory}"
+    export SURREALDB_DATABASE="${SURREALDB_DATABASE:-memory_graph}"
     
     echo "   Checking SurrealDB dependencies..."
     python -c "import surrealdb; print('   ✅ SurrealDB client available')" 2>/dev/null || {
@@ -280,6 +280,21 @@ fi
 echo "   Greeting mode: $GREETING_MODE (SC_ENFORCE_GREETING=$SC_ENFORCE_GREETING, SC_SUPPRESS_ASSISTANT_GREETINGS=${SC_SUPPRESS_ASSISTANT_GREETINGS:-false})"
 echo "   Facts prompt style: $FACTS_PROMPT_STYLE (ONLY_USER=$FACTS_ONLY_USER_SUBJECT, INCLUDE_NAME=$INCLUDE_NAME_IN_FACTS)"
 echo "   Response formatter: $RESPONSE_FORMATTER_MODE"
+
+# -------------------------------
+# Env surface tightening + notices
+# -------------------------------
+# Only these are honored: MEMORY_BACKEND, SURREALDB_*, GREETING_MODE, RESPONSE_FORMATTER_MODE, USER_ID
+DEPRECATED_ENV_KEYS=(
+  ENABLE_DTH ENABLE_SPELLING_HINTS ENABLE_LOCATION_SPELLING_HINTS ENABLE_GREETING_FALLBACK
+  USE_STATELESS_MEMORY USE_SLOWCAT_MEMORY FACTS_ONLY_USER_SUBJECT INCLUDE_NAME_IN_FACTS
+  SC_USE_ABSTRACT_SUMMARY SC_ENABLE_GRAPH_SCM ENABLE_REFLECTIONS ENABLE_LLM_REFLECTIONS
+)
+for k in "${DEPRECATED_ENV_KEYS[@]}"; do
+  if printenv "$k" >/dev/null 2>&1; then
+    echo "⚠️  Deprecated env '$k' detected — ignored (using code defaults)"
+  fi
+done
 
 # Check if MCP integration is enabled (default: true)
 ENABLE_MCP=${ENABLE_MCP:-true}

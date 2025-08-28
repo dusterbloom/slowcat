@@ -1,6 +1,7 @@
 # server/services/sherpa_stt.py
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Optional
 import threading
@@ -14,6 +15,51 @@ from pipecat.services.stt_service import SegmentedSTTService
 
 # Lazy import so import-time doesn't pull ONNX into every codepath
 _sherpa = None
+
+
+def normalize_stt_text(text: str) -> str:
+    """
+    Normalize STT output to fix common fragmentation issues from Sherpa-ONNX
+    
+    Fixes:
+    - Spaced proper names: "Ant onio Mach ado" → "Antonio Machado"
+    - Spaced numbers: "2 1 4 7" → "2147"
+    - Over-spaced common words: "Pot ola" → "Potola"
+    - Excessive whitespace
+    """
+    if not text or not isinstance(text, str):
+        return text
+    
+    # Store original for comparison
+    original = text
+    
+    # Step 1: Normalize whitespace (collapse multiple spaces)
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Step 2: Fix spaced numbers (2 1 4 7 → 2147)
+    text = re.sub(r'\b(\d)\s+(\d)\s+(\d)\s+(\d)\b', r'\1\2\3\4', text)
+    text = re.sub(r'\b(\d)\s+(\d)\s+(\d)\b', r'\1\2\3', text)
+    text = re.sub(r'\b(\d)\s+(\d)\b', r'\1\2', text)
+    
+    # Step 3: Fix spaced proper names (common patterns)
+    # Pattern: Single letter + space + short fragment + space + capitalized word
+    text = re.sub(r'\b([A-Z])\s+([a-z]{1,4})\s+([A-Z][a-z]+)\b', r'\1\2 \3', text)
+    
+    # Pattern: Capitalized word + space + short fragment + space + capitalized word  
+    text = re.sub(r'\b([A-Z][a-z]+)\s+([a-z]{1,4})\s+([A-Z][a-z]+)\b', r'\1\2 \3', text)
+    
+    # Step 4: Fix spaced common names (like "Pot ola" → "Potola")
+    # Pattern: Capitalized fragment + space + lowercase fragment
+    text = re.sub(r'\b([A-Z][a-z]{1,4})\s+([a-z]{2,6})\b', r'\1\2', text)
+    
+    # Step 5: Clean up any remaining excessive spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Log if significant changes were made
+    if text != original and len(original) > 10:
+        logger.debug(f"STT normalized: '{original}' → '{text}'")
+    
+    return text
 
 
 def _require_sherpa():
@@ -284,7 +330,11 @@ class SherpaONNXSTTService(SegmentedSTTService):
             stream.accept_waveform(self.sample_rate, samples.tolist() if hasattr(samples, 'tolist') else samples)
             logger.debug("Sherpa: Waveform accepted, decoding...")
             recognizer.decode_stream(stream)
-            result = stream.result.text or ""
+            raw_result = stream.result.text or ""
+            
+            # Apply STT normalization to fix fragmented output
+            result = normalize_stt_text(raw_result)
+            
             logger.debug(f"Sherpa: Decode complete, result: '{result}'")
             return result
         except Exception as e:

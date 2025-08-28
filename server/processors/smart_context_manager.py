@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TranscriptionFrame, LLMMessagesFrame, LLMMessagesUpdateFrame, UserStartedSpeakingFrame
+from pipecat.frames.frames import Frame, TranscriptionFrame, InterimTranscriptionFrame, LLMMessagesFrame, LLMMessagesUpdateFrame, UserStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from processors.token_counter import get_token_counter
 try:
@@ -104,6 +104,14 @@ class SmartContextManager(FrameProcessor):
             pass
         self.memory_system = create_smart_memory_system(final_db_path)
         self.tape_store = getattr(self.memory_system, 'tape_store', None)
+
+        # Persistence controls (allow pairing with GraphSCM final-only writer)
+        # When true, SCM will not write user/assistant turns to TapeStore/SurrealDB,
+        # and will skip fact extraction (delegated to GraphSCM asynchronously).
+        self._disable_persistence = os.getenv('SC_DISABLE_SCM_PERSISTENCE', 'false').lower() == 'true'
+        self._disable_fact_extraction = os.getenv('SC_DISABLE_SCM_FACTS', 'false').lower() == 'true'
+        # Only process final STT user frames (drop interims) for context + triggering LLM
+        self._final_user_only = os.getenv('SC_FINAL_USER_ONLY', 'true').lower() == 'true'
 
         # Intelligent Memory Routing (Facts + Tape + DTH)
         self._enable_smart_routing = os.getenv('ENABLE_SMART_ROUTING', 'true').lower() == 'true'
@@ -200,6 +208,11 @@ class SmartContextManager(FrameProcessor):
             self._tape_write_timeout_s = max(0.05, int(os.getenv('TAPE_WRITE_TIMEOUT_MS', '200')) / 1000.0)
         except Exception:
             self._tape_write_timeout_s = 0.2
+        # Separate timeout for graph writes when GraphSCM is enabled
+        try:
+            self._graph_write_timeout_s = max(0.1, int(os.getenv('GRAPH_WRITE_TIMEOUT_MS', '1500')) / 1000.0)
+        except Exception:
+            self._graph_write_timeout_s = 1.5
 
         # Optional Context Field planner
         self._use_context_field = os.getenv('USE_CONTEXT_FIELD', 'false').lower() == 'true'
@@ -417,6 +430,11 @@ class SmartContextManager(FrameProcessor):
         
         # Only process TranscriptionFrames (user input)
         if isinstance(frame, TranscriptionFrame) and frame.text.strip():
+            # Gate on final-only transcripts to avoid interim context churn
+            if self._final_user_only:
+                # Treat InterimTranscriptionFrame as interim; plain TranscriptionFrame from Sherpa is final
+                if isinstance(frame, InterimTranscriptionFrame):
+                    return
             # Ensure session is registered once, even if get_initial_context_frame wasn't used
             if not self._session_started and hasattr(self.memory_system, 'facts_graph'):
                 try:
@@ -438,20 +456,26 @@ class SmartContextManager(FrameProcessor):
                     self._summary_seeded = True
                 except Exception:
                     pass
-            # Normalize user input (collapse repeated punctuation, trim, etc.)
-            user_text = self._normalize_user_input(frame.text)
+            # Keep a raw copy for persistence; use normalized only for context
+            raw_user_text = frame.text
+            # Normalize user input only for context construction
+            user_text = self._normalize_user_input(raw_user_text)
             logger.debug(f"🎤 Processing transcription: '{user_text[:50]}...'")
 
             # 1. Extract facts from user input (background), but only when content is rich enough
-            if self._should_extract_facts(user_text):
+            if not self._disable_fact_extraction and self._should_extract_facts(user_text):
                 asyncio.create_task(self._extract_facts_async(user_text))
 
-            # 1b. Write user message to tape store
+            # 1b. Write user message to store (graph path when persistence disabled)
             try:
                 if self.tape_store is not None and self._is_semantically_useful(user_text):
-                    self._enqueue_tape_write('user', user_text)
+                    if not self._disable_persistence:
+                        self._enqueue_tape_write('user', raw_user_text)
+                    else:
+                        if os.getenv('SC_ENABLE_GRAPH_SCM', 'true').lower() == 'true':
+                            self._enqueue_graph_write('user', raw_user_text)
             except Exception as e:
-                logger.debug(f"TapeStore write (user) enqueue failed: {e}")
+                logger.debug(f"User persistence enqueue failed: {e}")
             
             # 2. Update session in memory system
             try:
@@ -1297,6 +1321,73 @@ class SmartContextManager(FrameProcessor):
         try:
             import re
             s = (text or "").strip()
+            
+            # PHASE 1: Fix STT fragmentation issues first
+            original_s = s
+            
+            # Fix spaced numbers (2 1 4 7 → 2147)
+            s = re.sub(r'\b(\d)\s+(\d)\s+(\d)\s+(\d)\b', r'\1\2\3\4', s)
+            s = re.sub(r'\b(\d)\s+(\d)\s+(\d)\b', r'\1\2\3', s) 
+            s = re.sub(r'\b(\d)\s+(\d)\b', r'\1\2', s)
+            
+            # Fix spaced proper names (Ant onio Mach ado → Antonio Machado)
+            s = re.sub(r'\b([A-Z])\s+([a-z]{1,4})\s+([A-Z][a-z]+)\b', r'\1\2 \3', s)
+            s = re.sub(r'\b([A-Z][a-z]+)\s+([a-z]{1,4})\s+([A-Z][a-z]+)\b', r'\1\2 \3', s)
+            
+            # Enhanced name pattern detection - be conservative to avoid false positives
+            parts = s.split()
+            reconstructed_parts = []
+            i = 0
+            
+            while i < len(parts):
+                current_part = parts[i]
+                
+                # Check for 2-part fragmented names: "Pe ppy" → "Peppy" or "pepp i" → "Peppi"
+                if (i < len(parts) - 1 and 
+                    ((current_part[0].isupper() and parts[i+1][0].islower()) or
+                     (current_part[0].islower() and parts[i+1][0].islower())) and
+                    len(current_part) <= 6 and len(parts[i+1]) <= 6):
+                    total_length = len(current_part) + len(parts[i+1])
+                    if 3 <= total_length <= 10:  # Reasonable name length
+                        combined = current_part + parts[i+1]
+                        # Capitalize first letter if both parts were lowercase
+                        if current_part[0].islower():
+                            combined = combined[0].upper() + combined[1:] if combined else combined
+                        reconstructed_parts.append(combined)
+                        i += 2
+                        continue
+                
+                # Check for 3-part fragmented names: "Pe p py" → "Peppy"
+                if (i < len(parts) - 2 and 
+                    current_part[0].isupper() and
+                    all(len(parts[i+j]) <= 4 for j in [1, 2]) and
+                    all(parts[i+j][0].islower() for j in [1, 2])):
+                    total_length = sum(len(parts[i+j]) for j in [0, 1, 2])
+                    if 3 <= total_length <= 10:  # Reasonable name length
+                        reconstructed_parts.append(current_part + parts[i+1] + parts[i+2])
+                        i += 3
+                        continue
+                
+                # No pattern matched, keep original part
+                reconstructed_parts.append(current_part)
+                i += 1
+            
+            s = ' '.join(reconstructed_parts)
+            
+            # Log significant STT normalizations
+            if s != original_s and len(original_s) > 10:
+                logger.debug(f"Memory STT normalized: '{original_s}' → '{s}'")
+            
+            # PHASE 2: Original punctuation normalization
+            # Fix common glued-word patterns from STT
+            #  - Insert space after pronoun 'I' when glued to a word: 'Iwas' -> 'I was'
+            s = re.sub(r"\bI([a-z]{2,})\b", r"I \1", s)
+            #  - Insert space at camelCase-like boundaries: 'Ifyou' -> 'If you'
+            s = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s)
+            #  - Insert space before common short words when glued: 'Aboutmy' -> 'About my'
+            glued_words = r"and|or|if|you|your|my|the|a|to|of|in|is|we|it|me|us|our"
+            s = re.sub(rf"([A-Za-z])((?:{glued_words})\b)", r"\1 \2", s)
+
             # Collapse repeated punctuation
             s = re.sub(r"[?]{2,}", "?", s)
             s = re.sub(r"[!]{2,}", "!", s)
@@ -1314,7 +1405,7 @@ class SmartContextManager(FrameProcessor):
             s = re.sub(r"\s+\.(\w)", r" \1", s)
             # Collapse duplicate commas with proper spacing: ", ," -> ", "
             s = re.sub(r",\s*,+", ", ", s)
-            # Normalize whitespace
+            # Normalize whitespace (final cleanup)
             s = re.sub(r"\s+", " ", s)
             return s.strip()
         except Exception:
@@ -1440,6 +1531,7 @@ class SmartContextManager(FrameProcessor):
             # Start a new session (increments session_count once)
             if hasattr(self.memory_system, 'facts_graph'):
                 try:
+                    before = {}
                     before = await self._maybe_await(self.memory_system.facts_graph.get_session_info(spk))
                     logger.info(f"📊 Session before start: {before}")
                     self._trace_sessions('get_session_info_before', key=spk, info=before)
@@ -2136,12 +2228,18 @@ class SmartContextManager(FrameProcessor):
         # Maintain sliding window
         if len(self.recent_exchanges) > self.max_recent_exchanges:
             self.recent_exchanges.pop(0)
-        # Also write to tape store (non-blocking, with timeout)
+        # Also write to storage (non-blocking) unless a dedicated graph writer is present
         try:
-            if self.tape_store is not None and response:
-                self._enqueue_tape_write('assistant', response)
+            graph_writer_present = bool(getattr(self, '_graph_writer_present', False))
+            if response and self.tape_store is not None and not graph_writer_present:
+                if not self._disable_persistence:
+                    self._enqueue_tape_write('assistant', response)
+                else:
+                    # Graph path fallback when no dedicated writer
+                    if os.getenv('SC_ENABLE_GRAPH_SCM', 'true').lower() == 'true':
+                        self._enqueue_graph_write('assistant', response)
         except Exception as e:
-            logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
+            logger.debug(f"Assistant persistence enqueue skipped/failed: {e}")
 
         # Emergent tracking: detect patterns in assistant final outputs (log-only)
         try:
@@ -2181,6 +2279,39 @@ class SmartContextManager(FrameProcessor):
                 logger.debug(f"TapeStore write ({role}) timed out after {self._tape_write_timeout_s}s; dropping")
         except Exception as e:
             logger.debug(f"TapeStore write ({role}) failed: {e}")
+
+    def _enqueue_graph_write(self, role: str, content: str) -> None:
+        try:
+            asyncio.create_task(self._write_graph_entry(role, content))
+        except Exception:
+            pass
+
+    async def _write_graph_entry(self, role: str, content: str) -> None:
+        try:
+            if not self.tape_store or not content:
+                return
+            # Reuse Surreal graph adapter via tape_store.add_entry, but bypass SCM persistence flag
+            agent = self.assistant_id if role == 'assistant' else None
+            try:
+                coro = self.tape_store.add_entry(
+                    role=role,
+                    content=content,
+                    speaker_id=self._speaker_key(),
+                    agent_id=agent
+                )
+            except TypeError:
+                coro = self.tape_store.add_entry(
+                    role=role,
+                    content=content,
+                    speaker_id=self._speaker_key()
+                )
+            try:
+                await asyncio.wait_for(self._maybe_await(coro), timeout=self._graph_write_timeout_s)
+                logger.info(f"[SCM] PERSISTED {role.upper()} (graph) for {self._speaker_key()} → {str(content)[:80]}…")
+            except asyncio.TimeoutError:
+                logger.debug(f"Graph write ({role}) timed out after {self._graph_write_timeout_s}s; dropping")
+        except Exception as e:
+            logger.debug(f"Graph write ({role}) failed: {e}")
 
     async def _reflection_loop(self):
         """Run lightweight, idle-triggered reflections that write private thoughts.

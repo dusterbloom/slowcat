@@ -122,6 +122,29 @@ class FactsStoreAdapter(MemoryStoreInterface):
     async def search(self, query: str, limit: int = 10, **kwargs) -> List[MemoryResult]:
         """Search facts by content"""
         try:
+            # Prefer fragments if supported by the backing store (GraphSurrealMemory)
+            if hasattr(self.facts_graph, 'search_fragments'):
+                try:
+                    frags = await self.facts_graph.search_fragments(query, limit=limit)
+                    if frags:
+                        results: List[MemoryResult] = []
+                        for f in frags:
+                            content_text = f"{f.get('subject','user')}'s {f.get('predicate','related_to')} is {f.get('value','')}".strip()
+                            results.append(MemoryResult(
+                                content=content_text,
+                                source_store="facts",
+                                relevance_score=float(f.get('strength', 0.6)),
+                                timestamp=0.0,
+                                metadata={
+                                    'fidelity': f.get('fidelity', 3),
+                                    'subject': f.get('subject', ''),
+                                    'predicate': f.get('predicate', ''),
+                                    'value': f.get('value', ''),
+                                }
+                            ))
+                        return results
+                except Exception:
+                    pass
             if hasattr(self.facts_graph, 'search_facts'):
                 facts = await self.facts_graph.search_facts(query, limit=limit)
             else:
@@ -155,10 +178,19 @@ class FactsStoreAdapter(MemoryStoreInterface):
             for fact in facts:
                 # Format fact as readable content
                 if fact.value:
-                    if fact.species:
-                        content = f"{fact.subject}'s {fact.predicate} is {fact.value} ({fact.species})"
+                    # Special handling for graph relationships
+                    if hasattr(fact, 'source_text') and fact.source_text == 'graph_relationship':
+                        # For graph relationships, create natural language
+                        if fact.predicate == 'knows' and fact.value:
+                            content = f"You know about {fact.value}"
+                        else:
+                            content = f"{fact.predicate}: {fact.value}"
                     else:
-                        content = f"{fact.subject}'s {fact.predicate} is {fact.value}"
+                        # Legacy fact formatting
+                        if fact.species:
+                            content = f"{fact.subject}'s {fact.predicate} is {fact.value} ({fact.species})"
+                        else:
+                            content = f"{fact.subject}'s {fact.predicate} is {fact.value}"
                 else:
                     # S1 level - only relationship
                     content = f"{fact.subject} has {fact.predicate}"
@@ -578,7 +610,7 @@ class QueryRouter:
             QueryIntent.CONVERSATION_HISTORY: 'tape',
             QueryIntent.EPISODIC_MEMORY: 'embeddings',
             QueryIntent.KNOWLEDGE_SYNTHESIS: 'embeddings',
-            QueryIntent.GENERAL_KNOWLEDGE: None,  # Bypass memory
+            QueryIntent.GENERAL_KNOWLEDGE: 'facts',  # Try facts first for general queries too
             QueryIntent.HYBRID_SEARCH: None      # Search all
         }
         
@@ -593,12 +625,8 @@ class QueryRouter:
         elif intent in [QueryIntent.EPISODIC_MEMORY, QueryIntent.KNOWLEDGE_SYNTHESIS]:
             secondary_stores = ['tape', 'facts']
         
-        # Override for general knowledge or hybrid
-        if intent == QueryIntent.GENERAL_KNOWLEDGE:
-            strategy = RoutingStrategy.BYPASS
-            primary_store = None
-            secondary_stores = []
-        elif intent == QueryIntent.HYBRID_SEARCH:
+        # Override for hybrid search only
+        if intent == QueryIntent.HYBRID_SEARCH:
             strategy = RoutingStrategy.HYBRID
             primary_store = None
             secondary_stores = list(self.stores.keys())
@@ -670,8 +698,9 @@ class QueryRouter:
                             all_results.extend(results)
             
             elif plan.strategy == RoutingStrategy.HYBRID:
-                # Search all available stores
-                stores_to_search = plan.secondary_stores if plan.secondary_stores else list(self.stores.keys())
+                # Search all available stores, including primary
+                all_store_names = list(self.stores.keys())
+                stores_to_search = all_store_names
                 results_per_store = max(1, plan.max_results // len(stores_to_search))
                 
                 # Query stores in parallel

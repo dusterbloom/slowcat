@@ -1,12 +1,18 @@
 """
-Fixed StatelessMemoryProcessor that follows Pipecat patterns exactly
+Fixed StatelessMemoryProcessor that follows Pipecat patterns exactly (DEPRECATED)
 
-This version addresses the common frame processing issues:
-1. Proper StartFrame handling
-2. Correct parent method calls
-3. Frame forwarding for all frame types
-4. Error handling that doesn't break the pipeline
+This module is deprecated and not used by the current pipeline. Prefer the
+default SmartContextManager with SurrealDB graph memory (final-only persistence
+via SmartContextManagerGraph). This file remains as a reference and for legacy
+imports during the deprecation window.
 """
+
+import warnings
+warnings.warn(
+    "processors.stateless_memory_original is deprecated; use Surreal graph memory + SmartContextManager",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import asyncio
 import time

@@ -17,6 +17,11 @@ from openai import NOT_GIVEN
 
 from .service_factory import ServiceFactory
 from processors.smart_context_manager import create_smart_context_manager
+try:
+    # Final-only Graph persistence + async extraction
+    from processors.smart_context_manager_graph import create_smart_context_manager_graph
+except Exception:
+    create_smart_context_manager_graph = None  # type: ignore
 
 
 class PipelineBuilder:
@@ -506,10 +511,64 @@ class PipelineBuilder:
         
         rtvi = RTVIProcessor()
         
+        # Configure token budget defaults for an 8K window unless overridden by env
+        try:
+            os.environ.setdefault('SC_BUDGET_SYSTEM', '2000')
+            os.environ.setdefault('SC_BUDGET_MEMORY', '1000')
+            # Leave SC_BUDGET_INPUT unset to let SCM scale, or set modest default
+            os.environ.setdefault('SC_BUDGET_INPUT', '800')
+            # Generation workspace is computed as remainder by SCM when not set
+            # Extraction toggles defaults
+            os.environ.setdefault('ENABLE_ASYNC_EXTRACTION', 'true')
+            os.environ.setdefault('EXTRACT_ASSISTANT', 'false')
+            # Enable graph SCM by default
+            os.environ.setdefault('SC_ENABLE_GRAPH_SCM', 'true')
+            # Ensure SurrealDB uses the graph DB by default as requested
+            os.environ.setdefault('USE_SURREALDB', 'true')
+            os.environ.setdefault('SURREALDB_NAMESPACE', 'slowcat')
+            os.environ.setdefault('SURREALDB_DATABASE', 'memory_graph')
+            # Safer default: enable ResponseTap fallback commit if provider lacks end frames
+            os.environ.setdefault('RESPONSETAP_ENABLE_FALLBACK', 'true')
+        except Exception:
+            pass
+
+        # Decide whether to enable Graph SCM before constructing SCM (to set flags early)
+        enable_graph = os.getenv('SC_ENABLE_GRAPH_SCM', 'true').lower() == 'true'
+        if enable_graph:
+            # Ensure SCM persistence/extraction is disabled to avoid duplicates
+            os.environ['SC_DISABLE_SCM_PERSISTENCE'] = 'true'
+            os.environ['SC_DISABLE_SCM_FACTS'] = 'true'
+
         # Create smart context manager instance first (we need a reference later)
         smart_ctx = self._create_smart_context_manager(context, processors.get('memory_processor'))
         # Keep a reference for initial context on client_ready
         self._smart_ctx_ref = smart_ctx
+
+        # Optionally create Graph Smart Context Manager for final-only persistence
+        graph_ctx = None
+        try:
+            if enable_graph and callable(create_smart_context_manager_graph):
+                # When enabled, disable SCM persistence/extraction to avoid duplication
+                try:
+                    # Also set flags directly on SCM instance in case it read env earlier
+                    setattr(smart_ctx, '_disable_persistence', True)
+                    setattr(smart_ctx, '_disable_fact_extraction', True)
+                    # Mark that a graph writer is present so SCM won't persist assistant
+                    setattr(smart_ctx, '_graph_writer_present', True)
+                except Exception:
+                    pass
+                extract_assistant = os.getenv('EXTRACT_ASSISTANT', 'false')
+                enable_async_extraction = os.getenv('ENABLE_ASYNC_EXTRACTION', 'true')
+                graph_ctx = create_smart_context_manager_graph(
+                    context,
+                    enable_async_extraction=enable_async_extraction,
+                    extract_assistant=extract_assistant,
+                )
+                logger.info("🧠 Graph SmartContextManager enabled (final-only storage + async extraction)")
+            else:
+                logger.info("🧠 Graph SmartContextManager disabled by SC_ENABLE_GRAPH_SCM=false")
+        except Exception as e:
+            logger.warning(f"Graph SmartContextManager unavailable: {e}")
 
         components = [
             transport.input(),
@@ -528,6 +587,8 @@ class PipelineBuilder:
             processors['speaker_name_manager'],
             # SmartContextManager updates context, then context_aggregator triggers LLM
             smart_ctx,
+            # GraphSCM: persist only final user/assistant turns; async concept extraction
+            graph_ctx,
             context_aggregator.user(),  # Triggers LLM with SmartContextManager's updated context
             # Ensure clean, alternating message history before calling the LLM
             processors.get('message_deduplicator'),
@@ -542,7 +603,7 @@ class PipelineBuilder:
             # Do NOT place ContextFilter here; it blocks streaming TextFrames
             # needed by downstream TTS. Keep the LLM stream intact to audio.
             # Add response tap to feed assistant text back to SmartContextManager and TapeStore
-            self._create_response_tap(smart_ctx),
+            self._create_response_tap(smart_ctx, graph_ctx),
             services['tts'], # Kokoro TTS
             transport.output(),
             # processors['greeting_filter'],
@@ -717,13 +778,18 @@ class PipelineBuilder:
         return create_smart_context_manager(
             context=context,
             facts_db_path=config.memory.facts_db_path,
-            max_tokens=4096
+            # Enforce an 8K context window by default; env overrides via SC_BUDGET_*
+            max_tokens=8192
         )
 
-    def _create_response_tap(self, smart_context_manager):
+    def _create_response_tap(self, smart_context_manager, graph_writer=None):
         try:
             from processors.response_tap import ResponseTap
-            return ResponseTap(smart_context_manager)
+            assistant_sinks = []
+            # If a graph writer processor exists, pass it as an additional sink
+            if graph_writer is not None:
+                assistant_sinks.append(graph_writer)
+            return ResponseTap(smart_context_manager, assistant_sinks=assistant_sinks)
         except Exception as e:
             from loguru import logger
             logger.warning(f"ResponseTap unavailable: {e}")

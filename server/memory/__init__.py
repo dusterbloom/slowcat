@@ -24,6 +24,7 @@ from .query_router import (
     QueryRouter, RetrievalResponse, MemoryResult, 
     create_query_router
 )
+from loguru import logger
 
 __all__ = [
     # Core components
@@ -69,7 +70,6 @@ def create_smart_memory_system(facts_db_path: str = "data/facts.db",
     """
     import os
     from pathlib import Path
-    from loguru import logger
     
     # Default to SurrealDB memory (no flag required). Legacy flags still honored.
     val = (os.getenv('USE_SURREALDB', '').strip().lower() or os.getenv('USE_SLOWCAT_MEMORY', '').strip().lower())
@@ -79,16 +79,21 @@ def create_smart_memory_system(facts_db_path: str = "data/facts.db",
         logger.info("🛈 USE_SURREALDB is deprecated — SurrealDB is the default now.")
     if use_surreal:
         try:
-            from .surreal_memory import create_surreal_memory_system
-            logger.info("🚀 Using SurrealDB memory system")
-            
-            # Create SurrealDB unified memory system
-            surreal_memory = create_surreal_memory_system()
-            
-            # SurrealDB provides both facts and tape functionality
-            # Return adapter that maintains compatibility
-            return SurrealMemorySystemAdapter(surreal_memory)
-            
+            # Prefer graph-native memory when schema mode is 'graph' (default)
+            schema_mode = os.getenv('SC_SCHEMA_MODE', 'graph').strip().lower()
+            if schema_mode == 'graph':
+                from .graph_surreal_memory import create_graph_surreal_memory
+                logger.info("🚀 Using SurrealDB Graph memory system (message/session)")
+                surreal_memory = create_graph_surreal_memory()
+            else:
+                from .surreal_memory import create_surreal_memory_system
+                logger.info("🚀 Using SurrealDB legacy memory system (compat mode)")
+                surreal_memory = create_surreal_memory_system()
+
+            # SurrealDB provides both facts and conversation functionality
+            # Return the graph-native memory directly (no adapter indirection)
+            return surreal_memory
+
         except ImportError as e:
             logger.error(f"SurrealDB not available: {e}")
             logger.info("📦 Falling back to SQLite memory system")
@@ -152,20 +157,27 @@ class SurrealMemorySystemAdapter:
             # Use native SurrealDB query router for intelligent routing
             response = await self.query_router.route_query(query, context)
             
-            # Convert SurrealMemoryResult back to SimpleResult for compatibility
+            # Convert MemoryResult back to SimpleResult for compatibility
             class SimpleResult:
-                def __init__(self, surreal_result):
-                    self.subject = surreal_result.subject or ''
-                    self.predicate = surreal_result.predicate or ''
-                    self.value = surreal_result.value
-                    self.species = None
-                    self.fidelity = surreal_result.fidelity or 3
-                    self.strength = surreal_result.relevance_score
-                    self.last_seen = surreal_result.timestamp
-                    self.created = surreal_result.timestamp
-                    self.access_count = 0
-                    self.source_text = surreal_result.content
-                    self.source_store = surreal_result.source_store
+                def __init__(self, memory_result):
+                    # Map MemoryResult attributes to legacy format
+                    self.content = memory_result.content
+                    self.source_store = memory_result.source_store
+                    self.relevance_score = memory_result.relevance_score
+                    self.timestamp = memory_result.timestamp
+                    
+                    # Legacy format compatibility - extract from metadata if available
+                    metadata = getattr(memory_result, 'metadata', {})
+                    self.subject = metadata.get('subject', '')
+                    self.predicate = metadata.get('predicate', '')
+                    self.value = metadata.get('value', memory_result.content)
+                    self.species = metadata.get('species')
+                    self.fidelity = metadata.get('fidelity', 3)
+                    self.strength = memory_result.relevance_score
+                    self.last_seen = memory_result.timestamp
+                    self.created = memory_result.timestamp
+                    self.access_count = metadata.get('access_count', 0)
+                    self.source_text = memory_result.content
             
             results = [SimpleResult(r) for r in response.results]
             

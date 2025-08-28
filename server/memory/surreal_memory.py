@@ -130,7 +130,14 @@ class SurrealMemory:
         logger.info(f"🚀 SurrealDB Memory initialized: {surreal_url}/{namespace}/{database}")
     
     async def connect(self):
-        """Initialize SurrealDB connection and schema"""
+        """Initialize SurrealDB connection and schema.
+
+        Note:
+        - To prevent creation of legacy flat tables (fact/tape/sessions/etc.) when
+          running in graph schema environments, set one of:
+            SC_SKIP_LEGACY_SCHEMA_INIT=true
+            SC_SCHEMA_MODE=graph
+        """
         try:
             self.db = AsyncSurreal(self.surreal_url)
             
@@ -162,8 +169,13 @@ class SurrealMemory:
             logger.info(f"🔄 SurrealDB: Using namespace '{self.namespace}' and database '{self.database}'")
             await self.db.use(self.namespace, self.database)
             
-            # Initialize schema idempotently
-            await self._init_schema()
+            # Initialize schema idempotently unless explicitly skipped
+            skip_legacy = os.getenv('SC_SKIP_LEGACY_SCHEMA_INIT', 'false').lower() == 'true'
+            schema_mode = os.getenv('SC_SCHEMA_MODE', '').lower()
+            if skip_legacy or schema_mode == 'graph':
+                logger.info("⏭️  Skipping legacy schema initialization (env guard active)")
+            else:
+                await self._init_schema()
             
             self.connected = True
             logger.info("🔗 SurrealDB connection established")
@@ -190,6 +202,11 @@ class SurrealMemory:
             DEFINE FIELD source_text ON fact TYPE string DEFAULT '';
             DEFINE FIELD agent_id ON fact TYPE option<string>;
         """)
+        # Helpful indexes/uniques (idempotent)
+        await self.db.query("""
+            DEFINE INDEX IF NOT EXISTS fact_unique ON TABLE fact COLUMNS subject, predicate, value, species, agent_id UNIQUE;
+            DEFINE INDEX IF NOT EXISTS fact_by_fidelity ON TABLE fact COLUMNS fidelity, strength, last_seen;
+        """)
         
         # Conversation tape with temporal capabilities
         await self.db.query("""
@@ -202,6 +219,10 @@ class SurrealMemory:
             DEFINE FIELD agent_id ON tape TYPE option<string>;
             DEFINE FIELD embedding ON tape TYPE option<array<number>>;
             DEFINE FIELD metadata ON tape TYPE object DEFAULT {};
+        """)
+        await self.db.query("""
+            DEFINE INDEX IF NOT EXISTS tape_by_time ON TABLE tape COLUMNS ts;
+            DEFINE INDEX IF NOT EXISTS tape_by_speaker ON TABLE tape COLUMNS speaker_id;
         """)
         
         # Private thoughts for agents (siloed; never surfaced directly)
@@ -236,6 +257,9 @@ class SurrealMemory:
             DEFINE FIELD last_interaction ON sessions TYPE datetime DEFAULT time::now();
             DEFINE FIELD first_seen ON sessions TYPE datetime DEFAULT time::now();
             DEFINE FIELD total_turns ON sessions TYPE number DEFAULT 0;
+        """)
+        await self.db.query("""
+            DEFINE INDEX IF NOT EXISTS sessions_unique ON TABLE sessions COLUMNS speaker_id UNIQUE;
         """)
         
         logger.debug("📊 SurrealDB schema initialized")
@@ -284,7 +308,7 @@ class SurrealMemory:
     
     async def reinforce_or_insert(self, fact_data: Dict) -> bool:
         """
-        Store new fact or reinforce existing one (FactsGraph compatibility)
+        Simplified fact storage using unique constraints (Phase 1 improvement)
         
         Args:
             fact_data: Dict with subject, predicate, value, etc.
@@ -296,77 +320,22 @@ class SurrealMemory:
             await self.connect()
         
         try:
-            now = time.time()
+            # Prepare fact data with defaults
+            fact_params = {
+                'subject': fact_data['subject'],
+                'predicate': fact_data['predicate'],
+                'value': fact_data.get('value'),
+                'species': fact_data.get('species'),
+                'fidelity': fact_data.get('fidelity', 3),
+                'strength': fact_data.get('strength', 0.6),
+                'source_text': fact_data.get('source_text', ''),
+                'agent_id': fact_data.get('agent_id', 'slowcat'),
+                'decay_rate': fact_data.get('decay_rate', 1.0),
+                'tags': fact_data.get('tags', [])
+            }
             
-            # Check if fact exists
-            # Scope by agent_id when provided, otherwise match facts without considering agent_id
-            if fact_data.get('agent_id') is not None:
-                query = """
-                    SELECT * FROM fact 
-                    WHERE subject = $subject 
-                    AND predicate = $predicate 
-                    AND value = $value 
-                    AND species = $species
-                    AND agent_id = $agent_id
-                """
-                params = {
-                    'subject': fact_data['subject'],
-                    'predicate': fact_data['predicate'],
-                    'value': fact_data.get('value'),
-                    'species': fact_data.get('species'),
-                    'agent_id': fact_data.get('agent_id')
-                }
-            else:
-                query = """
-                    SELECT * FROM fact 
-                    WHERE subject = $subject 
-                    AND predicate = $predicate 
-                    AND value = $value 
-                    AND species = $species
-                """
-                params = {
-                    'subject': fact_data['subject'],
-                    'predicate': fact_data['predicate'],
-                    'value': fact_data.get('value'),
-                    'species': fact_data.get('species')
-                }
-            
-            result = await self.db.query(query, params)
-            
-            if result and len(result) > 0:
-                # Existing fact - reinforce it
-                existing = result[0]
-                fact_id = existing['id']
-                
-                # Apply EMA to strengthen (with NaN protection)
-                old_strength = existing.get('strength', 0.6)
-                if old_strength is None or (isinstance(old_strength, float) and math.isnan(old_strength)):
-                    old_strength = 0.6
-                new_strength = self._ema(old_strength, 1.0)
-                new_fidelity = max(existing.get('fidelity', 3), fact_data.get('fidelity', 3))
-                
-                update_query = """
-                    UPDATE $fact_id SET 
-                        fidelity = $fidelity,
-                        strength = $strength,
-                        last_seen = time::now(),
-                        access_count = access_count + 1
-                """
-                
-                await self.db.query(update_query, {
-                    'fact_id': fact_id,
-                    'fidelity': new_fidelity,
-                    'strength': new_strength
-                })
-                
-                self.reinforcements += 1
-                logger.debug(f"✨ Reinforced fact: {fact_data['subject']}.{fact_data['predicate']} "
-                           f"(S{existing.get('fidelity', 3)}→S{new_fidelity}, {old_strength:.2f}→{new_strength:.2f})")
-                
-                return True
-                
-            else:
-                # New fact - insert it
+            # Try to insert new fact - let unique index handle deduplication
+            try:
                 insert_query = """
                     CREATE fact SET
                         subject = $subject,
@@ -380,32 +349,49 @@ class SurrealMemory:
                         source_text = $source_text,
                         agent_id = $agent_id,
                         decay_rate = $decay_rate,
-                        tags = $tags
+                        tags = $tags,
+                        access_count = 0
                 """
                 
-                # Validate strength to prevent NaN values
-                strength = fact_data.get('strength', 0.6)
-                if strength is None or (isinstance(strength, float) and math.isnan(strength)):
-                    strength = 0.6
+                await self.db.query(insert_query, fact_params)
+                self.new_facts += 1
+                logger.debug(f"🆕 New fact: {fact_data['subject']}.{fact_data['predicate']}")
+                return False  # Newly inserted
                 
-                await self.db.query(insert_query, {
-                    'subject': fact_data['subject'],
-                    'predicate': fact_data['predicate'],
-                    'value': fact_data.get('value'),
-                    'species': fact_data.get('species'),
-                    'fidelity': fact_data.get('fidelity', 3),
-                    'strength': strength,
-                    'source_text': fact_data.get('source_text', ''),
-                    'agent_id': fact_data.get('agent_id'),
-                    'decay_rate': fact_data.get('decay_rate', 1.0),
-                    'tags': fact_data.get('tags', [])
-                })
-                
-                logger.debug(f"➕ New fact: {fact_data['subject']}.{fact_data['predicate']} = "
-                           f"{fact_data.get('value', '?')} (S{fact_data.get('fidelity', 3)})")
-                
-                return False
-                
+            except Exception as create_error:
+                # Check if it's a uniqueness constraint violation
+                error_str = str(create_error).lower()
+                if 'unique' in error_str or 'duplicate' in error_str or 'constraint' in error_str:
+                    # Fact exists - reinforce it
+                    old_strength = fact_params['strength']
+                    new_strength = self._ema(old_strength, 1.0)
+                    
+                    update_query = """
+                        UPDATE fact SET 
+                            fidelity = math::max(fidelity, $fidelity),
+                            strength = $strength,
+                            last_seen = time::now(),
+                            access_count = access_count + 1
+                        WHERE subject = $subject 
+                          AND predicate = $predicate 
+                          AND value = $value 
+                          AND species = $species
+                          AND agent_id = $agent_id
+                    """
+                    
+                    update_params = fact_params.copy()
+                    update_params['strength'] = new_strength
+                    
+                    await self.db.query(update_query, update_params)
+                    
+                    self.reinforcements += 1
+                    logger.debug(f"✨ Reinforced fact: {fact_data['subject']}.{fact_data['predicate']} "
+                               f"(strength: {old_strength:.2f}→{new_strength:.2f})")
+                    return True  # Reinforced
+                else:
+                    # Different error - re-raise
+                    raise create_error
+                    
         except Exception as e:
             logger.error(f"SurrealDB fact reinforce/insert failed: {e}")
             return False
@@ -559,16 +545,25 @@ class SurrealMemory:
             await self.connect()
         
         try:
-            # Enhanced search with SurrealDB text search capabilities
+            # Always use graph schema on this branch - query user->knows->concept relationships
             search_query = """
-                SELECT * FROM fact 
+                SELECT 
+                    relationship as subject,
+                    'knows' as predicate, 
+                    out.name as value,
+                    out.kind as species,
+                    fidelity as fidelity,
+                    strength as strength,
+                    learned_at as last_seen,
+                    learned_at as created,
+                    access_count as access_count,
+                    'graph_relationship' as source_text,
+                    id as id
+                FROM knows 
                 WHERE 
-                    string::contains(string::lowercase(subject OR ''), string::lowercase($query))
-                    OR string::contains(string::lowercase(predicate OR ''), string::lowercase($query))
-                    OR string::contains(string::lowercase(value OR ''), string::lowercase($query))
-                    OR string::contains(string::lowercase(species OR ''), string::lowercase($query))
-                    OR string::contains(string::lowercase(source_text OR ''), string::lowercase($query))
-                ORDER BY fidelity DESC, strength DESC, last_seen DESC
+                    string::contains(string::lowercase(out.name OR ''), string::lowercase($query))
+                    OR string::contains(string::lowercase(relationship OR ''), string::lowercase($query))
+                ORDER BY fidelity DESC, strength DESC, learned_at DESC
                 LIMIT $limit
             """
             
@@ -576,6 +571,7 @@ class SurrealMemory:
                 'query': query,
                 'limit': limit
             })
+            
             
             facts = []
             if result and len(result) > 0:
@@ -704,11 +700,42 @@ class SurrealMemory:
     
     async def search_tape(self, query: str, limit: int = 10, agent_id: Optional[str] = None) -> List[Dict]:
         """
-        Search conversation tape (TapeStore compatibility)
+        Enhanced search with FTS preference and fallback (Phase 1 improvement)
         """
         if not self.connected:
             await self.connect()
         
+        # Try FTS first (faster, ranked results)
+        try:
+            if agent_id:
+                fts_query = """
+                    SELECT * FROM tape 
+                    WHERE content @@ $query
+                    AND agent_id = $agent_id
+                    ORDER BY ts DESC
+                    LIMIT $limit
+                """
+                params = {'query': query, 'limit': limit, 'agent_id': agent_id}
+            else:
+                fts_query = """
+                    SELECT * FROM tape 
+                    WHERE content @@ $query
+                    ORDER BY ts DESC
+                    LIMIT $limit
+                """
+                params = {'query': query, 'limit': limit}
+                
+            result = await self.db.query(fts_query, params)
+            
+            # Check if FTS returned results
+            if result and len(result) > 0 and result[0].get('result'):
+                logger.debug(f"Using FTS search for query: {query}")
+                return self._format_search_results(result)
+                
+        except Exception as e:
+            logger.debug(f"FTS not available, falling back to contains search: {e}")
+        
+        # Fallback to contains search
         try:
             if agent_id:
                 search_query = """
@@ -730,22 +757,41 @@ class SurrealMemory:
             
             result = await self.db.query(search_query, params)
             
-            entries = []
-            if result and len(result) > 0:
-                for row in result:
-                    entry = {
-                        'ts': time.mktime(row['ts'].timetuple()) if row.get('ts') else time.time(),
-                        'speaker_id': row.get('speaker_id', 'unknown'),
-                        'role': row.get('role', 'user'),
-                        'content': row.get('content', '')
-                    }
-                    entries.append(entry)
-            
-            return entries
+            logger.debug(f"Using fallback contains search for query: {query}")
+            return self._format_search_results(result)
             
         except Exception as e:
             logger.error(f"SurrealDB tape search failed: {e}")
             return []
+    
+    def _format_search_results(self, result) -> List[Dict]:
+        """Helper method to format search results consistently"""
+        entries = []
+        if result and len(result) > 0:
+            rows = self._rows_from_query(result)
+            for row in rows:
+                # Handle timestamp conversion
+                ts_value = row.get('ts')
+                if hasattr(ts_value, 'timestamp'):
+                    ts_float = ts_value.timestamp()
+                elif hasattr(ts_value, 'timetuple'):
+                    ts_float = time.mktime(ts_value.timetuple())
+                elif isinstance(ts_value, (int, float)):
+                    ts_float = float(ts_value)
+                else:
+                    ts_float = time.time()
+                
+                entry = {
+                    'ts': ts_float,
+                    'speaker_id': row.get('speaker_id', 'unknown'),
+                    'role': row.get('role', 'user'),
+                    'content': row.get('content', ''),
+                    'session_id': row.get('session_id'),
+                    'agent_id': row.get('agent_id')
+                }
+                entries.append(entry)
+        
+        return entries
     
     async def get_recent(self, limit: int = 10, since: Optional[float] = None, agent_id: Optional[str] = None) -> List[Dict]:
         """
@@ -1438,7 +1484,7 @@ class SurrealMemory:
 def create_surreal_memory_system(
     surreal_url: str = None,
     namespace: str = "slowcat", 
-    database: str = "memory"
+    database: str = "memory_graph"
 ) -> SurrealMemory:
     """
     Create SurrealDB memory system with environment configuration
@@ -1446,7 +1492,7 @@ def create_surreal_memory_system(
     Environment Variables:
     - SURREALDB_URL: SurrealDB connection URL (default: ws://localhost:8000/rpc)
     - SURREALDB_NAMESPACE: Database namespace (default: slowcat)
-    - SURREALDB_DATABASE: Database name (default: memory)
+    - SURREALDB_DATABASE: Database name (default: memory_graph)
     """
     
     # Use environment variables with fallbacks

@@ -515,21 +515,62 @@ class FactsGraph:
 # Utility functions
 def extract_facts_from_text(text: str) -> List[Dict]:
     """
-    Extract facts from natural language text using spaCy dependency parsing
-    
-    Uses pure linguistic analysis - NO LLM calls, NO hardcoded patterns.
-    Returns structured facts in the format expected by FactsGraph.
+    Extract facts from natural language text using spaCy dependency parsing.
+
+    If the spaCy pipeline is unavailable or yields no results, fall back to a
+    minimal deterministic extractor for a few high‑value personal facts to keep
+    memory functional in offline/dev environments (e.g., pet name).
     """
+    facts: List[Dict] = []
+    # 1) Try spaCy high‑accuracy extractor first
     try:
-        # Import here to avoid circular dependencies
         from memory.spacy_fact_extractor import extract_facts_from_text as spacy_extract
-        
-        facts = spacy_extract(text)
-        logger.debug(f"🔍 spaCy extracted {len(facts)} facts from text")
-        return facts
-        
+        facts = spacy_extract(text) or []
+        if facts:
+            logger.debug(f"🔍 spaCy extracted {len(facts)} facts from text")
+            return facts
     except Exception as e:
-        logger.error(f"spaCy fact extraction failed: {e}")
+        logger.debug(f"spaCy extractor unavailable: {e}")
+
+    # 2) Lightweight fallback for critical personal facts (no heavy deps)
+    try:
+        import re
+        t = (text or "").strip()
+        if not t:
+            return []
+
+        # Normalize quotes and spacing
+        norm = re.sub(r"\s+", " ", t)
+
+        candidates: List[Dict] = []
+
+        # Pattern: "my dog's name is X" / "my dog is named X" / "my dog's called X"
+        pet_patterns = [
+            r"\bmy\s+dog(?:'s)?\s+name\s+is\s+([A-Z][A-Za-z0-9_-]{1,32})\b",
+            r"\bmy\s+dog\s+is\s+named\s+([A-Z][A-Za-z0-9_-]{1,32})\b",
+            r"\bmy\s+dog(?:'s)?\s+called\s+([A-Z][A-Za-z0-9_-]{1,32})\b",
+        ]
+        for pat in pet_patterns:
+            m = re.search(pat, norm, flags=re.IGNORECASE)
+            if m:
+                name = m.group(1)
+                # Capitalize nicely
+                name = name[0].upper() + name[1:]
+                candidates.append({
+                    'subject': 'user',
+                    'predicate': 'dog_name',
+                    'value': name,
+                    'fidelity': 3,
+                    'source_text': text,
+                })
+                break
+
+        # Future: add a few more safe patterns here if needed (location, preferred_name)
+
+        if candidates:
+            logger.debug(f"🔎 Fallback extracted {len(candidates)} fact(s) from text")
+        return candidates
+    except Exception:
         return []
 
 

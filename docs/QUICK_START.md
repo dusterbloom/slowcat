@@ -16,9 +16,10 @@ git clone <repository-url>
 cd slowcat
 ```
 
-### Step 2: Start the Server
+### Step 2: Configure and Start the Server
 ```bash
 cd server/
+cp .env.example .env   # Surreal-first defaults; edit if needed
 ./run_bot.sh
 ```
 
@@ -44,6 +45,7 @@ Environment shortcuts:
 Notes:
 - Intended for LM Studio at `http://localhost:1234/v1` (default).
 - Slowcat automatically skips speculative decoding on non-local endpoints to avoid provider errors.
+- Memory backend defaults to SurrealDB graph. To switch, set `MEMORY_BACKEND=sqlite` or `stateless` in `.env`.
 
 ### Step 3: Start the Web Client
 ```bash
@@ -95,6 +97,10 @@ slowcat/
 - **Service Factory**: Manages all AI services (STT, LLM, TTS)
 - **Pipeline Builder**: Constructs processing pipelines
 - **Processors**: Handle specific tasks (music, dictation, voice recognition)
+- **Graph Memory (SurrealDB)**: Default memory system (sessions/messages/concepts)
+- **Smart Context Manager**: Read-only context assembly; Graph Writer handles persistence
+
+See also: `docs/SURREAL_GRAPH.md` for graph schema, verified query idioms, and troubleshooting.
 
 ## 🔧 Development Setup
 
