@@ -318,6 +318,25 @@ class SmartContextManager(FrameProcessor):
             except Exception as e:
                 logger.warning(f"Reflection loop not started: {e}")
         
+        # SurrealDB Message Storage Integration
+        self._enable_surreal = os.getenv('USE_SURREALDB', 'false').lower() == 'true'
+        self.surreal_store = None
+        
+        if self._enable_surreal:
+            try:
+                from processors.surreal_message_store import create_surreal_message_store
+                
+                self.surreal_store = create_surreal_message_store(
+                    speaker_id=self._user_id,
+                    auto_create_session=True
+                )
+                
+                if self.surreal_store:
+                    logger.info("📝 SurrealDB message storage enabled")
+                
+            except Exception as e:
+                logger.warning(f"SurrealDB message store initialization failed: {e}")
+                self.surreal_store = None
     def _trace_sessions(self, event: str, **data):
         """Targeted session trace when SC_TRACE_SESSIONS=true."""
         try:
@@ -476,6 +495,13 @@ class SmartContextManager(FrameProcessor):
             except Exception as e:
                 logger.debug(f"TapeStore write (user) enqueue failed: {e}")
             
+            # 1c. Store user message in SurrealDB
+            try:
+                if self.surreal_store and self._is_semantically_useful(user_text):
+                    asyncio.create_task(self.surreal_store._handle_user_message(user_text))
+            except Exception as e:
+                logger.debug(f"SurrealDB user message store failed: {e}")
+            
             # 2. Update session in memory system
             try:
                 key = self._speaker_key()
@@ -591,6 +617,11 @@ class SmartContextManager(FrameProcessor):
         # Heuristic gate: only query memory when input likely needs it
         should_query_memory = self._is_memory_candidate(user_input)
 
+        # Initialize variables that may be used across different memory system branches
+        dth_candidates = []
+        verified_lines: List[str] = []
+        strict_answer_mode = self._is_personal_facts_candidate(user_input)
+        
         # Try smart router first (Facts + Tape integration) if gated in
         if should_query_memory and self.query_router is not None:
             try:
@@ -619,9 +650,6 @@ class SmartContextManager(FrameProcessor):
                     )
                 
                 # Extract memory candidates and verified facts from router response
-                dth_candidates = []
-                verified_lines: List[str] = []
-                strict_answer_mode = self._is_personal_facts_candidate(user_input)
                 
                 # RetrievalResponse contains results from both facts and tape stores
                 try:
@@ -700,7 +728,7 @@ class SmartContextManager(FrameProcessor):
                 
             except Exception as e:
                 logger.warning(f"Smart router failed, falling back to DTH: {e}")
-                dth_candidates = []
+                # Don't reset dth_candidates here - keep whatever was initialized
         
         # Fallback to DTH if smart router unavailable or failed
         elif self.tape_head is not None:
@@ -783,7 +811,7 @@ class SmartContextManager(FrameProcessor):
                 
             except Exception as e:
                 logger.warning(f"DTH + DSPy memory selection failed: {e}")
-                dth_candidates = []
+                # Don't reset dth_candidates here - keep whatever was initialized
         
         else:
             # No memory system available
@@ -2220,6 +2248,20 @@ class SmartContextManager(FrameProcessor):
         else:
             # No prior user turn recorded; still keep assistant to avoid losing context
             self.recent_exchanges.append(("", response))
+        
+        # Store in SurrealDB if enabled
+        try:
+            if self.surreal_store and response.strip():
+                asyncio.create_task(self.surreal_store._handle_assistant_message(response.strip()))
+        except Exception as e:
+            logger.debug(f"SurrealDB assistant message store failed: {e}")
+        
+        # Store in tape store if enabled  
+        try:
+            if self.tape_store and self._is_semantically_useful(response):
+                self._enqueue_tape_write('assistant', response)
+        except Exception as e:
+            logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
 
         # Maintain sliding window
         if len(self.recent_exchanges) > self.max_recent_exchanges:

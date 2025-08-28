@@ -2,3 +2,6 @@
 SELECT * FROM facts;
 SELECT * FROM tape;
 INFO FOR TABLE facts;
+SELECT * FROM sessions LIMIT 2;
+CREATE sessions SET session_id = 'test_session_123', speaker_id = 'test_user', start_time = time::now(), is_active = true, turn_count = 0, total_tokens = 0, metadata = {};
+INFO FOR TABLE sessions;

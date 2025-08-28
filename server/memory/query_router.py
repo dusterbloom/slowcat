@@ -35,7 +35,7 @@ except ImportError:
 from memory.query_classifier import (
     HybridQueryClassifier, QueryIntent, ClassificationResult, create_query_classifier
 )
-from memory.facts_graph import FactsGraph
+# from memory.facts_graph import FactsGraph  # Replaced with SurrealDB connection manager
 
 
 class RoutingStrategy(Enum):
@@ -102,7 +102,7 @@ class MemoryStoreInterface:
 class FactsStoreAdapter(MemoryStoreInterface):
     """Adapter for Facts Graph"""
     
-    def __init__(self, facts_graph: FactsGraph):
+    def __init__(self, facts_graph):
         self.facts_graph = facts_graph
         # Semantic fallback (optional, generic — no domain hardcoding)
         self._encoder = None
@@ -572,7 +572,7 @@ class QueryRouter:
     """
     
     def __init__(self, 
-                 facts_graph: Optional[FactsGraph] = None,
+                 facts_graph = None,
                  tape_store=None,
                  embedding_store=None):
         
@@ -892,7 +892,7 @@ class QueryRouter:
 
 
 # Factory function
-def create_query_router(facts_graph: Optional[FactsGraph] = None,
+def create_query_router(facts_graph = None,
                        tape_store=None,
                        embedding_store=None) -> QueryRouter:
     """Create and return a configured query router"""

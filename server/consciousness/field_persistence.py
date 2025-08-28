@@ -25,16 +25,20 @@ from loguru import logger
 
 # Import existing SurrealDB infrastructure
 try:
-    from memory.surreal_memory import SurrealMemory, SURREALDB_AVAILABLE
+    from memory.surreal_connection import SurrealConnectionManager, SURREALDB_AVAILABLE
     if SURREALDB_AVAILABLE:
         from surrealdb import AsyncSurreal
+        # Backward compatibility alias
+        SurrealMemory = SurrealConnectionManager
     else:
         AsyncSurreal = None
+        SurrealMemory = None
 except ImportError:
     logger.warning("SurrealDB memory system not available")
     SURREALDB_AVAILABLE = False
     SurrealMemory = None
     AsyncSurreal = None
+    SurrealConnectionManager = None
 
 # Import consciousness components
 try:
@@ -83,7 +87,7 @@ class FieldPersistenceLayer:
     """
     
     def __init__(self, 
-                 surreal_memory: Optional[SurrealMemory] = None,
+                 surreal_memory: Optional[SurrealConnectionManager] = None,
                  surreal_url: str = None,
                  namespace: str = None,
                  database: str = None):
@@ -91,7 +95,7 @@ class FieldPersistenceLayer:
         Initialize field persistence layer
         
         Args:
-            surreal_memory: Existing SurrealMemory instance (preferred)
+            surreal_memory: Existing SurrealConnectionManager instance (preferred)
             surreal_url: SurrealDB URL if creating new connection
             namespace: SurrealDB namespace
             database: SurrealDB database name
@@ -104,7 +108,7 @@ class FieldPersistenceLayer:
         
         self.enabled = True
         
-        # Use existing SurrealMemory instance or create new connection
+        # Use existing SurrealConnectionManager instance or create new connection
         if surreal_memory:
             self.surreal_memory = surreal_memory
             self.db = surreal_memory.db if surreal_memory.connected else None
@@ -113,9 +117,13 @@ class FieldPersistenceLayer:
             # Create new connection with environment defaults
             surreal_url = surreal_url or os.getenv('SURREALDB_URL', 'ws://localhost:8000/rpc')
             namespace = namespace or os.getenv('SURREALDB_NAMESPACE', 'slowcat')
-            database = database or os.getenv('SURREALDB_DATABASE', 'memory')
+            database = database or os.getenv('SURREALDB_DATABASE', 'memory_graph')
             
-            self.surreal_memory = SurrealMemory(surreal_url, namespace, database)
+            self.surreal_memory = SurrealConnectionManager(
+                url=surreal_url, 
+                namespace=namespace, 
+                database=database
+            )
             self.db = None
             self.own_connection = True
         
