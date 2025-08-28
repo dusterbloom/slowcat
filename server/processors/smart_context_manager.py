@@ -2784,12 +2784,17 @@ class SmartContextManager(FrameProcessor):
 
 # Factory function for easy integration
 def create_smart_context_manager(context, facts_db_path="data/facts.db", max_tokens=8192, 
-                                 enable_consciousness=None, user_id=None):
+                                 enable_consciousness=None, user_id=None, consciousness_config=None):
     """Create SmartContextManager instance with consciousness integration"""
     
-    # Check if consciousness should be enabled (default to environment setting)
+    # Import configuration if not provided
+    if consciousness_config is None:
+        from config import config
+        consciousness_config = config.consciousness
+    
+    # Check if consciousness should be enabled (prioritize parameter, then config)
     if enable_consciousness is None:
-        enable_consciousness = os.getenv('ENABLE_CONSCIOUSNESS', 'true').lower() == 'true'
+        enable_consciousness = consciousness_config.enabled
     
     # Get user ID from environment if not provided
     if user_id is None:
@@ -2803,17 +2808,54 @@ def create_smart_context_manager(context, facts_db_path="data/facts.db", max_tok
         user_id=user_id
     )
     
-    # Integrate consciousness if enabled
+    # Integrate consciousness if enabled and available
     if enable_consciousness:
-        try:
-            from consciousness.core import create_consciousness
-            consciousness = create_consciousness(load_state=False)  # Don't load state here, SmartContextManager will handle it
-            smart_manager.set_consciousness_instance(consciousness)
-            logger.info("🧠 Consciousness integrated with SmartContextManager")
-        except ImportError as e:
-            logger.warning(f"Consciousness not available: {e}")
-        except Exception as e:
-            logger.warning(f"Failed to integrate consciousness: {e}")
+        # Check consciousness dependencies before attempting integration
+        from config import config
+        validation_result = config.validate_configuration()
+        consciousness_status = validation_result['consciousness_status']
+        
+        if consciousness_status['can_run']:
+            try:
+                # Use consciousness configuration for creation
+                from consciousness.core import create_consciousness
+                
+                # Create consciousness instance - configuration will be applied after creation
+                consciousness = create_consciousness(load_state=False)
+                
+                # Apply configuration settings if MLX is available
+                if consciousness_config.should_enable_mlx():
+                    logger.debug(f"🧠 Consciousness configured with MLX: field_dim={consciousness_config.field_dimension}, capacity={consciousness_config.symbol_capacity}")
+                    # Note: Configuration parameters would be applied here if the consciousness API supported them
+                    # For now, the consciousness uses its internal defaults
+                smart_manager.set_consciousness_instance(consciousness)
+                
+                # Configure field persistence if available
+                if consciousness_config.enable_field_persistence and consciousness_status['surrealdb_available']:
+                    logger.info("🧠 Consciousness integrated with field persistence enabled")
+                else:
+                    logger.info("🧠 Consciousness integrated without field persistence")
+                    
+            except ImportError as e:
+                if consciousness_config.graceful_degradation:
+                    logger.warning(f"Consciousness dependencies missing, running without: {e}")
+                else:
+                    logger.error(f"Consciousness required but not available: {e}")
+                    raise
+            except Exception as e:
+                if consciousness_config.graceful_degradation:
+                    logger.warning(f"Failed to integrate consciousness, gracefully degrading: {e}")
+                else:
+                    logger.error(f"Consciousness integration failed: {e}")
+                    raise
+        else:
+            missing_deps = consciousness_status['missing']
+            if consciousness_config.graceful_degradation:
+                logger.warning(f"Consciousness disabled due to missing dependencies: {', '.join(missing_deps)}")
+            else:
+                raise ImportError(f"Consciousness required but dependencies missing: {', '.join(missing_deps)}")
+    else:
+        logger.debug("Consciousness disabled by configuration")
     
     return smart_manager
 

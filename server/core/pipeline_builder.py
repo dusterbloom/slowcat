@@ -723,8 +723,9 @@ class PipelineBuilder:
             context=context,
             facts_db_path=config.memory.facts_db_path,
             max_tokens=4096,
-            enable_consciousness=True,  # Enable consciousness by default 
-            user_id=user_id
+            enable_consciousness=config.consciousness.enabled,  # Use configuration setting
+            user_id=user_id,
+            consciousness_config=config.consciousness  # Pass consciousness config
         )
 
     def _create_response_tap(self, smart_context_manager):

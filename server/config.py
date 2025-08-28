@@ -204,6 +204,110 @@ class DJModeConfig:
 
 
 @dataclass
+class ConsciousnessConfig:
+    """Neural field consciousness system configuration"""
+    
+    # Core consciousness settings
+    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_CONSCIOUSNESS", "true").lower() == "true")
+    enable_field_persistence: bool = field(default_factory=lambda: os.getenv("ENABLE_FIELD_PERSISTENCE", "true").lower() == "true")
+    enable_smart_routing: bool = field(default_factory=lambda: os.getenv("ENABLE_SMART_ROUTING", "true").lower() == "true")
+    
+    # MLX acceleration settings
+    enable_mlx_acceleration: str = field(default_factory=lambda: os.getenv("ENABLE_MLX_ACCELERATION", "auto"))
+    mlx_device: str = field(default_factory=lambda: os.getenv("MLX_DEVICE", "auto"))
+    mlx_memory_limit: Optional[str] = field(default_factory=lambda: os.getenv("MLX_MEMORY_LIMIT"))
+    
+    # Neural field parameters
+    field_dimension: int = field(default_factory=lambda: int(os.getenv("CONSCIOUSNESS_FIELD_DIM", "512")))
+    symbol_capacity: int = field(default_factory=lambda: int(os.getenv("CONSCIOUSNESS_SYMBOL_CAPACITY", "1000")))
+    field_evolution_rate: float = field(default_factory=lambda: float(os.getenv("CONSCIOUSNESS_EVOLUTION_RATE", "0.1")))
+    consciousness_temperature: float = field(default_factory=lambda: float(os.getenv("CONSCIOUSNESS_TEMPERATURE", "0.7")))
+    
+    # Persistence settings
+    field_save_frequency: int = field(default_factory=lambda: int(os.getenv("CONSCIOUSNESS_SAVE_FREQUENCY", "10")))
+    enable_cross_session_continuity: bool = field(default_factory=lambda: os.getenv("ENABLE_CROSS_SESSION_CONTINUITY", "true").lower() == "true")
+    field_history_retention_hours: int = field(default_factory=lambda: int(os.getenv("CONSCIOUSNESS_RETENTION_HOURS", "168")))  # 1 week default
+    
+    # Integration settings
+    consciousness_influence_weight: float = field(default_factory=lambda: float(os.getenv("CONSCIOUSNESS_INFLUENCE_WEIGHT", "0.3")))
+    enable_consciousness_insights: bool = field(default_factory=lambda: os.getenv("ENABLE_CONSCIOUSNESS_INSIGHTS", "true").lower() == "true")
+    enable_field_visualization: bool = field(default_factory=lambda: os.getenv("ENABLE_FIELD_VISUALIZATION", "false").lower() == "true")
+    
+    # Performance settings
+    field_update_batch_size: int = field(default_factory=lambda: int(os.getenv("CONSCIOUSNESS_BATCH_SIZE", "32")))
+    enable_async_field_operations: bool = field(default_factory=lambda: os.getenv("ENABLE_ASYNC_FIELD_OPS", "true").lower() == "true")
+    consciousness_processing_timeout: float = field(default_factory=lambda: float(os.getenv("CONSCIOUSNESS_TIMEOUT", "5.0")))
+    
+    # Debug and monitoring
+    enable_consciousness_logging: bool = field(default_factory=lambda: os.getenv("ENABLE_CONSCIOUSNESS_LOGGING", "false").lower() == "true")
+    consciousness_log_level: str = field(default_factory=lambda: os.getenv("CONSCIOUSNESS_LOG_LEVEL", "INFO"))
+    enable_field_metrics: bool = field(default_factory=lambda: os.getenv("ENABLE_FIELD_METRICS", "false").lower() == "true")
+    
+    # Fallback and compatibility
+    graceful_degradation: bool = field(default_factory=lambda: os.getenv("CONSCIOUSNESS_GRACEFUL_DEGRADATION", "true").lower() == "true")
+    fallback_to_standard_context: bool = field(default_factory=lambda: os.getenv("CONSCIOUSNESS_FALLBACK_STANDARD", "true").lower() == "true")
+    
+    def validate(self) -> bool:
+        """Validate consciousness configuration settings"""
+        try:
+            # Check field parameters are positive
+            if self.field_dimension <= 0 or self.symbol_capacity <= 0:
+                return False
+            
+            # Check rates are in valid ranges
+            if not (0.0 <= self.field_evolution_rate <= 1.0):
+                return False
+            
+            if not (0.0 <= self.consciousness_temperature <= 2.0):
+                return False
+            
+            if not (0.0 <= self.consciousness_influence_weight <= 1.0):
+                return False
+            
+            # Check timeout is reasonable
+            if self.consciousness_processing_timeout <= 0:
+                return False
+            
+            return True
+            
+        except (ValueError, TypeError):
+            return False
+    
+    def should_enable_mlx(self) -> bool:
+        """Determine if MLX acceleration should be enabled based on availability"""
+        if self.enable_mlx_acceleration == "false":
+            return False
+        elif self.enable_mlx_acceleration == "true":
+            return True
+        else:  # "auto"
+            try:
+                import mlx.core as mx
+                return mx.metal.is_available() if hasattr(mx, 'metal') else True
+            except ImportError:
+                return False
+    
+    def get_effective_config(self) -> Dict[str, Any]:
+        """Get the effective configuration with runtime detection"""
+        config = {
+            'enabled': self.enabled,
+            'mlx_available': self.should_enable_mlx(),
+            'field_persistence_enabled': self.enable_field_persistence,
+            'smart_routing_enabled': self.enable_smart_routing,
+        }
+        
+        # Add MLX-specific settings if available
+        if config['mlx_available']:
+            config.update({
+                'field_dimension': self.field_dimension,
+                'symbol_capacity': self.symbol_capacity,
+                'evolution_rate': self.field_evolution_rate,
+                'temperature': self.consciousness_temperature
+            })
+        
+        return config
+
+
+@dataclass
 class LanguageVoiceMapping:
     """Language to voice mapping"""
     voice: str
@@ -662,6 +766,7 @@ class Config:
     conversation_timer: ConversationTimerConfig = field(default_factory=ConversationTimerConfig)
     dictation_mode: DictationModeConfig = field(default_factory=DictationModeConfig)
     dj_mode: DJModeConfig = field(default_factory=DJModeConfig)
+    consciousness: ConsciousnessConfig = field(default_factory=ConsciousnessConfig)
     
     # Language settings
     default_language: str = "en"
@@ -679,6 +784,93 @@ class Config:
     def get_voice_code(self, language: str) -> str:
         """Get voice code for language with fallback"""
         return self.language_to_voice_code.get(language, self.language_to_voice_code["en"])
+    
+    def validate_configuration(self) -> Dict[str, Any]:
+        """Validate entire configuration and return status"""
+        validation_result = {
+            'valid': True,
+            'errors': [],
+            'warnings': [],
+            'consciousness_status': {}
+        }
+        
+        # Validate consciousness configuration
+        if not self.consciousness.validate():
+            validation_result['valid'] = False
+            validation_result['errors'].append("Invalid consciousness configuration parameters")
+        
+        # Check consciousness dependencies
+        consciousness_status = self._check_consciousness_dependencies()
+        validation_result['consciousness_status'] = consciousness_status
+        
+        if self.consciousness.enabled and not consciousness_status['can_run']:
+            if self.consciousness.graceful_degradation:
+                validation_result['warnings'].append(
+                    f"Consciousness enabled but dependencies missing: {', '.join(consciousness_status['missing'])}"
+                )
+            else:
+                validation_result['valid'] = False
+                validation_result['errors'].append(
+                    f"Consciousness required but dependencies missing: {', '.join(consciousness_status['missing'])}"
+                )
+        
+        return validation_result
+    
+    def _check_consciousness_dependencies(self) -> Dict[str, Any]:
+        """Check consciousness system dependencies"""
+        status = {
+            'can_run': False,
+            'mlx_available': False,
+            'surrealdb_available': False,
+            'missing': [],
+            'available': []
+        }
+        
+        # Check MLX availability
+        try:
+            import mlx.core as mx
+            status['mlx_available'] = True
+            status['available'].append('MLX')
+        except ImportError:
+            status['missing'].append('MLX')
+        
+        # Check SurrealDB availability for field persistence
+        try:
+            from consciousness.field_persistence import SURREALDB_AVAILABLE
+            if SURREALDB_AVAILABLE:
+                status['surrealdb_available'] = True
+                status['available'].append('SurrealDB')
+            else:
+                status['missing'].append('SurrealDB')
+        except ImportError:
+            status['missing'].append('SurrealDB')
+        
+        # Check consciousness core
+        try:
+            from consciousness.core import Consciousness
+            status['available'].append('Consciousness Core')
+        except ImportError:
+            status['missing'].append('Consciousness Core')
+        
+        # Can run if we have at least consciousness core
+        # MLX and SurrealDB are optional depending on configuration
+        status['can_run'] = 'Consciousness Core' in status['available']
+        
+        return status
+    
+    def get_consciousness_effective_config(self) -> Dict[str, Any]:
+        """Get effective consciousness configuration based on dependencies"""
+        base_config = self.consciousness.get_effective_config()
+        
+        # Override based on actual dependency availability
+        deps = self._check_consciousness_dependencies()
+        base_config.update({
+            'dependencies': deps,
+            'mlx_override': deps['mlx_available'] and self.consciousness.should_enable_mlx(),
+            'persistence_override': deps['surrealdb_available'] and self.consciousness.enable_field_persistence
+        })
+        
+        return base_config
 
 
 # Global config instance
