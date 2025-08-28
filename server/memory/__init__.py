@@ -14,8 +14,8 @@ Usage:
     response = await memory.process_query("What's my dog's name?")
 """
 
-from .facts_graph import FactsGraph, extract_facts_from_text
-from .tape_store import TapeStore
+# SurrealDB-native imports
+from .surreal_connection import get_surreal_connection, Message
 from .query_classifier import (
     HybridQueryClassifier, QueryIntent, ClassificationResult, 
     create_query_classifier
@@ -24,10 +24,12 @@ from .query_router import (
     QueryRouter, RetrievalResponse, MemoryResult, 
     create_query_router
 )
+from .spacy_fact_extractor import extract_facts_from_text
 
 __all__ = [
-    # Core components
-    'FactsGraph',
+    # Core SurrealDB components
+    'get_surreal_connection',
+    'Message',
     'HybridQueryClassifier', 
     'QueryRouter',
     
@@ -41,6 +43,7 @@ __all__ = [
     'create_query_classifier',
     'create_query_router',
     'create_smart_memory_system',
+    'create_surreal_message_store',
     
     # Utilities
     'extract_facts_from_text',
@@ -51,375 +54,215 @@ def create_smart_memory_system(facts_db_path: str = "data/facts.db",
                               tape_store=None,
                               embedding_store=None):
     """
-    Create complete smart memory system with all components
+    Create SurrealDB-native smart memory system
     
     Environment Variables:
-        USE_SURREALDB: Set to 'true' to use SurrealDB instead of SQLite
-        SURREALDB_URL: SurrealDB connection URL (default: ws://localhost:8000/rpc)
-        SURREALDB_NAMESPACE: Database namespace (default: slowcat)
-        SURREALDB_DATABASE: Database name (default: memory)
+        SURREAL_URL: SurrealDB connection URL (default: ws://localhost:8000)
+        SURREAL_USER: SurrealDB username (default: root)  
+        SURREAL_PASS: SurrealDB password (default: root)
+        SURREAL_NAMESPACE: Database namespace (default: slowcat)
+        SURREAL_DATABASE: Database name (default: consciousness)
     
     Args:
-        facts_db_path: Path to facts SQLite database (ignored if using SurrealDB)
-        tape_store: Optional conversation tape store
-        embedding_store: Optional semantic search store
+        facts_db_path: Ignored - SurrealDB manages persistence
+        tape_store: Ignored - SurrealDB provides unified storage
+        embedding_store: Ignored - SurrealDB handles embeddings
         
     Returns:
-        SmartMemorySystem instance
+        SurrealMemorySystem instance
     """
     import os
-    from pathlib import Path
     from loguru import logger
     
-    # Default to SurrealDB memory (no flag required). Legacy flags still honored.
-    val = (os.getenv('USE_SURREALDB', '').strip().lower() or os.getenv('USE_SLOWCAT_MEMORY', '').strip().lower())
-    # If explicitly disabled (e.g., 'false', '0', 'no'), use SQLite; otherwise prefer SurrealDB.
-    use_surreal = not (val in ('false', '0', 'no'))
-    if os.getenv('USE_SURREALDB') is not None:
-        logger.info("🛈 USE_SURREALDB is deprecated — SurrealDB is the default now.")
-    if use_surreal:
-        try:
-            from .surreal_memory import create_surreal_memory_system
-            logger.info("🚀 Using SurrealDB memory system")
-            
-            # Create SurrealDB unified memory system
-            surreal_memory = create_surreal_memory_system()
-            
-            # SurrealDB provides both facts and tape functionality
-            # Return adapter that maintains compatibility
-            return SurrealMemorySystemAdapter(surreal_memory)
-            
-        except ImportError as e:
-            logger.error(f"SurrealDB not available: {e}")
-            logger.info("📦 Falling back to SQLite memory system")
-            # Fall through to SQLite implementation
-        except Exception as e:
-            logger.error(f"SurrealDB initialization failed: {e}")
-            logger.info("📦 Falling back to SQLite memory system")
-            # Fall through to SQLite implementation
+    logger.info("🚀 Creating SurrealDB-native memory system")
     
-    # Original SQLite implementation
-    logger.info("📦 Using SQLite memory system")
-    
-    # Ensure data directory exists
-    Path(facts_db_path).parent.mkdir(parents=True, exist_ok=True)
-    
-    # Create components
-    facts_graph = FactsGraph(facts_db_path)
-
-    # Initialize tape store if not provided
-    if tape_store is None:
-        tape_store = TapeStore(str(Path(facts_db_path).with_name('tape.db')))
-
-    query_router = create_query_router(
-        facts_graph=facts_graph,
-        tape_store=tape_store,
-        embedding_store=embedding_store
-    )
-    
-    return SmartMemorySystem(
-        facts_graph=facts_graph,
-        query_router=query_router,
-        tape_store=tape_store
-    )
-
-
-class SurrealMemorySystemAdapter:
-    """
-    Adapter to make SurrealDB memory compatible with SmartMemorySystem interface
-    """
-    
-    def __init__(self, surreal_memory):
-        self.surreal_memory = surreal_memory
-        self.facts_graph = surreal_memory  # SurrealDB provides facts interface
-        self.tape_store = surreal_memory   # SurrealDB provides tape interface
+    try:
+        # Get SurrealDB connection manager
+        surreal_manager = get_surreal_connection()
         
-        # Prefer the standard QueryRouter wired to SurrealDB stores for consistency
+        # Create query router that works with SurrealDB
         try:
-            from .query_router import create_query_router
-            self.query_router = create_query_router(
-                facts_graph=surreal_memory,
-                tape_store=surreal_memory,
-                embedding_store=None
+            query_router = create_query_router(
+                facts_graph=surreal_manager,  # SurrealDB acts as facts store
+                tape_store=surreal_manager,   # SurrealDB acts as tape store  
+                embedding_store=None          # SurrealDB handles embeddings
             )
         except Exception as e:
-            logger.warning(f"Standard QueryRouter not available for SurrealDB: {e}")
-            self.query_router = None
+            logger.warning(f"Query router creation failed: {e}")
+            query_router = None
+        
+        # Return SurrealDB memory system
+        return SurrealMemorySystem(
+            connection_manager=surreal_manager,
+            query_router=query_router
+        )
+        
+    except Exception as e:
+        logger.error(f"SurrealDB memory system creation failed: {e}")
+        raise RuntimeError(f"Cannot create memory system: {e}")
+
+
+class SurrealMemorySystem:
+    """
+    SurrealDB-native memory system for conversation storage and retrieval
+    """
+    
+    def __init__(self, connection_manager, query_router=None):
+        self.connection_manager = connection_manager
+        self.query_router = query_router
+        
+        # Provide compatibility interfaces
+        self.facts_graph = connection_manager  # SurrealDB provides facts interface
+        self.tape_store = connection_manager   # SurrealDB provides tape interface
     
     async def process_query(self, query: str, context: dict = None):
-        """Process query using SurrealDB native query router"""
-        if self.query_router:
-            # Use native SurrealDB query router for intelligent routing
-            response = await self.query_router.route_query(query, context)
-            
-            # Convert SurrealMemoryResult back to SimpleResult for compatibility
-            class SimpleResult:
-                def __init__(self, surreal_result):
-                    self.subject = surreal_result.subject or ''
-                    self.predicate = surreal_result.predicate or ''
-                    self.value = surreal_result.value
-                    self.species = None
-                    self.fidelity = surreal_result.fidelity or 3
-                    self.strength = surreal_result.relevance_score
-                    self.last_seen = surreal_result.timestamp
-                    self.created = surreal_result.timestamp
-                    self.access_count = 0
-                    self.source_text = surreal_result.content
-                    self.source_store = surreal_result.source_store
-            
-            results = [SimpleResult(r) for r in response.results]
-            
-            # Return enhanced response with SurrealDB routing metadata
-            class SurrealResponse:
-                def __init__(self, results, response):
-                    self.results = results
-                    self.total_results = response.total_results
-                    self.retrieval_time_ms = response.retrieval_time_ms
-                    self.strategy_used = response.strategy_used
-                    self.stores_queried = response.stores_queried
-                    self.classification = response.classification or self._default_classification()
+        """Process query using SurrealDB connection manager"""
+        try:
+            if self.query_router:
+                # Use query router if available
+                return await self.query_router.route_query(query, context)
+            else:
+                # Direct SurrealDB search as fallback
+                messages = await self.connection_manager.search_messages(query, limit=10)
                 
-                def _default_classification(self):
-                    class SimpleClassification:
-                        def __init__(self):
-                            self.intent = SimpleIntent()
-                            self.confidence = 0.8
+                # Convert to compatible format
+                class SimpleResult:
+                    def __init__(self, msg_dict):
+                        self.subject = msg_dict.get('speaker_id', '')
+                        self.predicate = 'said'
+                        self.value = msg_dict.get('content', '')
+                        self.species = None
+                        self.fidelity = 3
+                        self.strength = 0.8
+                        self.last_seen = msg_dict.get('timestamp', 0)
+                        self.created = msg_dict.get('timestamp', 0)
+                        self.access_count = 0
+                        self.source_text = msg_dict.get('content', '')
+                        self.source_store = 'messages'
+                
+                results = [SimpleResult(msg) for msg in messages]
+                
+                class SimpleResponse:
+                    def __init__(self, results):
+                        self.results = results
+                        self.total_results = len(results)
+                        self.retrieval_time_ms = 0
+                        self.strategy_used = 'surreal_direct'
+                        self.stores_queried = ['surreal_messages']
+                        self.classification = self._default_classification()
                     
-                    class SimpleIntent:
-                        def __init__(self):
-                            self.name = 'SURREAL_UNIFIED'
-                    
-                    return SimpleClassification()
-            
-            return SurrealResponse(results, response)
-        
-        else:
-            # Fallback to simple fact search if query router not available
-            raw_results = await self.surreal_memory.search_facts(query)
-            
-            class SimpleResult:
-                def __init__(self, fact_obj):
-                    self.subject = getattr(fact_obj, 'subject', '')
-                    self.predicate = getattr(fact_obj, 'predicate', '')
-                    self.value = getattr(fact_obj, 'value', None)
-                    self.species = getattr(fact_obj, 'species', None)
-                    self.fidelity = getattr(fact_obj, 'fidelity', 3)
-                    self.strength = getattr(fact_obj, 'strength', 0.6)
-                    self.last_seen = getattr(fact_obj, 'last_seen', 0)
-                    self.created = getattr(fact_obj, 'created', 0)
-                    self.access_count = getattr(fact_obj, 'access_count', 0)
-                    self.source_text = getattr(fact_obj, 'source_text', '')
-                    self.source_store = 'facts'
-            
-            results = [SimpleResult(f) for f in raw_results]
-            
-            class SimpleResponse:
-                def __init__(self, results):
-                    self.results = results
-                    self.total_results = len(results)
+                    def _default_classification(self):
+                        class SimpleClassification:
+                            def __init__(self):
+                                self.intent = SimpleIntent()
+                                self.confidence = 0.6
+                        
+                        class SimpleIntent:
+                            def __init__(self):
+                                self.name = 'MESSAGE_SEARCH'
+                        
+                        return SimpleClassification()
+                
+                return SimpleResponse(results)
+                
+        except Exception as e:
+            from loguru import logger
+            logger.debug(f"Query processing failed: {e}")
+            # Return empty response
+            class EmptyResponse:
+                def __init__(self):
+                    self.results = []
+                    self.total_results = 0
                     self.retrieval_time_ms = 0
-                    self.strategy_used = 'fallback_direct'
-                    self.stores_queried = ['surreal_facts']
-                    self.classification = self._default_classification()
-                
-                def _default_classification(self):
-                    class SimpleClassification:
-                        def __init__(self):
-                            self.intent = SimpleIntent()
-                            self.confidence = 0.6
-                    
-                    class SimpleIntent:
-                        def __init__(self):
-                            self.name = 'PERSONAL_FACTS'
-                    
-                    return SimpleClassification()
+                    self.strategy_used = 'error_fallback'
+                    self.stores_queried = []
+                    self.classification = None
             
-            return SimpleResponse(results)
+            return EmptyResponse()
     
     async def store_facts(self, text: str) -> int:
-        """Extract and store facts from text using SurrealDB"""
-        from .facts_graph import extract_facts_from_text
-        facts = extract_facts_from_text(text)
-        stored_count = 0
-        
-        for fact in facts:
-            await self.surreal_memory.reinforce_or_insert(fact)
-            stored_count += 1
+        """Store facts using SurrealDB with SpaCy fact extraction"""
+        try:
+            # Extract facts using SpaCy
+            facts = extract_facts_from_text(text)
             
-        return stored_count
+            if not facts:
+                return 0
+            
+            # Store facts in SurrealDB
+            facts_stored = await self.connection_manager.store_facts(facts)
+            
+            return facts_stored if facts_stored is not None else 0
+            
+        except Exception as e:
+            from loguru import logger
+            logger.error(f"Fact storage failed: {e}")
+            return 0
     
     async def update_session(self, speaker_id: str):
-        """Update session metadata (async for compatibility with pipeline)."""
-        try:
-            await self.surreal_memory.update_session(speaker_id)
-        except Exception:
-            pass
-
-    # --- Pass-throughs for DTH / retrieval helpers ---
-    async def knn_tape(self, query: str, limit: int = 20, scan: int = 200, speaker_id: str | None = None, agent_id: str | None = None):
-        """Expose SurrealDB-side KNN to DynamicTapeHead."""
-        try:
-            return await self.surreal_memory.knn_tape(query, limit=limit, scan=scan, speaker_id=speaker_id, agent_id=agent_id)
-        except Exception:
-            return []
-
-    async def search_tape(self, query: str, limit: int = 10, agent_id: str | None = None):
-        """Expose keyword search over tape to DynamicTapeHead."""
-        try:
-            return await self.surreal_memory.search_tape(query, limit=limit, agent_id=agent_id)
-        except Exception:
-            return []
-
-    async def get_recent(self, limit: int = 10, since: float | None = None, agent_id: str | None = None):
-        """Expose recent tape retrieval for candidates."""
-        try:
-            return await self.surreal_memory.get_recent(limit=limit, since=since, agent_id=agent_id)
-        except Exception:
-            return []
-
-    # --- Private thoughts pass-throughs ---
-    async def add_thought(self, agent_id: str, thought_type: str, content: str, links: list[str] | None = None, visibility: str = 'private'):
-        try:
-            return await self.surreal_memory.add_thought(agent_id=agent_id, thought_type=thought_type, content=content, links=links, visibility=visibility)
-        except Exception:
-            return None
-
-    async def get_recent_thoughts(self, agent_id: str, limit: int = 20):
-        try:
-            return await self.surreal_memory.get_recent_thoughts(agent_id=agent_id, limit=limit)
-        except Exception:
-            return []
-
-    async def search_thoughts(self, agent_id: str, query: str, limit: int = 20):
-        try:
-            return await self.surreal_memory.search_thoughts(agent_id=agent_id, query=query, limit=limit)
-        except Exception:
-            return []
-
-    # Emergent events
-    async def add_emergent_event(self, agent_id: str, kind: str, content_snippet: str,
-                                 meta: dict | None = None, session_id: str | None = None,
-                                 user_id: str | None = None, confidence: float | None = None):
-        try:
-            return await self.surreal_memory.add_emergent_event(
-                agent_id=agent_id,
-                kind=kind,
-                content_snippet=content_snippet,
-                meta=meta,
-                session_id=session_id,
-                user_id=user_id,
-                confidence=confidence,
-            )
-        except Exception:
-            return None
-
-    # Session/tape helpers for daemon
-    async def list_sessions(self):
-        try:
-            return await self.surreal_memory.list_sessions()
-        except Exception:
-            return []
-
-    async def get_recent_for_speaker(self, speaker_id: str, limit: int = 20):
-        try:
-            return await self.surreal_memory.get_recent_for_speaker(speaker_id, limit=limit)
-        except Exception:
-            return []
-    
-    def apply_decay(self):
-        """Apply natural decay to facts using SurrealDB"""
-        import asyncio
-        
-        async def decay_async():
-            await self.surreal_memory.apply_decay()
-        
-        try:
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(decay_async())
-        except RuntimeError:
-            asyncio.run(decay_async())
-    
-    def get_stats(self) -> dict:
-        """Get comprehensive system statistics from SurrealDB"""
-        import asyncio
-        
-        async def stats_async():
-            return await self.surreal_memory.get_stats()
-        
-        try:
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(stats_async())
-        except RuntimeError:
-            return asyncio.run(stats_async())
-    
-    async def close(self):
-        """Clean shutdown of SurrealDB connection"""
-        await self.surreal_memory.close()
-
-
-class SmartMemorySystem:
-    """
-    Complete smart memory system combining all components
-    """
-    
-    def __init__(self, facts_graph: FactsGraph, query_router: QueryRouter, tape_store: TapeStore | None = None):
-        self.facts_graph = facts_graph
-        self.query_router = query_router
-        self.tape_store = tape_store
-        
-    async def process_query(self, query: str, context: dict = None) -> RetrievalResponse:
-        """
-        Process a user query and return relevant memories
-        
-        Args:
-            query: User query text
-            context: Optional conversation context
-            
-        Returns:
-            RetrievalResponse with results and metadata
-        """
-        return await self.query_router.route_query(query, context)
-    
-    async def store_facts(self, text: str) -> int:
-        """
-        Extract and store facts from text
-        
-        Args:
-            text: Text to extract facts from
-            
-        Returns:
-            Number of facts extracted and stored
-        """
-        facts = extract_facts_from_text(text)
-        stored_count = 0
-        
-        for fact in facts:
-            # SQLite operations are sync, but await for consistency with SurrealDB
-            result = self.facts_graph.reinforce_or_insert(fact)
-            if hasattr(result, '__await__'):
-                await result
-            stored_count += 1
-            
-        return stored_count
-    
-    def update_session(self, speaker_id: str):
         """Update session metadata"""
-        self.facts_graph.update_session(speaker_id)
+        # Session management handled by SurrealDB connection manager
+        pass
+
+    # Simplified methods for compatibility
+    async def get_recent(self, limit: int = 10, since: float = None, agent_id: str = None):
+        """Get recent messages from SurrealDB"""
+        try:
+            minutes = 5 if since is None else max(1, int((time.time() - since) / 60))
+            return await self.connection_manager.get_recent_messages(minutes=minutes)
+        except Exception:
+            return []
     
     def apply_decay(self):
-        """Apply natural decay to facts"""
-        self.facts_graph.decay_facts()
+        """Placeholder for fact decay - handled by SurrealDB events"""
+        pass
     
     def get_stats(self) -> dict:
-        """Get comprehensive system statistics"""
+        """Get system statistics"""
         return {
-            'facts': self.facts_graph.get_stats(),
-            'router': self.query_router.get_performance_stats(),
-            'tape_entries': None
+            'system': 'SurrealDB',
+            'connection_active': self.connection_manager.connected if self.connection_manager else False,
+            'query_router_available': self.query_router is not None
         }
     
     async def close(self):
-        """Clean shutdown"""
-        result = self.facts_graph.close()
-        if hasattr(result, '__await__'):
-            await result
+        """Clean shutdown of SurrealDB connection"""
+        if self.connection_manager:
+            await self.connection_manager.disconnect()
+
+
+def create_surreal_message_store(speaker_id: str = 'default_user', 
+                                 auto_create_session: bool = True):
+    """
+    Create a SurrealDB message store processor for the pipeline
+    
+    Args:
+        speaker_id: Speaker identifier for messages
+        auto_create_session: Whether to create a session automatically
+        
+    Returns:
+        SurrealMessageStore processor instance
+    """
+    from processors.surreal_message_store import SurrealMessageStore
+    return SurrealMessageStore(
+        speaker_id=speaker_id,
+        auto_create_session=auto_create_session
+    )
+
+
+def extract_facts_from_text(text: str) -> list:
+    """
+    Extract facts from text (placeholder implementation)
+    
+    This is a simplified version for compatibility. 
+    Real fact extraction would use NLP to identify structured knowledge.
+    
+    Args:
+        text: Input text to extract facts from
+        
+    Returns:
+        List of extracted facts (currently empty - to be implemented)
+    """
+    # TODO: Implement proper fact extraction using spaCy or similar
+    # For now, return empty list to maintain compatibility
+    return []

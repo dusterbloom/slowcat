@@ -610,6 +610,7 @@ class PipelineBuilder:
             rtvi,  # ORIGINAL POSITION: between speaker_context and speaker_name_manager
             processors['speaker_name_manager'],
             # SmartContextManager updates context, then context_aggregator triggers LLM
+            # (SmartContextManager internally handles SurrealDB message storage)
             smart_ctx,
             context_aggregator.user(),  # Triggers LLM with SmartContextManager's updated context
             # Ensure clean, alternating message history before calling the LLM
