@@ -2783,13 +2783,39 @@ class SmartContextManager(FrameProcessor):
 
 
 # Factory function for easy integration
-def create_smart_context_manager(context, facts_db_path="data/facts.db", max_tokens=8192):
-    """Create SmartContextManager instance with unified 8K allocation"""
-    return SmartContextManager(
+def create_smart_context_manager(context, facts_db_path="data/facts.db", max_tokens=8192, 
+                                 enable_consciousness=None, user_id=None):
+    """Create SmartContextManager instance with consciousness integration"""
+    
+    # Check if consciousness should be enabled (default to environment setting)
+    if enable_consciousness is None:
+        enable_consciousness = os.getenv('ENABLE_CONSCIOUSNESS', 'true').lower() == 'true'
+    
+    # Get user ID from environment if not provided
+    if user_id is None:
+        user_id = os.getenv('USER_ID', 'default_user')
+    
+    # Create SmartContextManager
+    smart_manager = SmartContextManager(
         context=context,
         facts_db_path=facts_db_path,
-        max_tokens=max_tokens
+        max_tokens=max_tokens,
+        user_id=user_id
     )
+    
+    # Integrate consciousness if enabled
+    if enable_consciousness:
+        try:
+            from consciousness.core import create_consciousness
+            consciousness = create_consciousness(load_state=False)  # Don't load state here, SmartContextManager will handle it
+            smart_manager.set_consciousness_instance(consciousness)
+            logger.info("🧠 Consciousness integrated with SmartContextManager")
+        except ImportError as e:
+            logger.warning(f"Consciousness not available: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to integrate consciousness: {e}")
+    
+    return smart_manager
 
 
 # Self-test

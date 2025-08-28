@@ -18,6 +18,30 @@ from typing import List, Dict
 from dataclasses import dataclass
 from loguru import logger
 
+# Try to import temporal extractor
+try:
+    from memory.temporal_extractor import extract_temporal_expressions, extract_events_from_text
+    TEMPORAL_EXTRACTION_AVAILABLE = True
+except ImportError:
+    TEMPORAL_EXTRACTION_AVAILABLE = False
+    logger.warning("Temporal extraction not available")
+
+# Try to import coreference resolver
+try:
+    from memory.coreference_resolver import resolve_coreferences
+    COREFERENCE_RESOLUTION_AVAILABLE = True
+except ImportError:
+    COREFERENCE_RESOLUTION_AVAILABLE = False
+    logger.warning("Coreference resolution not available")
+
+# Try to import entity resolver
+try:
+    from memory.entity_resolver import resolve_entities_in_text
+    ENTITY_RESOLUTION_AVAILABLE = True
+except ImportError:
+    ENTITY_RESOLUTION_AVAILABLE = False
+    logger.warning("Entity resolution not available")
+
 @dataclass
 class Fact:
     """A structured fact extracted from text"""
@@ -79,8 +103,22 @@ class HighAccuracyFactExtractor:
         """
         logger.debug(f"🔍 Extracting facts from: '{text[:50]}...'")
 
-        # Process text with spaCy (preserve casing for NER quality)
-        doc = self.nlp(text.strip())
+        # Step 1: Resolve coreferences first to improve fact extraction
+        resolved_text = text
+        if COREFERENCE_RESOLUTION_AVAILABLE:
+            resolved_text = resolve_coreferences(text.strip())
+            if resolved_text != text.strip():
+                logger.debug(f"🔗 Resolved coreferences: '{text[:30]}...' → '{resolved_text[:30]}...'")
+
+        # Step 2: Resolve entities to canonical forms
+        if ENTITY_RESOLUTION_AVAILABLE:
+            entity_resolved_text = resolve_entities_in_text(resolved_text)
+            if entity_resolved_text != resolved_text:
+                logger.debug(f"🏷️ Resolved entities: '{resolved_text[:30]}...' → '{entity_resolved_text[:30]}...'")
+                resolved_text = entity_resolved_text
+
+        # Process fully resolved text with spaCy (preserve casing for NER quality)
+        doc = self.nlp(resolved_text)
         
         facts = []
         
@@ -103,6 +141,11 @@ class HighAccuracyFactExtractor:
         # Strategy 5: Age constructions ("I am 45 years old", "I am forty five years old")
         age_facts = self._extract_age_constructions(doc, text)
         facts.extend(age_facts)
+        
+        # Strategy 6: Temporal expressions and events ("meeting with Sarah tomorrow", "birthday on Dec 15")
+        if TEMPORAL_EXTRACTION_AVAILABLE:
+            temporal_facts = self._extract_temporal_facts(text)
+            facts.extend(temporal_facts)
 
         # Deduplicate then filter for high-value canonical facts
         unique_facts = self._deduplicate_facts(facts)
@@ -124,7 +167,7 @@ class HighAccuracyFactExtractor:
                 subj = "user"
 
             # Allowed canonical predicates
-            allowed = {"location", "age", "job", "works_at", "likes"}
+            allowed = {"location", "age", "job", "works_at", "likes", "has_temporal_reference", "has_event", "has_meeting_with", "birthday_date"}
             if pred in allowed:
                 # Additional sanity checks
                 if pred == "age":
@@ -136,6 +179,10 @@ class HighAccuracyFactExtractor:
 
             # Pet/thing names: *_name
             if pred.endswith("_name") and subj == "user" and val:
+                return True
+            
+            # Meeting time predicates: meeting_with_*_time
+            if pred.startswith("meeting_with_") and pred.endswith("_time") and subj == "user" and val:
                 return True
 
             # Drop vague 'is' or 'has' statements entirely
@@ -672,6 +719,71 @@ class HighAccuracyFactExtractor:
 
     def _is_user_pronoun(self, text: str) -> bool:
         return text.lower() in {"i", "me", "my", "mine", "myself", "we", "us", "our", "ours", "ourselves"}
+
+    def _extract_temporal_facts(self, text: str) -> List[Fact]:
+        """Extract temporal expressions and events from text using temporal extractor."""
+        if not TEMPORAL_EXTRACTION_AVAILABLE:
+            return []
+            
+        facts = []
+        
+        try:
+            # Extract temporal expressions
+            temporal_exprs = extract_temporal_expressions(text)
+            for expr in temporal_exprs:
+                if expr.get('parsed_date'):
+                    facts.append(Fact(
+                        subject="user",
+                        predicate="has_temporal_reference",
+                        value=f"{expr['text']} ({expr['parsed_date'].strftime('%Y-%m-%d %H:%M')})",
+                        source_text=text
+                    ))
+            
+            # Extract events with temporal info
+            events = extract_events_from_text(text)
+            for event in events:
+                if event.get('start_time'):
+                    # Create event fact
+                    facts.append(Fact(
+                        subject="user",
+                        predicate="has_event",
+                        value=f"{event['title']} @ {event['start_time']}",
+                        source_text=text
+                    ))
+                    
+                    # If it's a meeting/appointment, create relationship fact
+                    if event['event_type'] in ['meeting', 'appointment', 'call']:
+                        # Extract person from title (e.g., "Meeting with Sarah" -> "Sarah")
+                        title = event['title']
+                        if ' with ' in title:
+                            person = title.split(' with ')[-1].strip()
+                            facts.append(Fact(
+                                subject="user",
+                                predicate="has_meeting_with",
+                                value=person,
+                                source_text=text
+                            ))
+                            
+                            facts.append(Fact(
+                                subject="user",
+                                predicate=f"meeting_with_{person.lower().replace(' ', '_')}_time",
+                                value=event['start_time'],
+                                source_text=text
+                            ))
+                    
+                    # If it's a birthday, create birthday fact
+                    elif event['event_type'] == 'birthday':
+                        facts.append(Fact(
+                            subject="user",
+                            predicate="birthday_date",
+                            value=event['start_time'],
+                            source_text=text
+                        ))
+                        
+        except Exception as e:
+            logger.debug(f"Temporal fact extraction failed: {e}")
+            
+        return facts
 
 
 # Integration function for FactsGraph

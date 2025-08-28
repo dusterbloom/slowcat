@@ -120,8 +120,14 @@ class FactsStoreAdapter(MemoryStoreInterface):
                 self._encoder = None
     
     async def search(self, query: str, limit: int = 10, **kwargs) -> List[MemoryResult]:
-        """Search facts by content"""
+        """Search facts by content with graph traversal support"""
         try:
+            # First, try graph traversal queries for relationship patterns
+            graph_results = await self._try_graph_traversal_query(query, limit)
+            if graph_results:
+                return graph_results
+            
+            # Fallback to standard fact search
             if hasattr(self.facts_graph, 'search_facts'):
                 facts = await self.facts_graph.search_facts(query, limit=limit)
             else:
@@ -334,6 +340,118 @@ class FactsStoreAdapter(MemoryStoreInterface):
             return await self._facts_to_results(facts)
         except Exception as e:
             logger.error(f"Recent facts retrieval failed: {e}")
+            return []
+    
+    async def _try_graph_traversal_query(self, query: str, limit: int) -> List[MemoryResult]:
+        """Try to answer query using graph traversal patterns"""
+        
+        if not hasattr(self.facts_graph, 'query_graph'):
+            return []
+        
+        query_lower = query.lower().strip()
+        results = []
+        
+        try:
+            # Pattern 1: "When is my meeting with [person]?"
+            if any(word in query_lower for word in ["when", "meeting", "appointment"]) and "with" in query_lower:
+                # Extract person name after "with"
+                import re
+                match = re.search(r'\bwith\s+([a-zA-Z\s]+?)(?:\?|$|\.)', query_lower)
+                if match:
+                    person = match.group(1).strip()
+                    
+                    # Graph traversal query to find meetings with this person
+                    graph_query = """
+                        SELECT * FROM (
+                            SELECT *, ->has_meeting->* AS meetings FROM entity WHERE name = $person OR lower(name) = $person_lower
+                        ) WHERE meetings IS NOT NONE
+                        UNION ALL
+                        SELECT * FROM fact WHERE 
+                            (predicate LIKE '%meeting%' AND value LIKE $person_pattern) OR
+                            (predicate LIKE $meeting_with_pattern)
+                    """
+                    
+                    params = {
+                        'person': person.title(),
+                        'person_lower': person.lower(),
+                        'person_pattern': f'%{person}%',
+                        'meeting_with_pattern': f'%meeting_with_{person.lower().replace(" ", "_")}%'
+                    }
+                    
+                    graph_results = await self.facts_graph.query_graph(graph_query, params)
+                    
+                    for result in graph_results:
+                        if result:
+                            results.append(MemoryResult(
+                                content=f"Meeting with {person}: {result}",
+                                source="graph_traversal",
+                                score=0.9,
+                                metadata={
+                                    'query_type': 'meeting_with_person',
+                                    'person': person,
+                                    'graph_result': result
+                                }
+                            ))
+            
+            # Pattern 2: "What's my dog's name?" or similar pet queries  
+            elif any(word in query_lower for word in ["pet", "dog", "cat"]) and any(word in query_lower for word in ["name", "called"]):
+                graph_query = """
+                    SELECT * FROM fact WHERE 
+                        subject = 'user' AND 
+                        (predicate LIKE '%pet_name%' OR predicate LIKE '%dog_name%' OR predicate LIKE '%cat_name%')
+                    UNION ALL
+                    SELECT * FROM (
+                        SELECT *, ->owns->* AS pets FROM entity WHERE lower(name) = 'user'
+                    ) WHERE pets IS NOT NONE
+                """
+                
+                graph_results = await self.facts_graph.query_graph(graph_query, {})
+                
+                for result in graph_results:
+                    if result:
+                        results.append(MemoryResult(
+                            content=f"Pet information: {result}",
+                            source="graph_traversal", 
+                            score=0.9,
+                            metadata={
+                                'query_type': 'pet_name',
+                                'graph_result': result
+                            }
+                        ))
+            
+            # Pattern 3: "Where do I live?" or location queries
+            elif any(word in query_lower for word in ["where", "live", "location", "address"]):
+                graph_query = """
+                    SELECT * FROM fact WHERE 
+                        subject = 'user' AND 
+                        predicate = 'location'
+                    UNION ALL
+                    SELECT * FROM (
+                        SELECT *, ->lives_at->* AS location FROM entity WHERE lower(name) = 'user'
+                    ) WHERE location IS NOT NONE
+                """
+                
+                graph_results = await self.facts_graph.query_graph(graph_query, {})
+                
+                for result in graph_results:
+                    if result:
+                        results.append(MemoryResult(
+                            content=f"Location: {result}",
+                            source="graph_traversal",
+                            score=0.9,
+                            metadata={
+                                'query_type': 'location',
+                                'graph_result': result
+                            }
+                        ))
+            
+            if results:
+                logger.debug(f"🕸️ Graph traversal found {len(results)} results for: '{query[:50]}...'")
+            
+            return results[:limit]
+            
+        except Exception as e:
+            logger.debug(f"Graph traversal query failed: {e}")
             return []
     
     def get_store_name(self) -> str:

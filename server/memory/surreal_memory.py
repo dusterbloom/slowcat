@@ -238,7 +238,87 @@ class SurrealMemory:
             DEFINE FIELD total_turns ON sessions TYPE number DEFAULT 0;
         """)
         
-        logger.debug("📊 SurrealDB schema initialized")
+        # Graph-based entities for knowledge representation
+        await self.db.query("""
+            DEFINE TABLE entity SCHEMAFULL;
+            DEFINE FIELD name ON entity TYPE string;
+            DEFINE FIELD type ON entity TYPE string;  -- person, pet, organization, location, etc.
+            DEFINE FIELD properties ON entity TYPE object DEFAULT {};
+            DEFINE FIELD aliases ON entity TYPE array<string> DEFAULT [];
+            DEFINE FIELD embedding ON entity TYPE option<array<number>>;
+            DEFINE FIELD confidence ON entity TYPE number DEFAULT 0.8;
+            DEFINE FIELD created ON entity TYPE datetime VALUE time::now();
+            DEFINE FIELD last_seen ON entity TYPE datetime VALUE time::now();
+            DEFINE FIELD agent_id ON entity TYPE option<string>;
+            DEFINE INDEX entity_name_idx ON entity FIELDS name;
+            DEFINE INDEX entity_type_idx ON entity FIELDS type;
+        """)
+        
+        # Events for temporal information (meetings, appointments, etc.)
+        await self.db.query("""
+            DEFINE TABLE event SCHEMAFULL;
+            DEFINE FIELD title ON event TYPE string;
+            DEFINE FIELD description ON event TYPE option<string>;
+            DEFINE FIELD start_time ON event TYPE option<datetime>;
+            DEFINE FIELD end_time ON event TYPE option<datetime>;
+            DEFINE FIELD location ON event TYPE option<string>;
+            DEFINE FIELD event_type ON event TYPE string DEFAULT 'generic';  -- meeting, appointment, deadline, etc.
+            DEFINE FIELD properties ON event TYPE object DEFAULT {};
+            DEFINE FIELD created ON event TYPE datetime VALUE time::now();
+            DEFINE FIELD agent_id ON event TYPE option<string>;
+            DEFINE INDEX event_time_idx ON event FIELDS start_time;
+        """)
+        
+        # Relationships between entities (graph edges)
+        await self.db.query("""
+            DEFINE TABLE owns TYPE RELATION IN entity OUT entity;
+            DEFINE FIELD confidence ON owns TYPE number DEFAULT 0.8;
+            DEFINE FIELD since ON owns TYPE option<datetime>;
+            DEFINE FIELD properties ON owns TYPE object DEFAULT {};
+        """)
+        
+        await self.db.query("""
+            DEFINE TABLE knows TYPE RELATION IN entity OUT entity;
+            DEFINE FIELD confidence ON knows TYPE number DEFAULT 0.8;
+            DEFINE FIELD since ON knows TYPE option<datetime>;
+            DEFINE FIELD relationship_type ON knows TYPE string DEFAULT 'acquaintance';
+            DEFINE FIELD properties ON knows TYPE object DEFAULT {};
+        """)
+        
+        await self.db.query("""
+            DEFINE TABLE has_meeting TYPE RELATION IN entity OUT event;
+            DEFINE FIELD confidence ON has_meeting TYPE number DEFAULT 0.9;
+            DEFINE FIELD role ON has_meeting TYPE string DEFAULT 'participant';
+            DEFINE FIELD properties ON has_meeting TYPE object DEFAULT {};
+        """)
+        
+        await self.db.query("""
+            DEFINE TABLE participates_with TYPE RELATION IN entity OUT entity;
+            DEFINE FIELD via_event ON participates_with TYPE option<record<event>>;
+            DEFINE FIELD confidence ON participates_with TYPE number DEFAULT 0.8;
+            DEFINE FIELD properties ON participates_with TYPE object DEFAULT {};
+        """)
+        
+        await self.db.query("""
+            DEFINE TABLE has_property TYPE RELATION IN entity OUT entity;
+            DEFINE FIELD property_name ON has_property TYPE string;
+            DEFINE FIELD confidence ON has_property TYPE number DEFAULT 0.8;
+            DEFINE FIELD properties ON has_property TYPE object DEFAULT {};
+        """)
+        
+        # Prevent duplicate relationships with unique constraints
+        await self.db.query("""
+            DEFINE FIELD key ON owns VALUE <string>array::sort([in, out, type('owns')]);
+            DEFINE INDEX owns_unique ON owns FIELDS key UNIQUE;
+            
+            DEFINE FIELD key ON knows VALUE <string>array::sort([in, out, type('knows')]);
+            DEFINE INDEX knows_unique ON knows FIELDS key UNIQUE;
+            
+            DEFINE FIELD key ON has_meeting VALUE <string>array::sort([in, out, type('has_meeting')]);
+            DEFINE INDEX meeting_unique ON has_meeting FIELDS key UNIQUE;
+        """)
+        
+        logger.debug("📊 SurrealDB schema initialized with graph relationships")
 
     # ------------------------------
     # Result normalization helpers
@@ -1422,6 +1502,335 @@ class SurrealMemory:
     def _ema(self, prev: float, obs: float, alpha: float = EMA_ALPHA) -> float:
         """Exponential moving average"""
         return alpha * obs + (1 - alpha) * prev
+    
+    # ========================================
+    # Graph Relationships Methods
+    # ========================================
+    
+    async def create_or_get_entity(self, name: str, entity_type: str, properties: Dict[str, Any] = None, agent_id: str = None) -> str:
+        """Create or retrieve an entity, returning its ID"""
+        if not self.connected:
+            await self.connect()
+        
+        try:
+            # Check if entity already exists by name and type
+            existing_query = """
+                SELECT * FROM entity 
+                WHERE name = $name AND type = $entity_type
+                LIMIT 1
+            """
+            result = await self.db.query(existing_query, {
+                'name': name,
+                'entity_type': entity_type
+            })
+            
+            # Parse result
+            entities = []
+            if result and len(result) > 0:
+                if isinstance(result[0], list):
+                    entities = result[0]
+                elif isinstance(result[0], dict) and 'result' in result[0]:
+                    entities = result[0]['result']
+            
+            if entities:
+                # Entity exists, update last_seen and return ID
+                entity_id = entities[0]['id']
+                await self.db.query(
+                    "UPDATE $entity_id SET last_seen = time::now()",
+                    {'entity_id': entity_id}
+                )
+                return str(entity_id)
+            else:
+                # Create new entity
+                create_query = """
+                    CREATE entity SET
+                        name = $name,
+                        type = $entity_type,
+                        properties = $properties,
+                        agent_id = $agent_id
+                """
+                create_result = await self.db.query(create_query, {
+                    'name': name,
+                    'entity_type': entity_type,
+                    'properties': properties or {},
+                    'agent_id': agent_id
+                })
+                
+                # Extract entity ID from result
+                if create_result and len(create_result) > 0:
+                    entities = create_result[0]
+                    if isinstance(entities, dict) and 'result' in entities:
+                        entities = entities['result']
+                    if entities and len(entities) > 0:
+                        return str(entities[0]['id'])
+                
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to create/get entity {name}: {e}")
+            return None
+    
+    async def create_relationship(self, from_entity_id: str, relation_type: str, to_entity_id: str, properties: Dict[str, Any] = None) -> bool:
+        """Create a relationship between two entities"""
+        if not self.connected:
+            await self.connect()
+        
+        try:
+            # Use RELATE statement to create graph relationship
+            relate_query = f"""
+                RELATE {from_entity_id}->{relation_type}->{to_entity_id} SET
+                    confidence = $confidence,
+                    properties = $properties,
+                    since = time::now()
+            """
+            
+            await self.db.query(relate_query, {
+                'confidence': properties.get('confidence', 0.8) if properties else 0.8,
+                'properties': properties or {}
+            })
+            
+            logger.debug(f"Created relationship: {from_entity_id} -> {relation_type} -> {to_entity_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create relationship: {e}")
+            return False
+    
+    async def create_event(self, title: str, start_time: str = None, description: str = None, event_type: str = "generic", agent_id: str = None) -> str:
+        """Create an event entity"""
+        if not self.connected:
+            await self.connect()
+        
+        try:
+            create_query = """
+                CREATE event SET
+                    title = $title,
+                    description = $description,
+                    start_time = $start_time,
+                    event_type = $event_type,
+                    agent_id = $agent_id
+            """
+            
+            # Parse start_time if provided
+            parsed_time = None
+            if start_time:
+                # For now, assume ISO format. Later we'll add temporal parsing
+                parsed_time = start_time
+            
+            result = await self.db.query(create_query, {
+                'title': title,
+                'description': description,
+                'start_time': parsed_time,
+                'event_type': event_type,
+                'agent_id': agent_id
+            })
+            
+            # Extract event ID from result
+            if result and len(result) > 0:
+                events = result[0]
+                if isinstance(events, dict) and 'result' in events:
+                    events = events['result']
+                if events and len(events) > 0:
+                    return str(events[0]['id'])
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to create event {title}: {e}")
+            return None
+    
+    async def find_related_entities(self, entity_id: str, relation_type: str = None, direction: str = "out") -> List[Dict[str, Any]]:
+        """Find entities related to the given entity"""
+        if not self.connected:
+            await self.connect()
+        
+        try:
+            if direction == "out":
+                if relation_type:
+                    query = f"SELECT ->{relation_type}->entity.* FROM {entity_id}"
+                else:
+                    query = f"SELECT ->entity.* FROM {entity_id}"
+            else:  # direction == "in"
+                if relation_type:
+                    query = f"SELECT <-{relation_type}<-entity.* FROM {entity_id}"
+                else:
+                    query = f"SELECT <-entity.* FROM {entity_id}"
+            
+            result = await self.db.query(query)
+            
+            # Parse result
+            entities = []
+            if result and len(result) > 0:
+                if isinstance(result[0], list):
+                    entities = result[0]
+                elif isinstance(result[0], dict) and 'result' in result[0]:
+                    entities = result[0]['result']
+            
+            return entities
+            
+        except Exception as e:
+            logger.error(f"Failed to find related entities: {e}")
+            return []
+    
+    async def query_graph(self, query: str, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        """Execute a custom graph traversal query"""
+        if not self.connected:
+            await self.connect()
+        
+        try:
+            result = await self.db.query(query, params or {})
+            
+            # Parse result
+            if result and len(result) > 0:
+                if isinstance(result[0], list):
+                    return result[0]
+                elif isinstance(result[0], dict) and 'result' in result[0]:
+                    return result[0]['result']
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Graph query failed: {e}")
+            return []
+    
+    async def store_facts_as_graph(self, text: str, agent_id: str = None) -> int:
+        """
+        Extract facts from text and store as graph relationships
+        
+        This is the NEW graph-based approach that replaces flat fact storage
+        """
+        if not self.connected:
+            await self.connect()
+        
+        try:
+            # Use existing fact extraction
+            from memory.spacy_fact_extractor import extract_facts_from_text
+            facts = extract_facts_from_text(text)
+            
+            stored_count = 0
+            user_entity_id = None
+            
+            for fact_dict in facts:
+                subject = fact_dict.get('subject', '')
+                predicate = fact_dict.get('predicate', '')
+                value = fact_dict.get('value', '')
+                
+                if not subject or not predicate or not value:
+                    continue
+                
+                # Create entities based on fact structure
+                if subject.lower() in ['user', 'i', 'my']:
+                    # Create/get user entity if not exists
+                    if not user_entity_id:
+                        user_entity_id = await self.create_or_get_entity(
+                            name="user", 
+                            entity_type="person",
+                            agent_id=agent_id
+                        )
+                    from_entity_id = user_entity_id
+                else:
+                    # Create entity for subject
+                    from_entity_id = await self.create_or_get_entity(
+                        name=subject,
+                        entity_type="entity",  # Generic type, will be refined later
+                        agent_id=agent_id
+                    )
+                
+                if from_entity_id:
+                    # Determine relationship type and target entity
+                    if predicate in ['owns', 'has']:
+                        # Create target entity (pet, possession, etc.)
+                        to_entity_id = await self.create_or_get_entity(
+                            name=value,
+                            entity_type=self._infer_entity_type(value, predicate),
+                            agent_id=agent_id
+                        )
+                        if to_entity_id:
+                            await self.create_relationship(
+                                from_entity_id, 'owns', to_entity_id,
+                                {'confidence': fact_dict.get('confidence', 0.8)}
+                            )
+                            stored_count += 1
+                    
+                    elif predicate in ['knows', 'friend_of']:
+                        # Create person entity
+                        to_entity_id = await self.create_or_get_entity(
+                            name=value,
+                            entity_type="person",
+                            agent_id=agent_id
+                        )
+                        if to_entity_id:
+                            await self.create_relationship(
+                                from_entity_id, 'knows', to_entity_id,
+                                {
+                                    'confidence': fact_dict.get('confidence', 0.8),
+                                    'relationship_type': predicate
+                                }
+                            )
+                            stored_count += 1
+                    
+                    elif predicate.endswith('_name'):
+                        # Handle name relationships (pet_name, etc.)
+                        property_type = predicate.replace('_name', '')
+                        # Create/get the named entity
+                        to_entity_id = await self.create_or_get_entity(
+                            name=value,
+                            entity_type=property_type,
+                            properties={'owner': subject},
+                            agent_id=agent_id
+                        )
+                        if to_entity_id:
+                            await self.create_relationship(
+                                from_entity_id, 'owns', to_entity_id,
+                                {'confidence': fact_dict.get('confidence', 0.8)}
+                            )
+                            stored_count += 1
+                    
+                    else:
+                        # Generic property relationship
+                        property_entity_id = await self.create_or_get_entity(
+                            name=value,
+                            entity_type="property",
+                            properties={'property_name': predicate},
+                            agent_id=agent_id
+                        )
+                        if property_entity_id:
+                            await self.create_relationship(
+                                from_entity_id, 'has_property', property_entity_id,
+                                {
+                                    'confidence': fact_dict.get('confidence', 0.8),
+                                    'property_name': predicate
+                                }
+                            )
+                            stored_count += 1
+            
+            logger.info(f"🕸️ Stored {stored_count} facts as graph relationships")
+            return stored_count
+            
+        except Exception as e:
+            logger.error(f"Failed to store facts as graph: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return 0
+    
+    def _infer_entity_type(self, value: str, predicate: str) -> str:
+        """Infer entity type from value and predicate context"""
+        value_lower = value.lower()
+        
+        # Pet-related
+        if predicate in ['pet_name', 'dog_name', 'cat_name'] or any(animal in value_lower for animal in ['dog', 'cat', 'bird', 'fish']):
+            return "pet"
+        
+        # Location-related
+        if any(loc in value_lower for loc in ['city', 'street', 'avenue', 'san francisco', 'new york']):
+            return "location"
+        
+        # Person-related
+        if predicate in ['friend_name', 'colleague_name'] or value.istitle():
+            return "person"
+        
+        # Default
+        return "entity"
     
     async def close(self):
         """Close database connection"""

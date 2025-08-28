@@ -713,11 +713,18 @@ class PipelineBuilder:
         return task
     
     def _create_smart_context_manager(self, context, memory_processor):
-        """Create Smart Context Manager to replace context_aggregator.user()"""
+        """Create Smart Context Manager with consciousness integration"""
+        import os
+        
+        # Get user_id from environment or use default
+        user_id = os.getenv('USER_ID', 'default_user')
+        
         return create_smart_context_manager(
             context=context,
             facts_db_path=config.memory.facts_db_path,
-            max_tokens=4096
+            max_tokens=4096,
+            enable_consciousness=True,  # Enable consciousness by default 
+            user_id=user_id
         )
 
     def _create_response_tap(self, smart_context_manager):
