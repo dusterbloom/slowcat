@@ -37,3 +37,12 @@ server/models/sherpa-*/
 # Debug artifacts (do not commit)
 server/server/debug/
 server/server/history.txt
+
+# Archive and temporary files
+server/archive/
+*.broken
+*.clean.py
+
+# Backlog management (external system)
+backlog/tasks/
+
