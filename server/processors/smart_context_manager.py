@@ -1898,6 +1898,8 @@ class SmartContextManager(FrameProcessor):
             
             facts_results = [r for r in results_list if getattr(r, 'source_store', '') == 'facts']
             if facts_results:
+                # Check for fragment reconstruction opportunities
+                await self._maybe_trigger_fragment_reconstruction(q, facts_results)
                 return facts_results[:limit]
 
             # Fallback: include a few top facts if search empty
@@ -1981,11 +1983,60 @@ class SmartContextManager(FrameProcessor):
             return []
     
     def _format_facts_context(self, facts: List[Any]) -> str:
-        """Format facts into a concise, user-focused block with clear tags and natural phrasing."""
+        """Format facts into a concise, user-focused block with strength-aware prioritization."""
         if not facts:
             return ""
-        lines = ["<relevant_facts>", "(Use 'you' for the user; do not claim as yours.)"]
-        for fact in facts[:12]:
+        
+        # Sort facts by current_strength (decay-adjusted) if available, fallback to original strength
+        def get_fact_strength(fact):
+            current_strength = getattr(fact, 'current_strength', None)
+            if current_strength is not None:
+                return float(current_strength)
+            return float(getattr(fact, 'strength', 0.5))
+        
+        sorted_facts = sorted(facts, key=get_fact_strength, reverse=True)
+        
+        # Group facts by strength category (calculated in Python)
+        strong_facts = []
+        weak_facts = []
+        fragment_facts = []
+        
+        for fact in sorted_facts:
+            strength = get_fact_strength(fact)
+            if strength > 0.7:
+                strong_facts.append(fact)
+            elif strength > 0.3:
+                weak_facts.append(fact)
+            else:
+                fragment_facts.append(fact)
+        
+        lines = ["<memory_context>"]
+        lines.append("(Use 'you' for the user; memory strength indicates confidence.)")
+        
+        # Process strong facts first (most reliable)
+        if strong_facts:
+            lines.append("\n[High Confidence Memory]")
+            for fact in strong_facts[:8]:  # Prioritize strong facts
+                self._add_fact_line(fact, lines)
+        
+        # Then weak facts (moderate confidence)
+        if weak_facts and len(lines) < 15:  # Don't overwhelm context
+            lines.append("\n[Moderate Confidence Memory]") 
+            for fact in weak_facts[:4]:
+                self._add_fact_line(fact, lines)
+        
+        # Finally fragments (low confidence, use sparingly)
+        if fragment_facts and len(lines) < 18:
+            lines.append("\n[Fragmented Memory - use with caution]")
+            for fact in fragment_facts[:2]:
+                self._add_fact_line(fact, lines)
+        
+        lines.append("</memory_context>")
+        return "\n".join(lines)
+    
+    def _add_fact_line(self, fact, lines):
+        """Helper to add a single fact line with consistent formatting."""
+        for fact in [fact]:  # Keep original loop structure
             if hasattr(fact, 'content') and fact.content:
                 lines.append(f"- {fact.content}")
                 continue
@@ -2036,8 +2087,43 @@ class SmartContextManager(FrameProcessor):
                     lines.append(f"- {subj}'s {pred} is {val}")
                 else:
                     lines.append(f"- {subj} has {pred}")
-        lines.append("</relevant_facts>")
-        return "\n".join(lines)
+
+    async def _maybe_trigger_fragment_reconstruction(self, query: str, facts: List[Any]):
+        """Trigger fragment reconstruction when weak memories are accessed together"""
+        try:
+            # Check if any facts are fragments (current_strength < 0.5)
+            fragment_entities = set()
+            for fact in facts:
+                current_strength = getattr(fact, 'current_strength', getattr(fact, 'strength', 1.0))
+                
+                if isinstance(current_strength, (int, float)) and current_strength < 0.5:
+                    # Extract entity names from the fact
+                    subject = getattr(fact, 'subject', '')
+                    obj = getattr(fact, 'object', getattr(fact, 'value', ''))
+                    
+                    if subject and subject != 'user':
+                        fragment_entities.add(subject)
+                    if obj and obj != 'user' and isinstance(obj, str):
+                        fragment_entities.add(obj)
+            
+            # If we found fragments about specific entities, try to reconstruct them
+            if fragment_entities and hasattr(self.memory_system, 'surreal_memory'):
+                for entity in list(fragment_entities)[:3]:  # Limit to 3 entities per query to avoid overhead
+                    try:
+                        # Trigger reconstruction with a small boost factor
+                        result = await self.memory_system.surreal_memory.db.query(
+                            "RETURN fn::reconstruct_fragments($entity, $boost);",
+                            {'entity': entity, 'boost': 0.1}
+                        )
+                        
+                        if result and result[0] and result[0] > 0:
+                            logger.info(f"🔗 Reconstructed {result[0]} fragments about '{entity}' (query: {query[:50]}...)")
+                    
+                    except Exception as e:
+                        logger.debug(f"Fragment reconstruction failed for {entity}: {e}")
+        
+        except Exception as e:
+            logger.debug(f"Fragment reconstruction check failed: {e}")
 
     def _filter_and_dedupe_facts(self, facts: List[Any]) -> List[Any]:
         """Filter noisy facts and dedupe by subject+predicate, preferring recent and higher fidelity.

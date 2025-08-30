@@ -609,10 +609,9 @@ class PipelineBuilder:
             processors['speaker_context'],
             rtvi,  # ORIGINAL POSITION: between speaker_context and speaker_name_manager
             processors['speaker_name_manager'],
-            # SmartContextManager updates context, then context_aggregator triggers LLM
-            # (SmartContextManager internally handles SurrealDB message storage)
+            # SmartContextManager replaces context_aggregator.user() for fixed 4096 token context
+            # (SmartContextManager internally handles SurrealDB message storage and LLM triggering)
             smart_ctx,
-            context_aggregator.user(),  # Triggers LLM with SmartContextManager's updated context
             # Ensure clean, alternating message history before calling the LLM
             processors.get('message_deduplicator'),
             # Enhance LLM messages with neural field context for consciousness-aware responses
@@ -735,12 +734,12 @@ class PipelineBuilder:
                         pass
                     await task.queue_frames(frames)
                 else:
-                    logger.warning("⚠️ No SmartContextManager found, using legacy context aggregator")
-                    await task.queue_frames([context_aggregator.user().get_context_frame()])
+                    logger.warning("⚠️ No SmartContextManager found, skipping initial context")
+                    # SmartContextManager is now required - context_aggregator.user() causes memory issues
             except Exception as e:
-                # Fallback to legacy aggregator on any error
-                logger.error(f"❌ Error in _send_initial_context: {e}, falling back to legacy aggregator")
-                await task.queue_frames([context_aggregator.user().get_context_frame()])
+                # Log error but don't use broken legacy aggregator
+                logger.error(f"❌ Error in _send_initial_context: {e}")
+                logger.error("SmartContextManager is required - context_aggregator.user() causes unlimited context growth")
                 # Keep sent flag set to avoid duplicate attempts; logs guide the user
                 _initial_sent_flag["sent"] = True
 

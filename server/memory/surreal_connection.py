@@ -896,6 +896,27 @@ class SurrealConnectionManager:
                 'limit': limit
             })
             
+            # Update last_accessed timestamp for retrieved facts to track usage
+            if result and isinstance(result, list) and result:
+                fact_ids = []
+                for fact in result:
+                    if hasattr(fact, 'id') or 'id' in fact:
+                        fact_id = getattr(fact, 'id', None) or fact.get('id')
+                        if fact_id:
+                            fact_ids.append(fact_id)
+                
+                if fact_ids:
+                    try:
+                        # Batch update access timestamps and increment access counts
+                        await self.db.query("""
+                            UPDATE $fact_ids SET 
+                                last_accessed = time::now(),
+                                access_count = access_count + 1;
+                        """, {'fact_ids': fact_ids})
+                        logger.debug(f"Updated access tracking for {len(fact_ids)} facts")
+                    except Exception as e:
+                        logger.warning(f"Failed to update access tracking: {e}")
+            
             logger.debug(f"Search result structure: {result}")
             
             # SurrealDB Python SDK returns the data directly as a list
