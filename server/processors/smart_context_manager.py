@@ -1618,7 +1618,17 @@ class SmartContextManager(FrameProcessor):
                     logger.warning(f"⚠️ Failed to get session info before start: {e}")
                 
                 logger.info(f"🚀 Calling start_session() for {spk}")
-                await self._maybe_await(self.memory_system.facts_graph.start_session(spk))
+                session_id = await self._maybe_await(self.memory_system.facts_graph.start_session(spk))
+                
+                # Register session with SessionManager so SurrealMessageStore can reuse it
+                try:
+                    from memory.session_manager import SessionManager
+                    if SessionManager and session_id:
+                        SessionManager.set_session(session_id, spk)
+                        logger.info(f"🔄 Registered session with SessionManager: {session_id}")
+                except Exception as e:
+                    logger.debug(f"Failed to register session with SessionManager: {e}")
+                
                 self._session_started = True
                 logger.info(f"✅ start_session() completed, session_started = {self._session_started}")
                 

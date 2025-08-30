@@ -134,19 +134,10 @@ class SurrealMemorySystem:
         self.facts_graph = connection_manager  # SurrealDB provides facts interface
         self.tape_store = connection_manager   # SurrealDB provides tape interface
         
-        # Auto-create initial session
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Schedule session creation for later
-                asyncio.create_task(self._init_session())
-            else:
-                # Create session synchronously
-                loop.run_until_complete(self._init_session())
-        except Exception as e:
-            from loguru import logger
-            logger.debug(f"Session auto-creation deferred: {e}")
+        # Session creation is handled by SurrealMessageStore - no need to auto-create here
+        # This prevents duplicate session creation
+        from loguru import logger
+        logger.debug("Session management delegated to SurrealMessageStore - no auto-creation")
     
     async def _init_session(self):
         """Initialize default session using configured USER_ID"""
