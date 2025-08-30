@@ -689,27 +689,45 @@ class SmartContextManager(FrameProcessor):
                         # Be conservative; only include if we can't prove it's current session
                         filtered_results.append(r)
 
-                # Build a compact verified facts block (schema-agnostic textualization)
+                # 🔥 PURE ARCHITECTURE: Process ONLY facts, ignore tape completely
                 for r in filtered_results:
                     src = getattr(r, 'source_store', '')
+                    
+                    # Skip everything except facts (pure architecture)
+                    if src != 'facts':
+                        continue
+                    
                     content = getattr(r, 'content', '')
-                    subj = getattr(r, 'metadata', {}).get('subject') if hasattr(r, 'metadata') else None
-                    pred = getattr(r, 'metadata', {}).get('predicate') if hasattr(r, 'metadata') else None
-                    val  = getattr(r, 'metadata', {}).get('value') if hasattr(r, 'metadata') else None
-                    if src == 'facts':
-                        if subj and pred:
-                            # Normalize predicate for readability
-                            ptxt = str(pred).replace('_', ' ')
-                            if val is not None and str(val).strip() != '':
-                                verified_lines.append(f"- {subj}'s {ptxt} is {val}")
-                            else:
-                                verified_lines.append(f"- {subj} has {ptxt}")
-                        elif content:
-                            verified_lines.append(f"- {content}")
-                    else:
-                        # Use tape as supporting snippets (not authoritative)
-                        if strict_answer_mode and content:
-                            dth_candidates.append(content)
+                    
+                    # Try metadata first, fallback to direct attributes for SurrealDB compatibility  
+                    subj = None
+                    pred = None
+                    val = None
+                    
+                    if hasattr(r, 'metadata') and r.metadata:
+                        subj = r.metadata.get('subject')
+                        pred = r.metadata.get('predicate') 
+                        val = r.metadata.get('value') or r.metadata.get('object')
+                    
+                    # Fallback to direct attributes
+                    if not subj:
+                        subj = getattr(r, 'subject', None)
+                    if not pred:
+                        pred = getattr(r, 'predicate', None)
+                    if not val:
+                        val = getattr(r, 'object', None)
+                    
+                    # Build structured fact
+                    if subj and pred:
+                        ptxt = str(pred).replace('_', ' ')
+                        if val is not None and str(val).strip() != '':
+                            verified_lines.append(f"- {subj}'s {ptxt} is {val}")
+                        else:
+                            verified_lines.append(f"- {subj} has {ptxt}")
+                    elif content:
+                        verified_lines.append(f"- {content}")
+                
+                logger.info(f"🔥 PURE FACTS: {len(verified_lines)} structured facts extracted")
                 if filtered_results:
                     for result in filtered_results:
                         # Each MemoryResult has content and source_store metadata
@@ -819,8 +837,12 @@ class SmartContextManager(FrameProcessor):
                 logger.warning("🚨 No memory system available (neither Smart Router nor DTH)")
             dth_candidates = []
         
-        # Process candidates (works for both Smart Router and DTH results)
-        if dth_candidates:
+        # 🔥 PURE ARCHITECTURE: Use verified facts directly, bypass ALL other selection
+        if verified_lines:
+            contextual_memory = "\n".join(sorted(set(verified_lines)))
+            logger.info(f"🔥 PURE CONTEXT: Using {len(verified_lines)} verified facts directly")
+        # Process candidates (works for both Smart Router and DTH results)  
+        elif dth_candidates:
             # Use DSPy to optimize selection from candidates
             if self.dspy_optimizer:
                 logger.info(f"🧠 CONTEXT BUILDING: DSPy optimization enabled")

@@ -224,30 +224,105 @@ class SurrealQueryRouter:
         }
     
     async def _handle_temporal_query(self, query: str, context: Dict) -> Tuple[List[Any], str]:
-        """Handle time-based queries using SurrealDB's temporal capabilities"""
+        """Handle time-based queries using SurrealDB's unified temporal capabilities"""
         self.performance_stats['temporal_queries'] += 1
         
-        # Use SurrealDB's time-travel queries
-        # Example: SELECT * FROM conversation WHERE timestamp > time::now() - 1d
         try:
-            # For now, delegate to existing search methods
-            # TODO: Implement native SurrealDB temporal queries
+            # NEW: Use unified temporal queries with knowledge system
+            temporal_range = self._extract_temporal_range(query)
+            
+            if temporal_range:
+                start_time, end_time = temporal_range
+                # Convert to datetime objects for SurrealDB
+                from datetime import datetime, timezone
+                start_dt = datetime.fromtimestamp(start_time, timezone.utc)
+                end_dt = datetime.fromtimestamp(end_time, timezone.utc)
+                
+                # Use unified temporal search function
+                try:
+                    temporal_knowledge = await self.surreal_memory.db.query(
+                        "SELECT * FROM fn::get_memories_by_time($from, $to);",
+                        {'from': start_dt, 'to': end_dt}
+                    )
+                    
+                    if temporal_knowledge and len(temporal_knowledge) > 0:
+                        results = temporal_knowledge[0].get('result', [])
+                        if results:
+                            return results, 'unified_temporal_search'
+                except Exception as e:
+                    logger.debug(f"Unified temporal search failed: {e}")
+            
+            # Fallback to tape search for conversation memory
             results = await self.surreal_memory.search_tape(query, limit=10)
-            return results, 'temporal_search'
+            return results, 'tape_temporal_search'
+            
         except Exception as e:
             logger.debug(f"Temporal query failed: {e}")
             return [], 'temporal_fallback'
     
+    def _extract_search_terms(self, query: str) -> List[str]:
+        """Extract key search terms from natural language queries"""
+        import re
+        
+        # Common question patterns to remove
+        query_clean = re.sub(r'\b(do you know|can you remember|what is|what was|tell me about|who is)\b', '', query, flags=re.IGNORECASE)
+        query_clean = re.sub(r'\b(the name of|about)\b', '', query_clean, flags=re.IGNORECASE)
+        query_clean = re.sub(r'[?!.,;]', '', query_clean)
+        
+        # Extract important nouns and entities
+        words = query_clean.lower().split()
+        
+        # Key terms that are important for searching
+        key_terms = []
+        important_words = {'dog', 'pet', 'cat', 'animal', 'name', 'location', 'job', 'work', 'family', 'friend', 
+                          'hobby', 'like', 'love', 'favorite', 'age', 'birthday', 'address', 'phone', 'email',
+                          'spouse', 'partner', 'child', 'parent', 'sibling', 'car', 'house', 'apartment'}
+        
+        for word in words:
+            # Keep important words
+            if word in important_words:
+                key_terms.append(word)
+            # Keep possessive indicators
+            elif word in {'my', 'our', 'their', 'his', 'her'}:
+                key_terms.append(word)
+            # Keep words longer than 3 characters that aren't common stop words
+            elif len(word) > 3 and word not in {'that', 'this', 'what', 'where', 'when', 'how', 'why'}:
+                key_terms.append(word)
+        
+        # If no key terms found, fall back to all non-stop words
+        if not key_terms:
+            stop_words = {'i', 'me', 'my', 'you', 'your', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+            key_terms = [word for word in words if word not in stop_words and len(word) > 2]
+        
+        return key_terms[:5]  # Limit to top 5 terms
+    
     async def _handle_graph_traversal(self, query: str, context: Dict) -> Tuple[List[Any], str]:
-        """Handle relationship queries using SurrealDB's graph capabilities"""
+        """Handle relationship queries using SurrealDB's unified entity-knowledge graph"""
         try:
-            # Use SurrealDB's graph traversal
-            # Example: SELECT * FROM facts WHERE subject = 'user' RELATE->knows->person
-            facts = await self.surreal_memory.search_facts(query, limit=15)
-            return facts, 'graph_traversal'
+            # NEW: Extract entity name from query for focused search
+            entity_name = self._extract_entity_from_query(query, context)
+            
+            if entity_name:
+                # Get all knowledge about the specific entity
+                entity_knowledge = await self.surreal_memory.get_entity_knowledge(entity_name, limit=20)
+                if entity_knowledge:
+                    return entity_knowledge, 'entity_focused_graph'
+            
+            # Fallback to general knowledge search with graph capabilities
+            search_terms = self._extract_search_terms(query)
+            search_query = ' '.join(search_terms) if search_terms else query
+            logger.debug(f"🔍 Extracted search terms: {search_terms} -> '{search_query}'")
+            knowledge_results = await self.surreal_memory.search_knowledge_relations(search_query, limit=15)
+            return knowledge_results, 'unified_graph_traversal'
+            
         except Exception as e:
             logger.debug(f"Graph traversal failed: {e}")
-            return [], 'graph_fallback'
+            # Fallback to legacy facts
+            try:
+                facts = await self.surreal_memory.search_facts(query, limit=15)
+                return facts, 'legacy_facts_fallback'
+            except Exception:
+                return [], 'graph_fallback'
     
     async def _handle_conversation_query(self, query: str, context: Dict) -> Tuple[List[Any], str]:
         """Handle conversation history queries"""
@@ -270,21 +345,30 @@ class SurrealQueryRouter:
         self.performance_stats['multi_store_queries'] += 1
         
         try:
-            # Search both facts and tape, combine results
-            facts_task = self.surreal_memory.search_facts(query, limit=10)
-            tape_task = self.surreal_memory.search_tape(query, limit=5)
+            # NEW: Use unified knowledge system + legacy compatibility
+            search_terms = self._extract_search_terms(query)
+            search_query = ' '.join(search_terms) if search_terms else query
+            logger.debug(f"🔍 Multi-store search terms: {search_terms} -> '{search_query}'")
             
-            facts_results, tape_results = await asyncio.gather(facts_task, tape_task, return_exceptions=True)
+            knowledge_task = self.surreal_memory.search_knowledge_relations(search_query, limit=8)
+            facts_task = self.surreal_memory.search_facts(search_query, limit=7)
+            tape_task = self.surreal_memory.search_tape(query, limit=5)  # Keep original query for tape search
+            
+            knowledge_results, facts_results, tape_results = await asyncio.gather(
+                knowledge_task, facts_task, tape_task, return_exceptions=True
+            )
             
             # Handle exceptions
+            if isinstance(knowledge_results, Exception):
+                knowledge_results = []
             if isinstance(facts_results, Exception):
                 facts_results = []
             if isinstance(tape_results, Exception):
                 tape_results = []
             
-            # Combine and rank results
-            all_results = list(facts_results) + list(tape_results)
-            return all_results, 'unified_multi_store'
+            # Combine and prioritize: unified knowledge > legacy facts > tape
+            all_results = list(knowledge_results) + list(facts_results) + list(tape_results)
+            return all_results, 'unified_hybrid_search'
             
         except Exception as e:
             logger.debug(f"Unified search failed: {e}")
@@ -302,6 +386,48 @@ class SurrealQueryRouter:
         now = time.time()
         one_day = 24 * 3600
         return (now - one_day, now)
+    
+    def _extract_entity_from_query(self, query: str, context: Dict) -> Optional[str]:
+        """
+        Extract entity name from query for focused searches
+        
+        Args:
+            query: User query text
+            context: Query context with speaker info
+            
+        Returns:
+            Entity name if detected, None otherwise
+        """
+        query_lower = query.lower()
+        
+        # Check for self-references
+        self_indicators = ['my', 'i', 'me', 'myself']
+        if any(word in query_lower for word in self_indicators):
+            speaker_id = context.get('speaker_id', 'user')
+            return speaker_id
+        
+        # Check for direct entity references (basic pattern matching)
+        # This would be enhanced with NLP in production
+        entity_patterns = [
+            'about',
+            'tell me about',
+            'what do you know about',
+            'information on',
+            'facts about'
+        ]
+        
+        for pattern in entity_patterns:
+            if pattern in query_lower:
+                # Extract the word(s) after the pattern
+                pattern_index = query_lower.find(pattern)
+                after_pattern = query[pattern_index + len(pattern):].strip()
+                if after_pattern:
+                    # Take first word/phrase as potential entity name
+                    entity_candidate = after_pattern.split()[0] if after_pattern.split() else None
+                    if entity_candidate and len(entity_candidate) > 1:
+                        return entity_candidate.strip('?.,!').lower()
+        
+        return None
     
     def get_performance_stats(self) -> Dict:
         """Get query router performance statistics"""

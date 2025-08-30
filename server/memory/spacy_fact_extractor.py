@@ -588,7 +588,23 @@ class HighAccuracyFactExtractor:
         if (v, p) in mapping:
             return mapping[(v, p)]
 
-        # Copular cases without preposition: map to is/equals
+        # Intelligent "be" mapping for simple "X is Y" patterns
+        if v == "be" and not p and attr_np and subject_np:
+            attr_lower = attr_np.lower()
+            subj_lower = subject_np.lower()
+            
+            # Pet names: "my dog is Luna" -> has_pet_name 
+            if any(pet in subj_lower for pet in ["dog", "cat", "pet", "puppy", "kitten"]):
+                return "has_pet_name"
+            
+            # Job/occupation: "I am a teacher" -> job
+            if any(job_word in attr_lower for job_word in ["engineer", "teacher", "doctor", "nurse", "developer", "manager", "student", "designer", "writer", "artist", "chef", "lawyer"]):
+                return "job"
+            
+            # Default copular relation for other cases
+            return "is"
+        
+        # Copular cases without preposition: map to is (fallback)
         if v == "be" and not p:
             return "is"
 

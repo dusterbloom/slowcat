@@ -900,7 +900,9 @@ class DynamicTapeHead:
                     ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', time.time())
                     role = entry.get('role') if isinstance(entry, dict) else getattr(entry, 'role', 'user')
                     spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
-                    if speaker_id and spk != speaker_id:
+                    
+                    # Allow knowledge facts and facts from user regardless of specific speaker_id
+                    if speaker_id and spk != speaker_id and role != 'knowledge' and spk != 'user':
                         continue
                     
                     # Skip empty content

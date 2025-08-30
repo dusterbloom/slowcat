@@ -14,6 +14,13 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from loguru import logger
 
+# Load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not available, use system env vars
+
 try:
     from surrealdb import AsyncSurreal
     SURREALDB_AVAILABLE = True
@@ -38,14 +45,16 @@ class Message:
     
     def validate(self) -> None:
         """Validate message data before storage"""
-        if not self.session_id or self.session_id == 'default':
-            raise ValueError(f"Message must have valid session_id, got: {self.session_id}")
+        # session_id is now REQUIRED - no auto-generation to prevent race conditions
+        if not self.session_id:
+            raise ValueError("session_id is required - use SessionManager to ensure consistent sessions")
+            
         if self.role not in ['user', 'assistant', 'system']:
             raise ValueError(f"Invalid role: {self.role}")
         if not self.content or not self.content.strip():
             raise ValueError("Message content cannot be empty")
         if not self.speaker_id:
-            raise ValueError("Message must have speaker_id")
+            self.speaker_id = 'default_user'  # Auto-fix missing speaker_id
     
     def to_surreal(self) -> Dict[str, Any]:
         """Convert to SurrealDB format"""
@@ -405,7 +414,34 @@ class SurrealConnectionManager:
         """
         return await self.create_session(speaker_id)
     
-    async def add_entry(self, role: str, content: str, speaker_id: str = "default_user", ts: Optional[float] = None, **kwargs) -> bool:
+    async def get_recent(self, limit: int = 10, since: float = None, agent_id: str = None):
+        """TapeStore compatibility - get recent entries"""
+        try:
+            # Use get_recent_messages for compatibility
+            minutes = 60 if since is None else max(1, int((time.time() - since) / 60))
+            messages = await self.get_recent_messages(
+                minutes=minutes,
+                speaker_id=agent_id
+            )
+            
+            # Convert to tape format
+            results = []
+            for msg in messages[:limit]:
+                results.append({
+                    'content': msg.get('content', ''),
+                    'role': msg.get('role', ''),
+                    'speaker_id': msg.get('speaker_id', ''),
+                    'ts': msg.get('timestamp', ''),
+                    'metadata': msg.get('metadata', {})
+                })
+            
+            return results
+            
+        except Exception as e:
+            logger.debug(f"get_recent failed: {e}")
+            return []
+    
+    async def add_entry(self, role: str, content: str, speaker_id: str = "default_user", ts: Optional[float] = None, session_id: Optional[str] = None, **kwargs) -> bool:
         """
         TapeStore compatibility method - add a tape entry
         
@@ -414,16 +450,23 @@ class SurrealConnectionManager:
             content: Message content
             speaker_id: Speaker identifier
             ts: Optional timestamp (Unix timestamp)
+            session_id: Optional session ID (will auto-generate if None)
             **kwargs: Additional metadata
         """
         try:
             # Convert timestamp if provided
             timestamp = datetime.fromtimestamp(ts, timezone.utc) if ts else datetime.now(timezone.utc)
             
+            # Auto-generate session_id if not provided
+            if not session_id:
+                import uuid
+                session_id = f"session_{uuid.uuid4().hex[:12]}"
+            
             message = Message(
                 role=role,
                 content=content,
                 speaker_id=speaker_id,
+                session_id=session_id,
                 timestamp=timestamp,
                 metadata=kwargs
             )
@@ -466,49 +509,33 @@ class SurrealConnectionManager:
     
     async def store_facts(self, facts: list, speaker_id: str = None) -> int:
         """
-        FactsGraph compatibility method - store extracted facts
+        FactsGraph compatibility - convert to unified knowledge system
         """
-        await self.ensure_connected()  # Ensure database connection
+        stored_count = 0
         
         try:
-            stored_count = 0
+            # Use speaker_id as default subject if provided, otherwise use 'user'
+            default_subject = speaker_id if speaker_id else 'user'
+            
             for fact in facts:
-                # Convert fact to proper fact_plain table format per SURREAL_GRAPH.md schema
-                import os
-                user_id = f"user:{os.getenv('USER_ID', 'default_user')}"
-                
                 if isinstance(fact, dict):
-                    fact_data = {
-                        'user_id': user_id,
-                        'subject': fact.get('subject', str(fact)),
-                        'predicate': fact.get('predicate', 'mentioned'),
-                        'value': fact.get('value', str(fact)),  # Use 'value' not 'object'
-                        'fidelity': fact.get('fidelity', 4),
-                        'strength': fact.get('strength', 0.8),
-                        'source_text': fact.get('source_text', ''),
-                        'created': datetime.now(timezone.utc),
-                    }
+                    subject = fact.get('subject', default_subject)
+                    predicate = fact.get('predicate', 'mentioned')
+                    obj = fact.get('value') or fact.get('object', str(fact))
                 else:
-                    fact_data = {
-                        'user_id': user_id,
-                        'subject': getattr(fact, 'subject', str(fact)),
-                        'predicate': getattr(fact, 'predicate', 'mentioned'),
-                        'value': getattr(fact, 'value', str(fact)),
-                        'fidelity': getattr(fact, 'fidelity', 4),
-                        'strength': getattr(fact, 'strength', 0.8),
-                        'source_text': getattr(fact, 'source_text', ''),
-                        'created': datetime.now(timezone.utc),
-                    }
+                    subject = getattr(fact, 'subject', default_subject)
+                    predicate = getattr(fact, 'predicate', 'mentioned')
+                    obj = getattr(fact, 'value', str(fact))
                 
-                try:
-                    result = await self.db.query(
-                        "CREATE fact_plain CONTENT $data;",
-                        {'data': fact_data}
-                    )
-                    if result and len(result) > 0:
-                        stored_count += 1
-                except Exception as e:
-                    logger.debug(f"Failed to store individual fact: {e}")
+                # Store using unified knowledge system
+                success = await self.store_knowledge_relation(
+                    subject_name=subject,
+                    predicate=predicate, 
+                    object_name=obj,
+                    confidence=0.8
+                )
+                if success:
+                    stored_count += 1
             
             return stored_count
             
@@ -516,58 +543,6 @@ class SurrealConnectionManager:
             logger.error(f"Failed to store facts: {e}")
             return 0
     
-    async def extract_and_store_facts(self, text: str, speaker_id: str = None) -> int:
-        """
-        Extract facts from text and store them
-        """
-        await self.ensure_connected()  # Ensure database connection
-        
-        try:
-            # Simple fact extraction - in production this would use NLP
-            # For now, just store the text as a semantic fact
-            if len(text.strip()) > 10:  # Only store meaningful text
-                # First create a message to serve as the source
-                source_message = Message(
-                    role='user',
-                    content=text,
-                    speaker_id=speaker_id or 'default_user',
-                    timestamp=datetime.now(timezone.utc)
-                )
-                
-                source_id = await self.store_message(source_message)
-                
-                if source_id:
-                    # Convert string ID back to RecordID for the source field
-                    from surrealdb import RecordID
-                    if ':' in str(source_id):
-                        table, record_id = str(source_id).split(':', 1)
-                        source_record = RecordID(table, record_id)
-                    else:
-                        source_record = source_id
-                
-                    fact_data = {
-                        'subject': speaker_id or 'user',
-                        'predicate': 'said',
-                        'object': text,  # Use 'object' field name
-                        'confidence': 1.0,
-                        'source': source_record,  # Required field
-                        'extracted_at': datetime.now(timezone.utc),
-                        'last_verified': datetime.now(timezone.utc),
-                        'decay_rate': 0.1,
-                        'importance': 1.0,  # S4 highest fidelity = 1.0 importance
-                    }
-                else:
-                    # If we can't create the source message, skip fact storage
-                    return 0
-                
-                result = await self.db.create('facts', fact_data)
-                return 1 if result else 0
-            
-            return 0
-            
-        except Exception as e:
-            logger.debug(f"Failed to extract and store facts: {e}")
-            return 0
     
     def apply_decay(self):
         """
@@ -770,69 +745,220 @@ class SurrealConnectionManager:
     
     async def search_facts(self, query: str, limit: int = 10) -> List[Dict]:
         """
-        Search facts by text content (FactsGraph compatibility)
-        
-        Args:
-            query: Search query
-            limit: Maximum number of results
+        FactsGraph compatibility - search unified knowledge system
+        """
+        try:
+            # Use unified knowledge search
+            relations = await self.search_knowledge_relations(query, limit)
             
-        Returns:
-            List of matching facts as dictionaries
+            # Convert to legacy facts format for compatibility
+            facts = []
+            for rel in relations:
+                fact = {
+                    'subject': rel.get('subject', ''),
+                    'predicate': rel.get('predicate', ''),
+                    'object': rel.get('object', ''),
+                    'value': rel.get('object', ''),  # Compatibility alias
+                    'confidence': rel.get('confidence', 0.8),
+                    'strength': rel.get('confidence', 0.8),  # Compatibility alias
+                    'score': int(rel.get('confidence', 0.8) * 100)
+                }
+                facts.append(fact)
+            
+            return facts
+            
+        except Exception as e:
+            logger.error(f"Failed to search facts: {e}")
+            return []
+    
+    # ================================================================================
+    # NEW: UNIFIED KNOWLEDGE SYSTEM METHODS
+    # ================================================================================
+    
+    async def store_knowledge_relation(self, subject_name: str, predicate: str, object_name: str, 
+                                     subject_type: str = 'user', object_type: str = 'concept',
+                                     confidence: float = 0.8, source_message_id: str = None) -> bool:
+        """
+        Store knowledge using direct SurrealQL - simple and reliable
         """
         await self.ensure_connected()
         
         try:
-            # Search facts using SurrealDB's full-text search capabilities
-            search_query = """
-                SELECT *,
-                    math::floor((confidence * importance * 100)) AS score
-                FROM facts
-                WHERE 
-                    subject @@ $query OR 
-                    predicate @@ $query OR 
-                    object @@ $query
-                ORDER BY score DESC, last_verified DESC
-                LIMIT $limit;
+            # Create safe entity IDs by removing/replacing problematic characters
+            import re
+            def make_safe_id(name: str) -> str:
+                # Replace problematic characters with underscores or remove them
+                safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+                # Remove consecutive underscores and leading/trailing ones
+                safe_name = re.sub(r'_+', '_', safe_name).strip('_')
+                # Ensure it doesn't start with a number
+                if safe_name and safe_name[0].isdigit():
+                    safe_name = 'entity_' + safe_name
+                return safe_name or 'unknown'
+            
+            subject_safe = make_safe_id(subject_name)
+            object_safe = make_safe_id(object_name)
+            
+            logger.debug(f"Creating entities: {subject_safe}, {object_safe}")
+            
+            # Create entities with parameterized queries - ignore if they exist
+            try:
+                await self.db.query(f"CREATE entity:{subject_safe} SET type=$subject_type, canonical_name=$subject_name;", {
+                    'subject_type': subject_type,
+                    'subject_name': subject_name
+                })
+            except Exception:
+                pass  # Entity might already exist
+            
+            try:
+                await self.db.query(f"CREATE entity:{object_safe} SET type=$object_type, canonical_name=$object_name;", {
+                    'object_type': object_type,
+                    'object_name': object_name
+                })
+            except Exception:
+                pass  # Entity might already exist
+            
+            # Create relation with parameterized query
+            relation_query = f"""
+                RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
+                    predicate = $predicate,
+                    confidence = $confidence,
+                    strength = 1.0,
+                    created_at = time::now();
             """
             
-            result = await self.db.query(search_query, {
+            result = await self.db.query(relation_query, {
+                'predicate': predicate,
+                'confidence': confidence
+            })
+            logger.debug(f"Relation result structure: {result}")
+            
+            # Check if relation was created successfully
+            success = False
+            if result and len(result) > 0:
+                if hasattr(result[0], 'result'):
+                    success = bool(result[0].result)
+                elif isinstance(result[0], dict) and 'result' in result[0]:
+                    success = bool(result[0]['result'])
+                else:
+                    success = bool(result[0])
+            
+            if success:
+                logger.info(f"✅ Stored knowledge: {subject_name} -{predicate}-> {object_name}")
+            else:
+                logger.warning(f"Relation creation may have failed: {result}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Knowledge storage failed: {e}")
+            return False
+    
+    
+    async def search_knowledge_relations(self, query: str, limit: int = 10) -> List[Dict]:
+        """
+        Search knowledge using direct SurrealQL - simple and reliable
+        """
+        await self.ensure_connected()
+        
+        try:
+            result = await self.db.query("""
+                SELECT *, 
+                       in.canonical_name as subject,
+                       out.canonical_name as object
+                FROM knowledge  
+                WHERE predicate CONTAINS $query
+                   OR in.canonical_name CONTAINS $query  
+                   OR out.canonical_name CONTAINS $query
+                LIMIT $limit;
+            """, {
                 'query': query,
                 'limit': limit
             })
             
-            if result and isinstance(result, list) and len(result) > 0:
-                facts = result[0].get('result', [])
-                
-                # Convert to expected format for compatibility
-                formatted_facts = []
-                for fact in facts:
-                    # Handle RecordID objects
-                    fact_id = fact.get('id')
-                    if hasattr(fact_id, 'id'):
-                        fact_id = str(fact_id)
-                    
-                    formatted_fact = {
-                        'id': fact_id,
-                        'subject': fact.get('subject', ''),
-                        'predicate': fact.get('predicate', ''),
-                        'object': fact.get('object', ''),  # SurrealDB uses 'object' field
-                        'value': fact.get('object', ''),   # Compatibility alias
-                        'confidence': fact.get('confidence', 0.8),
-                        'importance': fact.get('importance', 0.5),
-                        'strength': fact.get('confidence', 0.8),  # Compatibility alias
-                        'score': fact.get('score', 50),
-                        'extracted_at': fact.get('extracted_at'),
-                        'last_verified': fact.get('last_verified')
-                    }
-                    formatted_facts.append(formatted_fact)
-                
-                logger.debug(f"🔍 Found {len(formatted_facts)} facts for query: {query}")
-                return formatted_facts
+            logger.debug(f"Search result structure: {result}")
+            
+            # SurrealDB Python SDK returns the data directly as a list
+            if result and isinstance(result, list):
+                return result
             
             return []
             
         except Exception as e:
-            logger.error(f"Failed to search facts: {e}")
+            logger.error(f"Knowledge search failed: {e}")
+            return []
+    
+    async def get_entity_knowledge(self, entity_name: str, limit: int = 20) -> List[Dict]:
+        """
+        Get all knowledge about a specific entity
+        
+        Args:
+            entity_name: Name of the entity
+            limit: Maximum number of results
+            
+        Returns:
+            List of knowledge relations involving this entity
+        """
+        await self.ensure_connected()
+        
+        try:
+            # Direct query for entity knowledge (functions may not be working)
+            result = await self.db.query(
+                """
+                SELECT * FROM knowledge 
+                WHERE in.canonical_name = $entity_name OR out.canonical_name = $entity_name
+                ORDER BY strength DESC, temporal_context.when_said DESC
+                LIMIT $limit;
+                """,
+                {'entity_name': entity_name, 'limit': limit}
+            )
+            
+            if result and len(result) > 0:
+                # Handle different result formats
+                if isinstance(result[0], dict):
+                    return result[0].get('result', [])
+                else:
+                    return result if isinstance(result, list) else []
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Failed to get entity knowledge: {e}")
+            return []
+    
+    async def search_tape(self, query: str, limit: int = 10, **kwargs) -> list:
+        """
+        Search tape/conversation messages (compatibility method)
+        
+        Args:
+            query: Search query
+            limit: Maximum results
+            
+        Returns:
+            List of message results formatted as tape entries
+        """
+        try:
+            # Use existing search_messages method
+            messages = await self.search_messages(query, limit=limit)
+            
+            # Format as tape-like entries for compatibility
+            tape_results = []
+            for msg in messages:
+                tape_entry = {
+                    'content': msg.get('content', ''),
+                    'role': msg.get('role', ''),
+                    'speaker_id': msg.get('speaker_id', ''),
+                    'timestamp': msg.get('timestamp', ''),
+                    'session_id': msg.get('session_id', ''),
+                    'ts': msg.get('timestamp', ''),  # Compatibility alias
+                    'metadata': msg.get('metadata', {})
+                }
+                tape_results.append(tape_entry)
+            
+            return tape_results
+            
+        except Exception as e:
+            logger.error(f"Search tape failed: {e}")
             return []
 
 

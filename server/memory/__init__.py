@@ -110,37 +110,136 @@ class SurrealMemorySystem:
     def __init__(self, connection_manager, query_router=None):
         self.connection_manager = connection_manager
         self.query_router = query_router
+        self.current_session_id = None
+        self._session_cache = {}
         
         # Provide compatibility interfaces
         self.facts_graph = connection_manager  # SurrealDB provides facts interface
         self.tape_store = connection_manager   # SurrealDB provides tape interface
+        
+        # Auto-create initial session
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Schedule session creation for later
+                asyncio.create_task(self._init_session())
+            else:
+                # Create session synchronously
+                loop.run_until_complete(self._init_session())
+        except Exception as e:
+            from loguru import logger
+            logger.debug(f"Session auto-creation deferred: {e}")
+    
+    async def _init_session(self):
+        """Initialize default session"""
+        try:
+            self.current_session_id = await self.start_session('default_user')
+            from loguru import logger
+            logger.info(f"🎬 Auto-created session: {self.current_session_id}")
+        except Exception as e:
+            from loguru import logger
+            logger.warning(f"Failed to auto-create session: {e}")
+    
+    async def start_session(self, speaker_id: str = 'default_user'):
+        """Start a new session and cache it"""
+        try:
+            session_id = await self.connection_manager.create_session(speaker_id)
+            self.current_session_id = session_id
+            self._session_cache[speaker_id] = session_id
+            return session_id
+        except Exception as e:
+            # Generate fallback session ID
+            import uuid
+            fallback_id = f"session_{uuid.uuid4().hex[:12]}"
+            self.current_session_id = fallback_id
+            self._session_cache[speaker_id] = fallback_id
+            return fallback_id
+    
+    def get_current_session(self):
+        """Get current session ID, creating one if needed"""
+        if not self.current_session_id:
+            import uuid
+            self.current_session_id = f"session_{uuid.uuid4().hex[:12]}"
+        return self.current_session_id
+    
+    async def search_unified(self, query: str, limit: int = 20):
+        """Unified search across messages and knowledge"""
+        from loguru import logger
+        results = []
+        
+        try:
+            # Search messages
+            messages = await self.connection_manager.search_messages(query, limit=limit//2)
+            for msg in messages:
+                results.append({
+                    'content': msg.get('content', ''),
+                    'type': 'message',
+                    'score': 0.8,
+                    'metadata': msg
+                })
+            logger.debug(f"Unified search: {len(messages)} messages")
+        except Exception as e:
+            logger.debug(f"Message search failed: {e}")
+        
+        try:
+            # Search knowledge relations
+            knowledge = await self.connection_manager.search_knowledge_relations(query, limit=limit//2)
+            for rel in knowledge:
+                content = f"{rel.get('subject', '')} {rel.get('predicate', '')} {rel.get('object', '')}"
+                results.append({
+                    'content': content,
+                    'type': 'knowledge',
+                    'score': rel.get('confidence', 0.9),
+                    'metadata': rel
+                })
+            logger.debug(f"Unified search: {len(knowledge)} knowledge relations")
+        except Exception as e:
+            logger.debug(f"Knowledge search failed: {e}")
+        
+        # Sort by score
+        results.sort(key=lambda x: x.get('score', 0), reverse=True)
+        
+        logger.info(f"🔍 Unified search for '{query}' found {len(results)} total results")
+        return results[:limit]
     
     async def process_query(self, query: str, context: dict = None):
-        """Process query using SurrealDB connection manager"""
+        """Process query using unified search and query router"""
         try:
             if self.query_router:
                 # Use query router if available
                 return await self.query_router.route_query(query, context)
             else:
-                # Direct SurrealDB search as fallback
-                messages = await self.connection_manager.search_messages(query, limit=10)
+                # Use unified search as fallback
+                results = await self.search_unified(query, limit=10)
                 
-                # Convert to compatible format
+                # Convert unified search results to compatible format
                 class SimpleResult:
-                    def __init__(self, msg_dict):
-                        self.subject = msg_dict.get('speaker_id', '')
-                        self.predicate = 'said'
-                        self.value = msg_dict.get('content', '')
+                    def __init__(self, result_dict):
+                        content = result_dict.get('content', '')
+                        metadata = result_dict.get('metadata', {})
+                        result_type = result_dict.get('type', 'message')
+                        
+                        if result_type == 'knowledge':
+                            self.subject = metadata.get('subject', '')
+                            self.predicate = metadata.get('predicate', '')
+                            self.value = metadata.get('object', '')
+                            self.source_store = 'knowledge'
+                        else:
+                            self.subject = metadata.get('speaker_id', '')
+                            self.predicate = 'said'
+                            self.value = content
+                            self.source_store = 'messages'
+                        
                         self.species = None
                         self.fidelity = 3
-                        self.strength = 0.8
-                        self.last_seen = msg_dict.get('timestamp', 0)
-                        self.created = msg_dict.get('timestamp', 0)
+                        self.strength = result_dict.get('score', 0.8)
+                        self.last_seen = metadata.get('timestamp', 0)
+                        self.created = metadata.get('timestamp', 0)
                         self.access_count = 0
-                        self.source_text = msg_dict.get('content', '')
-                        self.source_store = 'messages'
+                        self.source_text = content
                 
-                results = [SimpleResult(msg) for msg in messages]
+                formatted_results = [SimpleResult(r) for r in results]
                 
                 class SimpleResponse:
                     def __init__(self, results):
@@ -163,7 +262,7 @@ class SurrealMemorySystem:
                         
                         return SimpleClassification()
                 
-                return SimpleResponse(results)
+                return SimpleResponse(formatted_results)
                 
         except Exception as e:
             from loguru import logger
@@ -180,23 +279,104 @@ class SurrealMemorySystem:
             
             return EmptyResponse()
     
-    async def store_facts(self, text: str) -> int:
-        """Store facts using SurrealDB with SpaCy fact extraction"""
+    async def store_message(self, role: str, content: str, speaker_id: str = 'default_user'):
+        """DISABLED: Message storage handled by SurrealMessageStore processor with proper token counts"""
+        from loguru import logger
+        logger.debug(f"📝 SurrealMemorySystem.store_message disabled - SurrealMessageStore handles storage ({role}: {content[:50]}...)")
+        
+        # Extract and store facts from user messages (this is still valuable)
+        if role == 'user':
+            try:
+                await self.store_facts(content, speaker_id)
+            except Exception as e:
+                logger.debug(f"Fact extraction failed: {e}")
+        
+        return True  # Return True to not break calling code
+        
+        # Original method commented out to prevent duplicate storage:
+        # from loguru import logger
+        # try:
+        #     # Ensure we have a session
+        #     if not self.current_session_id:
+        #         await self._init_session()
+        #     
+        #     # Store the message
+        #     success = await self.connection_manager.add_entry(
+        #         role=role,
+        #         content=content,
+        #         speaker_id=speaker_id,
+        #         session_id=self.current_session_id
+        #     )
+        #     
+        #     if success:
+        #         logger.debug(f"📝 Stored {role} message in session {self.current_session_id}")
+        #         
+        #         # Also extract and store facts from user messages
+        #         if role == 'user':
+        #             await self.store_facts(content, speaker_id)
+        #     
+        #     return success
+        #     
+        # except Exception as e:
+        #     logger.error(f"Message storage failed: {e}")
+        #     return False
+    
+    async def store_facts(self, text: str, speaker_id: str = 'default_user') -> int:
+        """Store facts using SurrealDB with SpaCy fact extraction and knowledge relations"""
+        from loguru import logger
         try:
             # Extract facts using SpaCy
+            logger.debug(f"🔍 About to call extract_facts_from_text function: {extract_facts_from_text}")
+            logger.debug(f"🔍 Module: {extract_facts_from_text.__module__}")
             facts = extract_facts_from_text(text)
+            logger.debug(f"🔍 SurrealMemorySystem extracted {len(facts)} facts from: '{text[:50]}...'")
+            logger.debug(f"🔍 Facts detail: {facts}")
             
             if not facts:
+                logger.debug("🔍 No facts extracted, returning 0")
                 return 0
             
-            # Store facts in SurrealDB
-            facts_stored = await self.connection_manager.store_facts(facts)
+            stored_count = 0
             
-            return facts_stored if facts_stored is not None else 0
+            # Store facts as knowledge relations
+            for i, fact in enumerate(facts):
+                logger.debug(f"🔄 Processing fact {i+1}: {fact}")
+                
+                if isinstance(fact, dict):
+                    subject = fact.get('subject', speaker_id)
+                    predicate = fact.get('predicate', 'mentioned')
+                    obj = fact.get('value') or fact.get('object', '')
+                    
+                    logger.debug(f"   📋 Extracted: subject={subject}, predicate={predicate}, obj={obj}")
+                    
+                    if obj:  # Only store if we have an object
+                        logger.debug(f"   💾 Storing knowledge relation...")
+                        success = await self.connection_manager.store_knowledge_relation(
+                            subject_name=subject,
+                            predicate=predicate,
+                            object_name=obj,
+                            subject_type='user' if subject == speaker_id else 'concept',
+                            object_type='concept'
+                        )
+                        logger.debug(f"   📊 Storage success: {success}")
+                        if success:
+                            stored_count += 1
+                            logger.debug(f"   ✅ Stored count now: {stored_count}")
+                    else:
+                        logger.debug(f"   ⚠️ Skipping fact with empty object")
+            
+            # Also store in legacy facts format for compatibility
+            if stored_count > 0:
+                logger.debug(f"🔄 Also storing {len(facts)} facts in legacy format")
+                await self.connection_manager.store_facts(facts, speaker_id=speaker_id)
+            
+            logger.debug(f"🧠 Final result: extracted and stored {stored_count} facts as knowledge relations")
+            return stored_count
             
         except Exception as e:
-            from loguru import logger
             logger.error(f"Fact storage failed: {e}")
+            import traceback
+            traceback.print_exc()
             return 0
     
     async def update_session(self, speaker_id: str):
@@ -206,12 +386,91 @@ class SurrealMemorySystem:
 
     # Simplified methods for compatibility
     async def get_recent(self, limit: int = 10, since: float = None, agent_id: str = None):
-        """Get recent messages from SurrealDB"""
+        """Get recent messages and knowledge from SurrealDB"""
+        from loguru import logger
+        results = []
+        
         try:
-            minutes = 5 if since is None else max(1, int((time.time() - since) / 60))
-            return await self.connection_manager.get_recent_messages(minutes=minutes)
-        except Exception:
-            return []
+            # Get recent messages (expand time window for more data)
+            minutes = 60 if since is None else max(1, int((time.time() - since) / 60))
+            messages = await self.connection_manager.get_recent_messages(
+                minutes=minutes, 
+                speaker_id=agent_id
+            )
+            
+            # Convert messages to DTH-compatible format
+            for msg in messages[:limit//2]:  # Use half the limit for messages
+                results.append({
+                    'content': msg.get('content', ''),
+                    'role': msg.get('role', ''),
+                    'speaker_id': msg.get('speaker_id', ''),
+                    'ts': msg.get('timestamp', ''),
+                    'metadata': msg.get('metadata', {})
+                })
+            
+            logger.debug(f"get_recent: Found {len(messages)} messages")
+            
+        except Exception as e:
+            logger.debug(f"Failed to get recent messages: {e}")
+        
+        try:
+            # Also get recent knowledge relations
+            knowledge = await self.connection_manager.search_knowledge_relations(
+                query='',  # Empty query to get all
+                limit=limit//2  # Use other half for knowledge
+            )
+            
+            # Convert knowledge to DTH-compatible format
+            for rel in knowledge:
+                content = f"{rel.get('subject', '')} {rel.get('predicate', '')} {rel.get('object', '')}"
+                # Use the subject as speaker_id for user facts (e.g., 'user' -> current user)
+                subject = rel.get('subject', '')
+                fact_speaker_id = subject if subject in ['user'] else 'system'
+                
+                results.append({
+                    'content': content,
+                    'role': 'knowledge',
+                    'speaker_id': fact_speaker_id,
+                    'ts': rel.get('created_at', ''),
+                    'metadata': {
+                        'type': 'knowledge',
+                        'confidence': rel.get('confidence', 0.8),
+                        'subject': rel.get('subject', ''),
+                        'predicate': rel.get('predicate', ''),
+                        'object': rel.get('object', '')
+                    }
+                })
+            
+            logger.debug(f"get_recent: Found {len(knowledge)} knowledge relations")
+            
+        except Exception as e:
+            logger.debug(f"Failed to get knowledge relations: {e}")
+        
+        # Get conversation from current session if we have one
+        if self.current_session_id:
+            try:
+                session_messages = await self.connection_manager.get_conversation(
+                    session_id=self.current_session_id,
+                    limit=limit
+                )
+                
+                for msg in session_messages:
+                    if msg not in messages:  # Avoid duplicates
+                        results.append({
+                            'content': msg.get('content', ''),
+                            'role': msg.get('role', ''),
+                            'speaker_id': msg.get('speaker_id', ''),
+                            'ts': msg.get('timestamp', ''),
+                            'metadata': msg.get('metadata', {})
+                        })
+                
+                logger.debug(f"get_recent: Found {len(session_messages)} session messages")
+                
+            except Exception as e:
+                logger.debug(f"Failed to get session messages: {e}")
+        
+        logger.info(f"📦 get_recent returning {len(results)} total items (messages + knowledge)")
+        return results
     
     def apply_decay(self):
         """Placeholder for fact decay - handled by SurrealDB events"""
@@ -250,19 +509,5 @@ def create_surreal_message_store(speaker_id: str = 'default_user',
     )
 
 
-def extract_facts_from_text(text: str) -> list:
-    """
-    Extract facts from text (placeholder implementation)
-    
-    This is a simplified version for compatibility. 
-    Real fact extraction would use NLP to identify structured knowledge.
-    
-    Args:
-        text: Input text to extract facts from
-        
-    Returns:
-        List of extracted facts (currently empty - to be implemented)
-    """
-    # TODO: Implement proper fact extraction using spaCy or similar
-    # For now, return empty list to maintain compatibility
-    return []
+# extract_facts_from_text is imported from spacy_fact_extractor
+# No local definition needed - using the SpaCy implementation

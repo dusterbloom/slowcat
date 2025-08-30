@@ -9,7 +9,7 @@ import asyncio
 import time
 import uuid
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from loguru import logger
 
 from pipecat.frames.frames import Frame, TranscriptionFrame, TextFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame
@@ -18,10 +18,15 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 # Try to import SurrealDB connection
 try:
     from memory.surreal_connection import get_surreal_connection, Message
+    from memory.session_manager import SessionManager
     SURREAL_AVAILABLE = True
 except ImportError:
     SURREAL_AVAILABLE = False
+    SessionManager = None
     logger.warning("SurrealDB connection not available - install surrealdb package")
+
+# GLOBAL session management - ensures ALL instances across the entire app use same session
+_GLOBAL_CONVERSATION_SESSION = None
 
 
 class SurrealMessageStore(FrameProcessor):
@@ -29,6 +34,9 @@ class SurrealMessageStore(FrameProcessor):
     Processor that captures user transcriptions and assistant responses
     and stores them in SurrealDB for conversation persistence.
     """
+    
+    # Class-level session cache to share sessions across instances
+    _shared_sessions = {}
     
     def __init__(self,
                  speaker_id: str = 'default_user',
@@ -60,31 +68,51 @@ class SurrealMessageStore(FrameProcessor):
         logger.info(f"📝 SurrealMessageStore initialized (speaker: {speaker_id})")
     
     async def _ensure_session(self):
-        """Ensure we have an active session"""
+        """Ensure we have an active session using SessionManager (no race conditions)"""
         if not self.surreal or self._session_created:
             return
         
         try:
-            if not self.session_id and self.auto_create_session:
-                # Create new session
-                self.session_id = await self.surreal.create_session(
-                    speaker_id=self.speaker_id,
-                    metadata={
-                        'created_by': 'SurrealMessageStore',
-                        'auto_created': True
-                    }
-                )
+            # Use SessionManager to get/create session (thread-safe, no race conditions)
+            if not self.session_id:
+                # Get existing session or create new one via SessionManager
+                existing_session = SessionManager.get_current_session() if SessionManager else None
                 
-                if self.session_id:
-                    logger.info(f"🎬 Created session: {self.session_id}")
-                    self._session_created = True
+                if existing_session:
+                    self.session_id = existing_session
+                    logger.info(f"🔄 Using existing global session: {self.session_id}")
+                elif self.auto_create_session and SessionManager:
+                    # Create session via SessionManager first, then in SurrealDB
+                    self.session_id = SessionManager.create_new_session(
+                        speaker_id=self.speaker_id,
+                        metadata={
+                            'created_by': 'SurrealMessageStore',
+                            'auto_created': True,
+                            'global_conversation': True
+                        }
+                    )
+                    
+                    # Now create in SurrealDB to match the global session
+                    db_session = await self.surreal.create_session(
+                        speaker_id=self.speaker_id,
+                        metadata={
+                            'created_by': 'SurrealMessageStore',
+                            'auto_created': True,
+                            'global_conversation': True
+                        }
+                    )
+                    
+                    logger.info(f"🎬 Created global session: {self.session_id} (SurrealDB: {db_session})")
                 else:
-                    logger.warning("Failed to create session")
+                    logger.warning("SessionManager not available - cannot create session")
+                    return
+            else:
+                # Set provided session_id in SessionManager
+                if SessionManager:
+                    SessionManager.set_session(self.session_id, self.speaker_id)
+                    logger.info(f"🔄 Set global session: {self.session_id}")
             
-            elif self.session_id:
-                # Mark existing session as active
-                self._session_created = True
-                logger.info(f"🎬 Using session: {self.session_id}")
+            self._session_created = True
         
         except Exception as e:
             logger.error(f"Session setup failed: {e}")
@@ -152,20 +180,25 @@ class SurrealMessageStore(FrameProcessor):
             # Store current user message for context
             self._current_user_message = text
             
+            # Ensure we have a session_id (required for Message validation)
+            if not self.session_id:
+                logger.warning("No session_id available for user message - skipping storage")
+                return
+            
             # Create message object
             message = Message(
                 role='user',
                 content=text,
                 speaker_id=self.speaker_id,
                 session_id=self.session_id,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 tokens=self._estimate_tokens(text)
             )
             
             # Store asynchronously
             self._enqueue_message_store(message)
             
-            logger.info(f"🎤 Storing user message: '{text}'")
+            logger.info(f"🎤 Storing user message: '{text}' (session: {self.session_id})")
         
         except Exception as e:
             logger.error(f"Error handling user message: {e}")
@@ -173,20 +206,25 @@ class SurrealMessageStore(FrameProcessor):
     async def _handle_assistant_message(self, text: str):
         """Handle assistant response"""
         try:
+            # Ensure we have a session_id (required for Message validation)
+            if not self.session_id:
+                logger.warning("No session_id available for assistant message - skipping storage")
+                return
+            
             # Create message object
             message = Message(
                 role='assistant',
                 content=text,
                 speaker_id='assistant',
                 session_id=self.session_id,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 tokens=self._estimate_tokens(text)
             )
             
             # Store asynchronously
             self._enqueue_message_store(message)
             
-            logger.info(f"🤖 Storing assistant response: '{text}'")
+            logger.info(f"🤖 Storing assistant response: '{text}' (session: {self.session_id})")
             
             # Clear current user message for next turn
             self._current_user_message = None
@@ -217,8 +255,30 @@ class SurrealMessageStore(FrameProcessor):
             try:
                 await self.surreal.end_session(self.session_id, summary)
                 logger.info(f"🏁 Session finalized: {self.session_id}")
+                
+                # Remove conversation session from shared cache
+                CONVERSATION_KEY = "current_conversation"
+                if CONVERSATION_KEY in self._shared_sessions:
+                    del self._shared_sessions[CONVERSATION_KEY]
+                    logger.debug(f"🗑️ Removed conversation session from cache")
+                    
             except Exception as e:
                 logger.error(f"Failed to finalize session: {e}")
+    
+    @classmethod
+    def clear_session_cache(cls, speaker_id: str = None):
+        """Clear session cache including global session"""
+        global _GLOBAL_CONVERSATION_SESSION
+        
+        _GLOBAL_CONVERSATION_SESSION = None
+        cls._shared_sessions.clear()
+        logger.info("🗑️ Cleared ALL session cache including global conversation session")
+    
+    @classmethod
+    def get_shared_session(cls, speaker_id: str = None) -> str:
+        """Get the global conversation session ID"""
+        global _GLOBAL_CONVERSATION_SESSION
+        return _GLOBAL_CONVERSATION_SESSION
 
 
 def create_surreal_message_store(speaker_id: str = 'default_user',

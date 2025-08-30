@@ -159,32 +159,41 @@ class FactsStoreAdapter(MemoryStoreInterface):
             results = []
             
             for fact in facts:
-                # Format fact as readable content
-                if fact.value:
-                    if fact.species:
-                        content = f"{fact.subject}'s {fact.predicate} is {fact.value} ({fact.species})"
+                # Format fact as readable content - handle both dict and object formats
+                value = getattr(fact, 'value', None) or fact.get('object', '') if isinstance(fact, dict) else getattr(fact, 'value', '')
+                subject = getattr(fact, 'subject', None) or fact.get('subject', '') if isinstance(fact, dict) else getattr(fact, 'subject', '')
+                predicate = getattr(fact, 'predicate', None) or fact.get('predicate', '') if isinstance(fact, dict) else getattr(fact, 'predicate', '')
+                species = getattr(fact, 'species', None) or fact.get('species', None) if isinstance(fact, dict) else getattr(fact, 'species', None)
+                
+                if value:
+                    if species:
+                        content = f"{subject}'s {predicate} is {value} ({species})"
                     else:
-                        content = f"{fact.subject}'s {fact.predicate} is {fact.value}"
+                        content = f"{subject}'s {predicate} is {value}"
                 else:
                     # S1 level - only relationship
-                    content = f"{fact.subject} has {fact.predicate}"
+                    content = f"{subject} has {predicate}"
                 
-                # Calculate relevance score
-                relevance = (fact.fidelity / 4.0) * fact.strength
+                # Calculate relevance score - handle both dict and object formats
+                fidelity = getattr(fact, 'fidelity', None) or fact.get('fidelity', 3) if isinstance(fact, dict) else getattr(fact, 'fidelity', 3)
+                strength = getattr(fact, 'strength', None) or fact.get('strength', 1.0) if isinstance(fact, dict) else getattr(fact, 'strength', 1.0)
+                last_seen = getattr(fact, 'last_seen', None) or fact.get('last_accessed', 0) if isinstance(fact, dict) else getattr(fact, 'last_seen', 0)
+                
+                relevance = (fidelity / 4.0) * strength
                 
                 result = MemoryResult(
                     content=content,
                     source_store="facts",
                     relevance_score=relevance,
-                    timestamp=fact.last_seen,
+                    timestamp=last_seen,
                     metadata={
-                        'fidelity': fact.fidelity,
-                        'strength': fact.strength,
-                        'subject': fact.subject,
-                        'predicate': fact.predicate,
-                        'value': fact.value,
-                        'species': fact.species,
-                        'access_count': fact.access_count
+                        'fidelity': fidelity,
+                        'strength': strength,
+                        'subject': subject,
+                        'predicate': predicate,
+                        'value': value,
+                        'species': species,
+                        'access_count': getattr(fact, 'access_count', None) or fact.get('access_count', 0) if isinstance(fact, dict) else getattr(fact, 'access_count', 0)
                     }
                 )
                 results.append(result)
@@ -607,7 +616,7 @@ class QueryRouter:
                          context: Dict = None,
                          max_results: int = 10) -> RetrievalResponse:
         """
-        Route query to appropriate memory stores
+        Route query to appropriate memory stores with smart keyword extraction
         
         Args:
             query: User query text
@@ -620,42 +629,31 @@ class QueryRouter:
         start_time = time.time()
         self.total_queries += 1
         
-        # 1. Classify the query
+        # 1. Smart keyword extraction for natural language queries
+        from .keyword_extractor import get_keyword_extractor
+        keyword_extractor = get_keyword_extractor()
+        keyword_result = keyword_extractor.extract_keywords(query, max_keywords=3)
+        
+        # 2. Classify the original query
         classification = await self.classifier.classify(query, context)
 
-        # 1a. Context-aware overrides (e.g., from SCM gate)
-        try:
-            if context and context.get('force_personal_facts'):
-                # Force routing to facts with at least medium confidence
-                from .query_classifier import QueryIntent
-                classification.intent = QueryIntent.PERSONAL_FACTS
-                if classification.confidence < self.thresholds['medium_confidence']:
-                    classification.confidence = self.thresholds['medium_confidence']
-        except Exception:
-            pass
-        
         logger.debug(f"🎯 Query classified: {classification.intent.value} "
                     f"({classification.confidence:.2f}) - '{query[:50]}...'")
         
-        # 2. Create retrieval plan
+        # 3. Create retrieval plan (SIMPLIFIED - always HYBRID)
         plan = self._create_retrieval_plan(classification, max_results)
-
-        # 2a. Ensure we don't bypass memory if forced by context
-        try:
-            if context and context.get('force_personal_facts') and plan.strategy == RoutingStrategy.BYPASS:
-                plan.strategy = RoutingStrategy.PRIMARY_WITH_FALLBACK
-                plan.primary_store = 'facts'
-                # Keep a reasonable fallback set
-                plan.secondary_stores = ['tape', 'embeddings']
-        except Exception:
-            pass
         
-        # 3. Execute retrieval plan
-        results = await self._execute_retrieval_plan(query, plan, classification)
+        # 4. Execute retrieval plan with keyword enhancement
+        results = await self._execute_retrieval_plan_with_keywords(
+            query, keyword_result, plan, classification, max_results)
         
-        # 4. Build response
+        # 5. Build response
         elapsed_ms = (time.time() - start_time) * 1000
         self._update_stats(plan.strategy, elapsed_ms)
+        
+        strategy_name = f"{plan.strategy.value}"
+        if not keyword_result.is_simple_query and len(keyword_result.keywords) > 1:
+            strategy_name += f"_keywords"
         
         response = RetrievalResponse(
             results=results,
@@ -666,8 +664,12 @@ class QueryRouter:
             classification=classification
         )
         
-        logger.info(f"🔍 Query routed: {len(results)} results in {elapsed_ms:.1f}ms "
-                   f"using {plan.strategy.value} strategy")
+        if keyword_result.is_simple_query:
+            logger.info(f"🔍 Query routed: {len(results)} results in {elapsed_ms:.1f}ms "
+                       f"using {plan.strategy.value} strategy")
+        else:
+            logger.info(f"🔍 Query routed: {len(results)} results in {elapsed_ms:.1f}ms "
+                       f"using {plan.strategy.value} strategy (keywords: {keyword_result.keywords})")
         
         return response
     
@@ -675,51 +677,17 @@ class QueryRouter:
                               classification: ClassificationResult, 
                               max_results: int) -> RetrievalPlan:
         """
-        Create retrieval plan based on classification results
+        Create retrieval plan - SIMPLIFIED to always use HYBRID strategy
+        This ensures consistent, reliable results across all queries
         """
-        intent = classification.intent
-        confidence = classification.confidence
+        # ALWAYS use HYBRID strategy - search all stores for best results
+        strategy = RoutingStrategy.HYBRID
         
-        # Determine routing strategy based on confidence
-        if confidence >= self.thresholds['high_confidence']:
-            strategy = RoutingStrategy.DIRECT
-        elif confidence >= self.thresholds['medium_confidence']:
-            strategy = RoutingStrategy.PRIMARY_WITH_FALLBACK
-        elif confidence >= self.thresholds['low_confidence']:
-            strategy = RoutingStrategy.HYBRID
-        else:
-            strategy = RoutingStrategy.BYPASS
+        # Always search all available stores
+        secondary_stores = list(self.stores.keys())
         
-        # Map intent to primary store
-        store_mapping = {
-            QueryIntent.PERSONAL_FACTS: 'facts',
-            QueryIntent.CONVERSATION_HISTORY: 'tape',
-            QueryIntent.EPISODIC_MEMORY: 'embeddings',
-            QueryIntent.KNOWLEDGE_SYNTHESIS: 'embeddings',
-            QueryIntent.GENERAL_KNOWLEDGE: None,  # Bypass memory
-            QueryIntent.HYBRID_SEARCH: None      # Search all
-        }
-        
-        primary_store = store_mapping.get(intent)
-        
-        # Define secondary stores for fallback
-        secondary_stores = []
-        if intent == QueryIntent.PERSONAL_FACTS:
-            secondary_stores = ['tape', 'embeddings']
-        elif intent == QueryIntent.CONVERSATION_HISTORY:
-            secondary_stores = ['embeddings', 'facts']
-        elif intent in [QueryIntent.EPISODIC_MEMORY, QueryIntent.KNOWLEDGE_SYNTHESIS]:
-            secondary_stores = ['tape', 'facts']
-        
-        # Override for general knowledge or hybrid
-        if intent == QueryIntent.GENERAL_KNOWLEDGE:
-            strategy = RoutingStrategy.BYPASS
-            primary_store = None
-            secondary_stores = []
-        elif intent == QueryIntent.HYBRID_SEARCH:
-            strategy = RoutingStrategy.HYBRID
-            primary_store = None
-            secondary_stores = list(self.stores.keys())
+        # No primary store needed for HYBRID - it searches all stores equally
+        primary_store = None
         
         # Extract filters from features
         time_filter = None
@@ -734,89 +702,46 @@ class QueryRouter:
             max_results=max_results,
             time_filter=time_filter,
             entity_filter=classification.features.entities,
-            confidence_threshold=confidence
+            confidence_threshold=classification.confidence
         )
         
         return plan
     
     async def _execute_retrieval_plan(self, query: str, plan: RetrievalPlan, classification: ClassificationResult) -> List[MemoryResult]:
         """
-        Execute the retrieval plan across appropriate stores
+        Execute the retrieval plan - SIMPLIFIED to only handle HYBRID strategy
+        Always searches all available stores for consistent, reliable results
         """
         all_results = []
         
         try:
-            if plan.strategy == RoutingStrategy.BYPASS:
-                # Skip memory entirely
-                return []
+            # SIMPLIFIED: Only HYBRID strategy - search all available stores
+            stores_to_search = list(self.stores.keys())
+            results_per_store = max(1, plan.max_results // len(stores_to_search))
             
-            elif plan.strategy == RoutingStrategy.DIRECT:
-                # Query only primary store
-                if plan.primary_store and plan.primary_store in self.stores:
-                    if plan.primary_store == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
-                        # For conversation history, prefer recent snippets over keyword match
-                        results = await self.stores['tape'].get_recent(limit=plan.max_results)
-                    else:
-                        results = await self.stores[plan.primary_store].search(
-                            query, limit=plan.max_results
-                        )
+            # Query stores in parallel
+            search_tasks = []
+            for store_name in stores_to_search:
+                if store_name in self.stores:
+                    # Use regular search for all stores (no special conversation history logic)
+                    task = self.stores[store_name].search(query, limit=results_per_store)
+                    search_tasks.append((store_name, task))
+            
+            # Wait for all searches to complete
+            search_results = await asyncio.gather(
+                *[task for _, task in search_tasks], 
+                return_exceptions=True
+            )
+            
+            # Combine results
+            for (store_name, _), results in zip(search_tasks, search_results):
+                if isinstance(results, Exception):
+                    logger.error(f"Search failed in {store_name}: {results}")
+                    import traceback
+                    logger.error(f"Full traceback for {store_name}: {''.join(traceback.format_exception(type(results), results, results.__traceback__))}")
+                else:
+                    logger.debug(f"Store {store_name} returned {len(results)} results")
                     all_results.extend(results)
-            
-            elif plan.strategy == RoutingStrategy.PRIMARY_WITH_FALLBACK:
-                # Try primary first, then fallback if insufficient results
-                if plan.primary_store and plan.primary_store in self.stores:
-                    if plan.primary_store == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
-                        results = await self.stores['tape'].get_recent(limit=plan.max_results)
-                    else:
-                        results = await self.stores[plan.primary_store].search(
-                            query, limit=plan.max_results
-                        )
-                    all_results.extend(results)
-                
-                # If insufficient results, try secondary stores
-                if len(all_results) < plan.max_results // 2:
-                    remaining_limit = plan.max_results - len(all_results)
-                    
-                    for store_name in plan.secondary_stores:
-                        if store_name in self.stores and len(all_results) < plan.max_results:
-                            if store_name == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
-                                results = await self.stores['tape'].get_recent(limit=remaining_limit)
-                            else:
-                                results = await self.stores[store_name].search(
-                                    query, limit=remaining_limit
-                                )
-                            all_results.extend(results)
-            
-            elif plan.strategy == RoutingStrategy.HYBRID:
-                # Search all available stores
-                stores_to_search = plan.secondary_stores if plan.secondary_stores else list(self.stores.keys())
-                results_per_store = max(1, plan.max_results // len(stores_to_search))
-                
-                # Query stores in parallel
-                search_tasks = []
-                for store_name in stores_to_search:
-                    if store_name in self.stores:
-                        if store_name == 'tape' and classification.intent.name == 'CONVERSATION_HISTORY':
-                            task = self.stores['tape'].get_recent(limit=results_per_store)
-                        else:
-                            task = self.stores[store_name].search(query, limit=results_per_store)
-                        search_tasks.append((store_name, task))
-                
-                # Wait for all searches to complete
-                search_results = await asyncio.gather(
-                    *[task for _, task in search_tasks], 
-                    return_exceptions=True
-                )
-                
-                # Combine results
-                for (store_name, _), results in zip(search_tasks, search_results):
-                    if isinstance(results, Exception):
-                        logger.error(f"Search failed in {store_name}: {results}")
-                        import traceback
-                        logger.error(f"Full traceback for {store_name}: {''.join(traceback.format_exception(type(results), results, results.__traceback__))}")
-                    else:
-                        logger.debug(f"Store {store_name} returned {len(results)} results")
-                        all_results.extend(results)
             
             # Sort by relevance score and limit results
             all_results.sort(key=lambda r: r.relevance_score, reverse=True)
@@ -825,6 +750,57 @@ class QueryRouter:
         except Exception as e:
             logger.error(f"Retrieval plan execution failed: {e}")
             return []
+    
+    async def _execute_retrieval_plan_with_keywords(self, 
+                                                   original_query: str,
+                                                   keyword_result,
+                                                   plan: RetrievalPlan, 
+                                                   classification: ClassificationResult,
+                                                   max_results: int) -> List[MemoryResult]:
+        """
+        Execute retrieval plan with smart keyword extraction enhancement
+        
+        For simple queries (single words/phrases), use direct search.
+        For natural language queries, extract keywords and search each separately,
+        then combine and deduplicate results.
+        """
+        # If it's a simple query, use the original direct search
+        if keyword_result.is_simple_query:
+            return await self._execute_retrieval_plan(original_query, plan, classification)
+        
+        # For natural language queries, search with extracted keywords
+        if not keyword_result.keywords:
+            # No meaningful keywords found, fall back to direct search
+            return await self._execute_retrieval_plan(original_query, plan, classification)
+        
+        logger.debug(f"🔍 Keyword search: {keyword_result.keywords}")
+        
+        all_results = []
+        seen_results = set()  # For deduplication
+        
+        try:
+            # Search with each keyword
+            for keyword in keyword_result.keywords:
+                # Create a temporary plan for this keyword
+                keyword_results = await self._execute_retrieval_plan(keyword, plan, classification)
+                
+                # Deduplicate results based on content hash
+                for result in keyword_results:
+                    # Create a hash based on first 50 chars of content to avoid exact duplicates
+                    content_hash = hash(result.content[:50]) if hasattr(result, 'content') else hash(str(result))
+                    
+                    if content_hash not in seen_results:
+                        all_results.append(result)
+                        seen_results.add(content_hash)
+            
+            # Sort by relevance score and limit results
+            all_results.sort(key=lambda r: getattr(r, 'relevance_score', 0.0), reverse=True)
+            return all_results[:max_results]
+            
+        except Exception as e:
+            logger.error(f"Keyword-enhanced retrieval failed: {e}")
+            # Fall back to direct search on error
+            return await self._execute_retrieval_plan(original_query, plan, classification)
     
     def _parse_temporal_filter(self, classification: ClassificationResult) -> Optional[Tuple[float, float]]:
         """
