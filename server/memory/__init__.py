@@ -149,18 +149,25 @@ class SurrealMemorySystem:
             logger.debug(f"Session auto-creation deferred: {e}")
     
     async def _init_session(self):
-        """Initialize default session"""
+        """Initialize default session using configured USER_ID"""
         try:
-            self.current_session_id = await self.start_session('default_user')
+            import os
+            user_id = os.getenv('USER_ID', 'default_user')
+            self.current_session_id = await self.start_session(user_id)
             from loguru import logger
-            logger.info(f"🎬 Auto-created session: {self.current_session_id}")
+            logger.info(f"🎬 Auto-created session: {self.current_session_id} for user: {user_id}")
         except Exception as e:
             from loguru import logger
             logger.warning(f"Failed to auto-create session: {e}")
     
-    async def start_session(self, speaker_id: str = 'default_user'):
+    async def start_session(self, speaker_id: str = None):
         """Start a new session and cache it"""
         try:
+            # Use configured USER_ID if no speaker_id provided
+            if not speaker_id:
+                import os
+                speaker_id = os.getenv('USER_ID', 'default_user')
+            
             session_id = await self.connection_manager.create_session(speaker_id)
             self.current_session_id = session_id
             self._session_cache[speaker_id] = session_id
