@@ -64,50 +64,69 @@ class SurrealMessageStore(FrameProcessor):
         
         # Session management
         self._session_created = False
+        self._persistent_session_id = None  # Cache session_id to prevent regeneration
         
         logger.info(f"📝 SurrealMessageStore initialized (speaker: {speaker_id})")
     
     async def _ensure_session(self):
-        """Ensure we have an active session using SessionManager (no race conditions)"""
+        """Ensure we have an active session - use cached session_id to prevent regeneration"""
         if not self.surreal or self._session_created:
             return
         
         try:
-            # Use SessionManager to get/create session (thread-safe, no race conditions)
+            # Use persistent session_id to avoid creating new sessions every time
             if not self.session_id:
-                # Get existing session or create new one via SessionManager
-                existing_session = SessionManager.get_current_session() if SessionManager else None
-                
-                if existing_session:
-                    self.session_id = existing_session
-                    logger.info(f"🔄 Using existing global session: {self.session_id}")
-                elif self.auto_create_session and SessionManager:
-                    # Create session via SessionManager first, then in SurrealDB
-                    self.session_id = SessionManager.create_new_session(
-                        speaker_id=self.speaker_id,
-                        metadata={
-                            'created_by': 'SurrealMessageStore',
-                            'auto_created': True,
-                            'global_conversation': True
-                        }
-                    )
-                    
-                    # Now create in SurrealDB to match the global session
-                    db_session = await self.surreal.create_session(
-                        speaker_id=self.speaker_id,
-                        metadata={
-                            'created_by': 'SurrealMessageStore',
-                            'auto_created': True,
-                            'global_conversation': True
-                        }
-                    )
-                    
-                    logger.info(f"🎬 Created global session: {self.session_id} (SurrealDB: {db_session})")
+                # Check if we have a cached persistent session
+                if self._persistent_session_id:
+                    self.session_id = self._persistent_session_id
+                    logger.info(f"🔄 Using cached session: {self.session_id}")
                 else:
-                    logger.warning("SessionManager not available - cannot create session")
-                    return
+                    # Try to get existing session from SessionManager
+                    existing_session = SessionManager.get_current_session() if SessionManager else None
+                    
+                    if existing_session:
+                        self.session_id = existing_session
+                        self._persistent_session_id = existing_session  # Cache it
+                        logger.info(f"🔄 Using existing global session: {self.session_id}")
+                    elif self.auto_create_session:
+                        # Create new session only as last resort
+                        if SessionManager:
+                            self.session_id = SessionManager.create_new_session(
+                                speaker_id=self.speaker_id,
+                                metadata={
+                                    'created_by': 'SurrealMessageStore',
+                                    'auto_created': True,
+                                    'global_conversation': True
+                                }
+                            )
+                        else:
+                            # Generate simple session_id if SessionManager unavailable
+                            import uuid
+                            self.session_id = f"session_{uuid.uuid4().hex[:12]}"
+                        
+                        # Cache the session_id to prevent regeneration
+                        self._persistent_session_id = self.session_id
+                        
+                        # Create in SurrealDB using the same session_id from SessionManager
+                        if self.surreal:
+                            db_session = await self.surreal.create_session(
+                                speaker_id=self.speaker_id,
+                                metadata={
+                                    'created_by': 'SurrealMessageStore',
+                                    'auto_created': True,
+                                    'global_conversation': True
+                                },
+                                session_id=self.session_id  # Pass SessionManager's session_id
+                            )
+                            logger.info(f"🎬 Created new session: {self.session_id} (SurrealDB: {db_session})")
+                        else:
+                            logger.info(f"🎬 Created new session: {self.session_id}")
+                    else:
+                        logger.warning("Cannot create session - auto_create_session disabled")
+                        return
             else:
-                # Set provided session_id in SessionManager
+                # Session_id provided during init - cache it and set in SessionManager  
+                self._persistent_session_id = self.session_id
                 if SessionManager:
                     SessionManager.set_session(self.session_id, self.speaker_id)
                     logger.info(f"🔄 Set global session: {self.session_id}")
@@ -138,40 +157,8 @@ class SurrealMessageStore(FrameProcessor):
             asyncio.create_task(self._store_message_async(message))
     
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        
-        # Ensure we have a session
-        if not self._session_created:
-            await self._ensure_session()
-        
-        # Capture user transcriptions (final STT output)
-        if isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM:
-            text = (frame.text or '').strip()
-            if text:
-                await self._handle_user_message(text)
-        
-        # Track assistant response lifecycle  
-        elif isinstance(frame, LLMFullResponseStartFrame) and direction == FrameDirection.DOWNSTREAM:
-            self._in_assistant_response = True
-            self._assistant_buffer = ""
-        
-        elif isinstance(frame, LLMFullResponseEndFrame) and direction == FrameDirection.DOWNSTREAM:
-            if self._in_assistant_response and self._assistant_buffer.strip():
-                await self._handle_assistant_message(self._assistant_buffer.strip())
-            
-            self._in_assistant_response = False
-            self._assistant_buffer = ""
-        
-        # Accumulate assistant response text
-        elif isinstance(frame, TextFrame) and direction == FrameDirection.DOWNSTREAM and self._in_assistant_response:
-            text = getattr(frame, 'text', '') or ''
-            if text:
-                # LLM sends REPLACEMENT frames - each frame contains complete response so far
-                # We want the final, complete response, so just replace (don't concatenate)
-                self._assistant_buffer = text
-                logger.debug(f"📝 Assistant response update: {len(text)} chars")
-        
-        # Forward all frames
+        # COMPLETELY DISABLE FRAME PROCESSING - this is now storage-only helper
+        # Just forward frames without any processing to prevent duplicate storage
         await self.push_frame(frame, direction)
     
     async def _handle_user_message(self, text: str):
@@ -179,6 +166,9 @@ class SurrealMessageStore(FrameProcessor):
         try:
             # Store current user message for context
             self._current_user_message = text
+            
+            # Ensure session is created first
+            await self._ensure_session()
             
             # Ensure we have a session_id (required for Message validation)
             if not self.session_id:
@@ -198,7 +188,7 @@ class SurrealMessageStore(FrameProcessor):
             # Store asynchronously
             self._enqueue_message_store(message)
             
-            logger.info(f"🎤 Storing user message: '{text}' (session: {self.session_id})")
+            logger.info(f"🎤 INTEGRATION: Storing user message speaker={self.speaker_id} session={self.session_id} instance={id(self)}")
         
         except Exception as e:
             logger.error(f"Error handling user message: {e}")
@@ -206,16 +196,21 @@ class SurrealMessageStore(FrameProcessor):
     async def _handle_assistant_message(self, text: str):
         """Handle assistant response"""
         try:
+            # Ensure session exists and is the SAME as user's session
+            await self._ensure_session()
+            
             # Ensure we have a session_id (required for Message validation)
             if not self.session_id:
                 logger.warning("No session_id available for assistant message - skipping storage")
                 return
             
-            # Create message object
+            # Create message object with proper assistant speaker_id
+            import os
+            assistant_id = os.getenv('ASSISTANT_ID', 'slowcat')
             message = Message(
                 role='assistant',
                 content=text,
-                speaker_id='assistant',
+                speaker_id=assistant_id,  # Use ASSISTANT_ID from env, not user's speaker_id
                 session_id=self.session_id,
                 timestamp=datetime.now(timezone.utc),
                 tokens=self._estimate_tokens(text)
@@ -224,7 +219,7 @@ class SurrealMessageStore(FrameProcessor):
             # Store asynchronously
             self._enqueue_message_store(message)
             
-            logger.info(f"🤖 Storing assistant response: '{text}' (session: {self.session_id})")
+            logger.info(f"🤖 INTEGRATION: Storing assistant message speaker={assistant_id} session={self.session_id} instance={id(self)}")
             
             # Clear current user message for next turn
             self._current_user_message = None

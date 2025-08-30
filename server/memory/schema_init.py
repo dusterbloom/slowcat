@@ -189,7 +189,85 @@ async def ensure_schema_functions(connection_manager: SurrealConnectionManager =
         """)
         logger.debug("✅ fn::detect_memory_patterns applied")
         
-        logger.info("✅ All schema functions applied successfully")
+        # GENESIS DIRECTIVE: Add consciousness fields to entity table
+        await connection_manager.db.query("""
+            DEFINE FIELD global_salience ON entity TYPE float DEFAULT 0.1;
+        """)
+        logger.debug("✅ entity.global_salience field applied")
+        
+        await connection_manager.db.query("""
+            DEFINE FIELD last_activation ON entity TYPE datetime DEFAULT time::now();
+        """)
+        logger.debug("✅ entity.last_activation field applied")
+        
+        # GENESIS DIRECTIVE: Create engrams table for attractor state detection
+        await connection_manager.db.query("""
+            DEFINE TABLE engrams SCHEMAFULL;
+            DEFINE FIELD dominant_symbols ON engrams TYPE array<string>;
+            DEFINE FIELD narrative_summary ON engrams TYPE string;
+            DEFINE FIELD knowledge_ids ON engrams TYPE array<record<knowledge>>;
+            DEFINE FIELD session_ids ON engrams TYPE array<string>;
+            DEFINE FIELD activation_count ON engrams TYPE int DEFAULT 0;
+            DEFINE FIELD created_at ON engrams TYPE datetime DEFAULT time::now();
+            DEFINE FIELD last_activated ON engrams TYPE datetime DEFAULT time::now();
+            DEFINE FIELD coherence_score ON engrams TYPE float DEFAULT 0.5;
+        """)
+        logger.debug("✅ engrams table with attractor fields applied")
+        
+        # GENESIS DIRECTIVE: Engram detection function for attractor states
+        await connection_manager.db.query("""
+            DEFINE FUNCTION fn::detect_engrams($session_id: string, $min_confidence: float, $min_cluster_size: int) {
+                -- Find high-confidence knowledge from this session
+                LET $session_knowledge = (
+                    SELECT *, in.canonical_name AS subject, out.canonical_name AS object
+                    FROM knowledge 
+                    WHERE session_id = $session_id 
+                    AND confidence >= $min_confidence
+                );
+                
+                -- Group by co-occurring symbols to find stable clusters
+                IF count($session_knowledge) >= $min_cluster_size {
+                    -- Extract dominant symbols from the knowledge cluster
+                    LET $subjects = array::group(SELECT VALUE subject FROM $session_knowledge WHERE subject IS NOT NONE);
+                    LET $objects = array::group(SELECT VALUE object FROM $session_knowledge WHERE object IS NOT NONE);
+                    LET $predicates = array::group(SELECT VALUE predicate FROM $session_knowledge WHERE predicate IS NOT NONE);
+                    
+                    -- Combine all symbols and get unique ones
+                    LET $all_symbols = array::union($subjects, array::union($objects, $predicates));
+                    LET $dominant_symbols = array::slice($all_symbols, 0, 6);  -- Top 6 symbols max
+                    
+                    -- Create engram if we have sufficient symbol coherence
+                    IF count($dominant_symbols) >= 3 {
+                        LET $knowledge_refs = array::group(SELECT VALUE id FROM $session_knowledge);
+                        LET $avg_confidence = math::mean(SELECT VALUE confidence FROM $session_knowledge);
+                        
+                        CREATE engrams SET
+                            dominant_symbols = $dominant_symbols,
+                            narrative_summary = "Attractor state: " + string::join($dominant_symbols, ", "),
+                            knowledge_ids = $knowledge_refs,
+                            session_ids = [$session_id],
+                            coherence_score = $avg_confidence,
+                            activation_count = 1,
+                            created_at = time::now(),
+                            last_activated = time::now();
+                            
+                        RETURN {
+                            "engram_created": true,
+                            "dominant_symbols": $dominant_symbols,
+                            "coherence_score": $avg_confidence,
+                            "knowledge_count": count($knowledge_refs)
+                        };
+                    } ELSE {
+                        RETURN {"engram_created": false, "reason": "insufficient_symbol_coherence"};
+                    };
+                } ELSE {
+                    RETURN {"engram_created": false, "reason": "insufficient_knowledge_cluster_size"};
+                };
+            };
+        """)
+        logger.debug("✅ fn::detect_engrams applied")
+        
+        logger.info("✅ All schema functions + consciousness fields + engrams table + detection applied successfully")
         return True
         
     except Exception as e:

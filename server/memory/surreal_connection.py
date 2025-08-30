@@ -222,6 +222,10 @@ class SurrealConnectionManager:
         await self.ensure_connected()
         
         try:
+            # INTEGRATION DEBUG: Log every store_message call with stack trace
+            import traceback
+            stack = ''.join(traceback.format_stack()[-3:-1])  # Get calling context
+            logger.info(f"🔍 INTEGRATION: store_message called role={message.role} speaker={message.speaker_id} session={message.session_id} tokens={getattr(message, 'tokens', 0)} caller={stack.strip()}")
             # Convert message to SurrealDB format
             data = message.to_surreal()
             
@@ -385,13 +389,15 @@ class SurrealConnectionManager:
     
     async def create_session(self, 
                            speaker_id: str = 'default_user',
-                           metadata: Dict[str, Any] = None) -> Optional[str]:
+                           metadata: Dict[str, Any] = None,
+                           session_id: str = None) -> Optional[str]:
         """
         Create a new conversation session
         
         Args:
             speaker_id: Speaker identifier
             metadata: Optional session metadata
+            session_id: Optional existing session ID to use (will generate if None)
             
         Returns:
             Session ID if successful
@@ -399,8 +405,23 @@ class SurrealConnectionManager:
         await self.ensure_connected()
         
         try:
-            import uuid
-            session_id = f"session_{uuid.uuid4().hex[:12]}"
+            # Use provided session_id or generate a new one
+            if not session_id:
+                import uuid
+                session_id = f"session_{uuid.uuid4().hex[:12]}"
+            
+            # Check if session already exists to prevent duplicates
+            existing = await self.db.query(
+                "SELECT * FROM sessions WHERE session_id = $session_id;",
+                {'session_id': session_id}
+            )
+            
+            if existing and len(existing) > 0:
+                logger.info(f"🔄 Session already exists: {session_id} - using existing")
+                # Cache existing session for consistency
+                existing_data = existing[0]
+                self._active_sessions[session_id] = existing_data
+                return session_id
             
             data = {
                 'session_id': session_id,

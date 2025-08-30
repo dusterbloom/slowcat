@@ -18,6 +18,7 @@ import json
 import time
 import hashlib
 import numpy as np
+from datetime import datetime
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Set
@@ -796,7 +797,12 @@ class DynamicTapeHead:
         """
         
         # Recency Score (R): Exponential decay from timestamp
-        age_hours = (time.time() - memory.ts) / 3600
+        # Handle both Unix timestamp (float) and datetime objects
+        if isinstance(memory.ts, datetime):
+            ts_unix = memory.ts.timestamp()
+        else:
+            ts_unix = memory.ts
+        age_hours = (time.time() - ts_unix) / 3600
         half_life = self.policy['parameters']['recency_half_life_hours']
         R = np.exp(-age_hours * np.log(2) / half_life)
         

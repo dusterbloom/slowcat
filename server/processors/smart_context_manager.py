@@ -318,7 +318,7 @@ class SmartContextManager(FrameProcessor):
             except Exception as e:
                 logger.warning(f"Reflection loop not started: {e}")
         
-        # SurrealDB Message Storage Integration
+        # SurrealDB Message Storage Integration (SINGLE INSTANCE - no duplicates)
         self._enable_surreal = os.getenv('USE_SURREALDB', 'false').lower() == 'true'
         self.surreal_store = None
         
@@ -326,17 +326,24 @@ class SmartContextManager(FrameProcessor):
             try:
                 from processors.surreal_message_store import create_surreal_message_store
                 
+                # CRITICAL: Use the same session across all instances  
                 self.surreal_store = create_surreal_message_store(
-                    speaker_id=self._user_id,
+                    speaker_id=self._user_id,  # This should be "peppi"
                     auto_create_session=True
                 )
                 
                 if self.surreal_store:
-                    logger.info("📝 SurrealDB message storage enabled")
+                    logger.info(f"📝 INTEGRATION: SmartContextManager created SurrealMessageStore instance={id(self.surreal_store)} speaker={self._user_id} scm_instance={id(self)}")
+                    logger.info(f"   Speaker ID: {self._user_id}")
                 
             except Exception as e:
                 logger.warning(f"SurrealDB message store initialization failed: {e}")
                 self.surreal_store = None
+    async def _store_assistant_message(self, response: str):
+        """Helper method for testing - store assistant message"""
+        if self.surreal_store and response.strip():
+            await self.surreal_store._handle_assistant_message(response.strip())
+    
     def _trace_sessions(self, event: str, **data):
         """Targeted session trace when SC_TRACE_SESSIONS=true."""
         try:
@@ -488,16 +495,21 @@ class SmartContextManager(FrameProcessor):
             if self.field_persistence and self._consciousness_instance:
                 asyncio.create_task(self._track_field_evolution_async(user_text))
 
-            # 1b. Write user message to tape store
-            try:
-                if self.tape_store is not None and self._is_semantically_useful(user_text):
-                    self._enqueue_tape_write('user', user_text)
-            except Exception as e:
-                logger.debug(f"TapeStore write (user) enqueue failed: {e}")
+            # 1b. TapeStore storage DISABLED when SurrealDB is active (prevent duplicates)
+            if self.surreal_store:
+                logger.debug(f"📼 TapeStore user storage SKIPPED (SurrealDB active)")
+            else:
+                # Fallback to TapeStore only when SurrealDB not available - ALWAYS store all conversations
+                try:
+                    if self.tape_store is not None:
+                        self._enqueue_tape_write('user', user_text)
+                except Exception as e:
+                    logger.debug(f"TapeStore write (user) enqueue failed: {e}")
             
-            # 1c. Store user message in SurrealDB
+            # 1c. Store user message in SurrealDB (SINGLE INSTANCE) - ALWAYS store all conversations
             try:
-                if self.surreal_store and self._is_semantically_useful(user_text):
+                if self.surreal_store:
+                    logger.info(f"🎤 INTEGRATION: SmartContextManager calling user storage store_instance={id(self.surreal_store)} scm_instance={id(self)}")
                     asyncio.create_task(self.surreal_store._handle_user_message(user_text))
             except Exception as e:
                 logger.debug(f"SurrealDB user message store failed: {e}")
@@ -544,8 +556,8 @@ class SmartContextManager(FrameProcessor):
             # duplicating the current user message in both recent_context and
             # the explicit current user slot.
             try:
-                if self._is_semantically_useful(user_text):
-                    self._record_user_turn(user_text)
+                # Always record all user turns regardless of semantics
+                self._record_user_turn(user_text)
             except Exception as e:
                 logger.debug(f"Recent window update failed: {e}")
 
@@ -621,6 +633,84 @@ class SmartContextManager(FrameProcessor):
         dth_candidates = []
         verified_lines: List[str] = []
         strict_answer_mode = self._is_personal_facts_candidate(user_input)
+        
+        # CONSCIOUSNESS TEST: Update symbol salience for active concepts  
+        # Run consciousness activation for ALL inputs, not just memory candidates
+        logger.info(f"🧠 CONSCIOUSNESS DEBUG: should_query_memory={should_query_memory}, has_query_router={self.query_router is not None}")
+        if self.query_router:  # Always activate consciousness if we have the infrastructure
+            try:
+                # Extract symbols from input using multiple methods
+                import re
+                symbols = set()
+                
+                # Method 1: Capitalized words (proper nouns)
+                capitalized = re.findall(r'\b[A-Z][a-z]+\b', user_input)
+                symbols.update(capitalized)
+                
+                # Method 2: Important common words (entities, actions, concepts)
+                important_words = re.findall(r'\b(?:dog|cat|pet|good|thanks|asking|Luna|Potola|peppi|how|what|where|when|why|who|doing|today|yesterday|tomorrow)\b', user_input, re.IGNORECASE)
+                symbols.update(word.lower() for word in important_words)
+                
+                # Method 3: All substantive words (nouns, verbs, adjectives) - basic filter
+                substantive_words = [word for word in user_input.lower().split() 
+                                   if len(word) > 2 and word not in ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'may', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use']]
+                symbols.update(substantive_words[:2])  # Limit to first 2 substantive words
+                
+                symbols = list(symbols)[:5]  # Limit total symbols to 5
+                
+                # Access SurrealDB through query_router's stores
+                if symbols and hasattr(self.query_router, 'stores') and 'facts' in self.query_router.stores:
+                    facts_store = self.query_router.stores['facts']
+                    if hasattr(facts_store, 'surreal_conn'):
+                        conn = facts_store.surreal_conn
+                        activated_count = 0
+                        for symbol in symbols:
+                            # Update existing entities or create new ones
+                            result = await conn.db.query("""
+                                UPDATE entity SET 
+                                    global_salience = global_salience + 0.02,
+                                    last_activation = time::now()
+                                WHERE canonical_name = $symbol
+                            """, {"symbol": symbol})
+                            
+                            # If no existing entity, create one with low initial salience
+                            if not result or len(result) == 0 or not result[0]:
+                                await conn.db.query("""
+                                    INSERT INTO entity (
+                                        canonical_name, 
+                                        global_salience, 
+                                        last_activation
+                                    ) VALUES (
+                                        $symbol,
+                                        0.12,
+                                        time::now()
+                                    );
+                                """, {"symbol": symbol})
+                                activated_count += 1
+                            else:
+                                activated_count += 1
+                        
+                        if activated_count > 0:
+                            logger.info(f"🧠 CONSCIOUSNESS: Activated {activated_count} symbols {symbols[:3]}{'...' if len(symbols) > 3 else ''}")
+                            
+                            # Try to detect and create engrams if we have enough coherent symbols
+                            try:
+                                # Generate a session_id from speaker and timestamp for engram detection
+                                speaker_key = self._speaker_key()
+                                session_id = f"{speaker_key}_{int(time.time())}"
+                                
+                                engram_result = await conn.db.query("""
+                                    RETURN fn::detect_engrams($session_id, 0.7, 2);
+                                """, {"session_id": session_id})
+                                
+                                if engram_result and engram_result[0] and engram_result[0].get('engram_created'):
+                                    logger.info(f"🧠 ENGRAM CREATED: {engram_result[0]}")
+                                else:
+                                    logger.debug(f"🧠 Engram detection result: {engram_result}")
+                            except Exception as engram_e:
+                                logger.debug(f"Engram detection failed: {engram_e}")
+            except Exception as e:
+                logger.debug(f"Consciousness activation failed: {e}")
         
         # Try smart router first (Facts + Tape integration) if gated in
         if should_query_memory and self.query_router is not None:
@@ -1076,7 +1166,15 @@ class SmartContextManager(FrameProcessor):
                 return False
             if s.endswith('?'):
                 return True
-            words = [w for w in re.split(r"\s+", s) if any(c.isalpha() for c in w)]
+            
+            # Allow basic conversational turns (greetings, short responses)
+            basic_conversational = ['hello', 'hi', 'hey', 'work', 'yes', 'no', 'ok', 'okay', 'thanks', 'bye']
+            words = [w.lower() for w in re.split(r"\s+", s) if any(c.isalpha() for c in w)]
+            
+            # If it contains basic conversational words, allow it regardless of length
+            if any(word in basic_conversational for word in words):
+                return True
+                
             if self._tape_min_words > 0 and len(words) < self._tape_min_words:
                 return False
             if self._tape_min_len > 0 and len(s) < self._tape_min_len:
@@ -2357,29 +2455,36 @@ class SmartContextManager(FrameProcessor):
             # No prior user turn recorded; still keep assistant to avoid losing context
             self.recent_exchanges.append(("", response))
         
-        # Store in SurrealDB if enabled
+        # Store in SurrealDB (SINGLE INSTANCE)
         try:
             if self.surreal_store and response.strip():
+                logger.info(f"🤖 INTEGRATION: SmartContextManager calling assistant storage store_instance={id(self.surreal_store)} scm_instance={id(self)}")
                 asyncio.create_task(self.surreal_store._handle_assistant_message(response.strip()))
         except Exception as e:
             logger.debug(f"SurrealDB assistant message store failed: {e}")
         
-        # Store in tape store if enabled  
-        try:
-            if self.tape_store and self._is_semantically_useful(response):
-                self._enqueue_tape_write('assistant', response)
-        except Exception as e:
-            logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
+        # TapeStore storage DISABLED when SurrealDB is active (prevent duplicates)
+        if self.surreal_store:
+            logger.debug(f"📼 TapeStore storage SKIPPED (SurrealDB active)")
+        else:
+            # Fallback to TapeStore only when SurrealDB not available
+            try:
+                if self.tape_store and self._is_semantically_useful(response):
+                    self._enqueue_tape_write('assistant', response)
+            except Exception as e:
+                logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
 
         # Maintain sliding window
         if len(self.recent_exchanges) > self.max_recent_exchanges:
             self.recent_exchanges.pop(0)
-        # Also write to tape store (non-blocking, with timeout)
-        try:
-            if self.tape_store is not None and response:
-                self._enqueue_tape_write('assistant', response)
-        except Exception as e:
-            logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
+        # TapeStore write DISABLED when SurrealDB active (prevent duplicates)
+        if not self.surreal_store:
+            # Also write to tape store (non-blocking, with timeout) - ONLY when SurrealDB not active
+            try:
+                if self.tape_store is not None and response:
+                    self._enqueue_tape_write('assistant', response)
+            except Exception as e:
+                logger.debug(f"TapeStore write (assistant) enqueue failed: {e}")
 
         # Emergent tracking: detect patterns in assistant final outputs (log-only)
         try:
