@@ -818,19 +818,42 @@ class SurrealConnectionManager:
             except Exception:
                 pass  # Entity might already exist
             
-            # Create relation with parameterized query
-            relation_query = f"""
-                RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
-                    predicate = $predicate,
-                    confidence = $confidence,
-                    strength = 1.0,
-                    created_at = time::now();
+            # Check if relation already exists to prevent duplicates
+            existing_query = f"""
+                SELECT * FROM knowledge 
+                WHERE in = entity:{subject_safe} 
+                  AND out = entity:{object_safe} 
+                  AND predicate = $predicate
+                LIMIT 1;
             """
             
-            result = await self.db.query(relation_query, {
-                'predicate': predicate,
-                'confidence': confidence
-            })
+            existing = await self.db.query(existing_query, {'predicate': predicate})
+            
+            if existing and len(existing) > 0:
+                # Relation exists, update access stats
+                relation_id = existing[0].get('id')
+                update_result = await self.db.query(f"""
+                    UPDATE {relation_id} SET
+                        last_accessed = time::now(),
+                        access_count = access_count + 1,
+                        strength = math::min(1.0, strength + 0.1);
+                """)
+                logger.debug(f"Updated existing relation: {relation_id}")
+                result = existing  # Return existing relation
+            else:
+                # Create new relation
+                relation_query = f"""
+                    RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
+                        predicate = $predicate,
+                        confidence = $confidence,
+                        strength = 1.0,
+                        created_at = time::now();
+                """
+                
+                result = await self.db.query(relation_query, {
+                    'predicate': predicate,
+                    'confidence': confidence
+                })
             logger.debug(f"Relation result structure: {result}")
             
             # Check if relation was created successfully
@@ -862,15 +885,12 @@ class SurrealConnectionManager:
         await self.ensure_connected()
         
         try:
+            # Use the schema's built-in search function - designed for natural language queries
             result = await self.db.query("""
                 SELECT *, 
                        in.canonical_name as subject,
                        out.canonical_name as object
-                FROM knowledge  
-                WHERE predicate CONTAINS $query
-                   OR in.canonical_name CONTAINS $query  
-                   OR out.canonical_name CONTAINS $query
-                LIMIT $limit;
+                FROM fn::search_knowledge($query, $limit);
             """, {
                 'query': query,
                 'limit': limit

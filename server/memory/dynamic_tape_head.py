@@ -897,7 +897,10 @@ class DynamicTapeHead:
                         continue
                         
                     content = entry.get('content') if isinstance(entry, dict) else getattr(entry, 'content', '')
-                    ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', time.time())
+                    # Fix: Ensure ts is always a valid number, never None
+                    ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', None)
+                    if ts is None:
+                        ts = time.time()  # Use current time as fallback
                     role = entry.get('role') if isinstance(entry, dict) else getattr(entry, 'role', 'user')
                     spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')
                     
@@ -931,12 +934,16 @@ class DynamicTapeHead:
                     knn = await self.memory.knn_tape(query, limit=self.policy['parameters']['knn_k'], scan=int(self.policy.get('parameters', {}).get('knn_scan_recent', 100)), speaker_id=speaker_id)
                     for entry in knn:
                         content = entry.get('content', '')
-                        ts = entry.get('ts', time.time())
+                        # Fix: Ensure ts is always a valid number, never None
+                        ts = entry.get('ts', None)
+                        if ts is None:
+                            ts = time.time()  # Use current time as fallback
                         role = entry.get('role', 'user')
                         spk = entry.get('speaker_id', 'user')
                         if speaker_id and spk != speaker_id:
                             continue
-                        if any(abs(c.ts - ts) < 1e-6 for c in candidates):
+                        # Also ensure c.ts is never None in comparison
+                        if any(abs((c.ts if c.ts is not None else time.time()) - ts) < 1e-6 for c in candidates):
                             continue
                         
                         # Ensure content is a string for hashing
@@ -1030,8 +1037,12 @@ class DynamicTapeHead:
                     keyword_matches = [keyword_matches]
                     
                 for entry in keyword_matches:
-                    ent_ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', 0)
-                    if not any(abs(c.ts - ent_ts) < 1e-6 for c in candidates):
+                    # Fix: Ensure ent_ts is always a valid number, never None
+                    ent_ts = entry.get('ts') if isinstance(entry, dict) else getattr(entry, 'ts', None)
+                    if ent_ts is None:
+                        ent_ts = time.time()  # Use current time as fallback
+                    # Also ensure c.ts is never None in comparison
+                    if not any(abs((c.ts if c.ts is not None else time.time()) - ent_ts) < 1e-6 for c in candidates):
                         content = entry.get('content') if isinstance(entry, dict) else getattr(entry, 'content', '')
                         role = entry.get('role') if isinstance(entry, dict) else getattr(entry, 'role', 'user')
                     spk = entry.get('speaker_id') if isinstance(entry, dict) else getattr(entry, 'speaker_id', 'user')

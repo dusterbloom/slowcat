@@ -24,7 +24,7 @@ from .query_router import (
     QueryRouter, RetrievalResponse, MemoryResult, 
     create_query_router
 )
-from .spacy_fact_extractor import extract_facts_from_text
+from .hybrid_fact_extractor import extract_facts_from_text
 
 __all__ = [
     # Core SurrealDB components
@@ -79,6 +79,23 @@ def create_smart_memory_system(facts_db_path: str = "data/facts.db",
     try:
         # Get SurrealDB connection manager
         surreal_manager = get_surreal_connection()
+        
+        # Ensure all schema functions exist (deferred for async context)
+        from .schema_init import ensure_schema_functions
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Schedule schema initialization for later
+                asyncio.create_task(ensure_schema_functions(surreal_manager))
+                logger.info("📋 Schema functions scheduled for async initialization")
+            else:
+                # Run schema initialization in sync context
+                schema_ready = loop.run_until_complete(ensure_schema_functions(surreal_manager))
+                if not schema_ready:
+                    logger.warning("⚠️ Schema functions not fully applied, continuing anyway")
+        except Exception as e:
+            logger.warning(f"⚠️ Schema initialization deferred: {e}")
         
         # Create query router that works with SurrealDB
         try:
@@ -365,10 +382,8 @@ class SurrealMemorySystem:
                     else:
                         logger.debug(f"   ⚠️ Skipping fact with empty object")
             
-            # Also store in legacy facts format for compatibility
-            if stored_count > 0:
-                logger.debug(f"🔄 Also storing {len(facts)} facts in legacy format")
-                await self.connection_manager.store_facts(facts, speaker_id=speaker_id)
+            # Legacy compatibility storage removed to prevent duplicates
+            # Facts are already stored as knowledge relations above
             
             logger.debug(f"🧠 Final result: extracted and stored {stored_count} facts as knowledge relations")
             return stored_count
@@ -509,5 +524,5 @@ def create_surreal_message_store(speaker_id: str = 'default_user',
     )
 
 
-# extract_facts_from_text is imported from spacy_fact_extractor
-# No local definition needed - using the SpaCy implementation
+# extract_facts_from_text is imported from hybrid_fact_extractor  
+# No local definition needed - using the hybrid SpaCy+Gemma implementation

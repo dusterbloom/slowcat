@@ -309,10 +309,8 @@ class SurrealQueryRouter:
                     return entity_knowledge, 'entity_focused_graph'
             
             # Fallback to general knowledge search with graph capabilities
-            search_terms = self._extract_search_terms(query)
-            search_query = ' '.join(search_terms) if search_terms else query
-            logger.debug(f"🔍 Extracted search terms: {search_terms} -> '{search_query}'")
-            knowledge_results = await self.surreal_memory.search_knowledge_relations(search_query, limit=15)
+            # Use schema's built-in fn::search_knowledge - handles natural language queries
+            knowledge_results = await self.surreal_memory.search_knowledge_relations(query, limit=15)
             return knowledge_results, 'unified_graph_traversal'
             
         except Exception as e:
@@ -346,13 +344,10 @@ class SurrealQueryRouter:
         
         try:
             # NEW: Use unified knowledge system + legacy compatibility
-            search_terms = self._extract_search_terms(query)
-            search_query = ' '.join(search_terms) if search_terms else query
-            logger.debug(f"🔍 Multi-store search terms: {search_terms} -> '{search_query}'")
-            
-            knowledge_task = self.surreal_memory.search_knowledge_relations(search_query, limit=8)
-            facts_task = self.surreal_memory.search_facts(search_query, limit=7)
-            tape_task = self.surreal_memory.search_tape(query, limit=5)  # Keep original query for tape search
+            # Schema's fn::search_knowledge handles natural language queries perfectly
+            knowledge_task = self.surreal_memory.search_knowledge_relations(query, limit=8)
+            facts_task = self.surreal_memory.search_facts(query, limit=7)
+            tape_task = self.surreal_memory.search_tape(query, limit=5)
             
             knowledge_results, facts_results, tape_results = await asyncio.gather(
                 knowledge_task, facts_task, tape_task, return_exceptions=True
