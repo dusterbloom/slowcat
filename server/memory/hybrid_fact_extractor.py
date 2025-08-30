@@ -20,8 +20,23 @@ from dataclasses import dataclass
 from loguru import logger
 from concurrent.futures import ThreadPoolExecutor
 
-# No global connection pool - using per-request clients for reliability
+# Try to import MLX sentence transformers first (Apple Silicon optimized), fallback to standard
+try:
+    from mlx_sentence_transformers import SentenceTransformer
+    _use_mlx = True
+    logger.info("🚀 Using MLX sentence transformers (Apple Silicon optimized)")
+except ImportError:
+    try:
+        from sentence_transformers import SentenceTransformer
+        _use_mlx = False
+        logger.info("📦 Using standard sentence transformers")
+    except ImportError:
+        logger.error("❌ No sentence transformer library available - embeddings disabled")
+        SentenceTransformer = None
+
+# Global model caches for performance
 _spacy_model = None
+_sentence_transformer = None
 
 @dataclass
 class HybridFact:
@@ -32,6 +47,7 @@ class HybridFact:
     confidence: float
     source_text: str
     extraction_method: str  # 'spacy' or 'gemma' or 'hybrid'
+    embedding: Optional[List[float]] = None  # Vector embedding for semantic search
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format for compatibility"""
@@ -41,7 +57,8 @@ class HybridFact:
             'value': self.value,
             'confidence': self.confidence,
             'source_text': self.source_text,
-            'extraction_method': self.extraction_method
+            'extraction_method': self.extraction_method,
+            'embedding': self.embedding
         }
 
 class HybridFactExtractor:
@@ -50,6 +67,7 @@ class HybridFactExtractor:
     def __init__(self, lm_studio_url: str = "http://localhost:1234"):
         self.lm_studio_url = lm_studio_url
         self.nlp = self._load_spacy_model()
+        self.sentence_model = self._load_sentence_transformer()
         self.relation_schema = self._create_relation_schema()
         
         # Performance tracking
@@ -60,7 +78,9 @@ class HybridFactExtractor:
             'total_entities_found': 0,
             'total_relations_found': 0,
             'avg_entity_time_ms': 0.0,
-            'avg_relation_time_ms': 0.0
+            'avg_relation_time_ms': 0.0,
+            'total_embeddings_generated': 0,
+            'avg_embedding_time_ms': 0.0
         }
         
     def _load_spacy_model(self):
@@ -74,6 +94,20 @@ class HybridFactExtractor:
                 logger.error("❌ SpaCy en_core_web_sm not available - falling back to entity-less extraction")
                 _spacy_model = None
         return _spacy_model
+    
+    def _load_sentence_transformer(self):
+        """Load sentence transformer model with caching"""
+        global _sentence_transformer
+        if _sentence_transformer is None and SentenceTransformer is not None:
+            try:
+                model_name = "all-MiniLM-L6-v2"
+                _sentence_transformer = SentenceTransformer(model_name)
+                backend = "MLX" if _use_mlx else "Standard"
+                logger.info(f"🔧 {backend} sentence transformer '{model_name}' loaded for embeddings")
+            except Exception as e:
+                logger.error(f"❌ Failed to load sentence transformer: {e}")
+                _sentence_transformer = None
+        return _sentence_transformer
     
     def _create_relation_schema(self):
         """JSON schema for Gemma relation extraction"""
@@ -328,6 +362,44 @@ Find relationships between these entities:
             (self.stats['avg_relation_time_ms'] * (hybrid_calls - 1) + elapsed_ms) / hybrid_calls
         )
     
+    def _generate_fact_embedding(self, fact: HybridFact) -> Optional[List[float]]:
+        """Generate vector embedding for a fact"""
+        if not self.sentence_model:
+            return None
+        
+        start_time = time.perf_counter()
+        
+        try:
+            # Create descriptive string from fact components
+            fact_text = f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.value}"
+            
+            # Generate embedding
+            embedding = self.sentence_model.encode(fact_text, convert_to_numpy=True)
+            
+            # Convert to Python list for JSON serialization
+            embedding_list = embedding.tolist()
+            
+            # Update stats
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            self._update_embedding_stats(elapsed_ms)
+            
+            logger.debug(f"🔗 Generated {len(embedding_list)}-dim embedding for: '{fact_text}'")
+            return embedding_list
+            
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            self._update_embedding_stats(elapsed_ms)
+            logger.error(f"Failed to generate embedding: {e}")
+            return None
+    
+    def _update_embedding_stats(self, elapsed_ms: float):
+        """Update embedding generation statistics"""
+        total_embeddings = self.stats['total_embeddings_generated'] + 1
+        self.stats['total_embeddings_generated'] = total_embeddings
+        self.stats['avg_embedding_time_ms'] = (
+            (self.stats['avg_embedding_time_ms'] * (total_embeddings - 1) + elapsed_ms) / total_embeddings
+        )
+    
     def extract_facts(self, text: str) -> List[Dict[str, Any]]:
         """
         Main extraction method - synchronous interface for compatibility
@@ -383,25 +455,31 @@ Find relationships between these entities:
             # Add entity facts (implicit "exists" relations)
             for entity in entities:
                 if entity['type'] != 'concept':  # Skip generic concepts
-                    facts.append(HybridFact(
+                    fact = HybridFact(
                         subject="user",
                         predicate=f"has_{entity['type']}",
                         value=entity['name'],
                         confidence=entity['confidence'],
                         source_text=text,
                         extraction_method='spacy'
-                    ))
+                    )
+                    # Generate embedding for the fact
+                    fact.embedding = self._generate_fact_embedding(fact)
+                    facts.append(fact)
             
             # Add relation facts  
             for relation in relations:
-                facts.append(HybridFact(
+                fact = HybridFact(
                     subject=relation['subject'],
                     predicate=relation['predicate'],
                     value=relation['object'],
                     confidence=relation['confidence'],
                     source_text=text,
                     extraction_method='gemma'
-                ))
+                )
+                # Generate embedding for the fact
+                fact.embedding = self._generate_fact_embedding(fact)
+                facts.append(fact)
             
             logger.debug(f"✨ Hybrid extracted {len(facts)} facts ({len(entities)} entities, {len(relations)} relations)")
         
@@ -417,6 +495,7 @@ Find relationships between these entities:
         """Get performance statistics"""
         total_calls = max(1, self.stats['total_calls'])
         hybrid_calls = max(1, self.stats['hybrid_calls'])
+        total_embeddings = max(1, self.stats['total_embeddings_generated'])
         
         return {
             'total_extraction_calls': self.stats['total_calls'],
@@ -425,10 +504,14 @@ Find relationships between these entities:
             'spacy_only_percentage': (self.stats['spacy_only_calls'] / total_calls) * 100,
             'avg_entity_extraction_ms': self.stats['avg_entity_time_ms'],
             'avg_relation_extraction_ms': self.stats['avg_relation_time_ms'],
+            'avg_embedding_generation_ms': self.stats['avg_embedding_time_ms'],
             'total_entities_found': self.stats['total_entities_found'],
             'total_relations_found': self.stats['total_relations_found'],
+            'total_embeddings_generated': self.stats['total_embeddings_generated'],
             'avg_entities_per_call': self.stats['total_entities_found'] / total_calls,
-            'avg_relations_per_call': self.stats['total_relations_found'] / total_calls
+            'avg_relations_per_call': self.stats['total_relations_found'] / total_calls,
+            'avg_embeddings_per_call': self.stats['total_embeddings_generated'] / total_calls,
+            'embedding_model_available': self.sentence_model is not None
         }
 
 # Global instance for production use

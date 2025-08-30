@@ -29,6 +29,37 @@ except ImportError:
     AsyncSurreal = None
     logger.warning("SurrealDB client not available - install with: pip install surrealdb")
 
+# Try to import MLX sentence transformers first (Apple Silicon optimized), fallback to standard
+try:
+    from mlx_sentence_transformers import SentenceTransformer
+    _use_mlx = True
+    logger.debug("MLX sentence transformers available for query embedding")
+except ImportError:
+    try:
+        from sentence_transformers import SentenceTransformer
+        _use_mlx = False
+        logger.debug("Standard sentence transformers available for query embedding")
+    except ImportError:
+        logger.warning("No sentence transformer library available - advanced search will use text-only")
+        SentenceTransformer = None
+
+# Global sentence transformer for query embeddings
+_query_sentence_transformer = None
+
+def get_query_sentence_transformer():
+    """Get singleton sentence transformer for query embeddings"""
+    global _query_sentence_transformer
+    if _query_sentence_transformer is None and SentenceTransformer is not None:
+        try:
+            model_name = "all-MiniLM-L6-v2"
+            _query_sentence_transformer = SentenceTransformer(model_name)
+            backend = "MLX" if _use_mlx else "Standard"
+            logger.info(f"🔧 {backend} sentence transformer '{model_name}' loaded for query embeddings")
+        except Exception as e:
+            logger.error(f"❌ Failed to load sentence transformer for queries: {e}")
+            _query_sentence_transformer = None
+    return _query_sentence_transformer
+
 
 @dataclass
 class Message:
@@ -522,17 +553,22 @@ class SurrealConnectionManager:
                     subject = fact.get('subject', default_subject)
                     predicate = fact.get('predicate', 'mentioned')
                     obj = fact.get('value') or fact.get('object', str(fact))
+                    embedding = fact.get('embedding')
+                    confidence = fact.get('confidence', 0.8)
                 else:
                     subject = getattr(fact, 'subject', default_subject)
                     predicate = getattr(fact, 'predicate', 'mentioned')
                     obj = getattr(fact, 'value', str(fact))
+                    embedding = getattr(fact, 'embedding', None)
+                    confidence = getattr(fact, 'confidence', 0.8)
                 
                 # Store using unified knowledge system
                 success = await self.store_knowledge_relation(
                     subject_name=subject,
                     predicate=predicate, 
                     object_name=obj,
-                    confidence=0.8
+                    confidence=confidence,
+                    embedding=embedding
                 )
                 if success:
                     stored_count += 1
@@ -777,7 +813,8 @@ class SurrealConnectionManager:
     
     async def store_knowledge_relation(self, subject_name: str, predicate: str, object_name: str, 
                                      subject_type: str = 'user', object_type: str = 'concept',
-                                     confidence: float = 0.8, source_message_id: str = None) -> bool:
+                                     confidence: float = 0.8, source_message_id: str = None,
+                                     embedding: Optional[List[float]] = None) -> bool:
         """
         Store knowledge using direct SurrealQL - simple and reliable
         """
@@ -830,30 +867,57 @@ class SurrealConnectionManager:
             existing = await self.db.query(existing_query, {'predicate': predicate})
             
             if existing and len(existing) > 0:
-                # Relation exists, update access stats
+                # Relation exists, update access stats and embedding if provided
                 relation_id = existing[0].get('id')
-                update_result = await self.db.query(f"""
-                    UPDATE {relation_id} SET
-                        last_accessed = time::now(),
-                        access_count = access_count + 1,
-                        strength = math::min(1.0, strength + 0.1);
-                """)
-                logger.debug(f"Updated existing relation: {relation_id}")
+                
+                if embedding is not None:
+                    # Update with embedding
+                    update_result = await self.db.query(f"""
+                        UPDATE {relation_id} SET
+                            last_accessed = time::now(),
+                            access_count = access_count + 1,
+                            strength = math::min(1.0, strength + 0.1),
+                            embedding = $embedding;
+                    """, {'embedding': embedding})
+                    logger.debug(f"Updated existing relation with embedding: {relation_id}")
+                else:
+                    # Update without embedding
+                    update_result = await self.db.query(f"""
+                        UPDATE {relation_id} SET
+                            last_accessed = time::now(),
+                            access_count = access_count + 1,
+                            strength = math::min(1.0, strength + 0.1);
+                    """)
+                    logger.debug(f"Updated existing relation: {relation_id}")
+                
                 result = existing  # Return existing relation
             else:
                 # Create new relation
-                relation_query = f"""
-                    RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
-                        predicate = $predicate,
-                        confidence = $confidence,
-                        strength = 1.0,
-                        created_at = time::now();
-                """
-                
-                result = await self.db.query(relation_query, {
+                query_params = {
                     'predicate': predicate,
                     'confidence': confidence
-                })
+                }
+                
+                if embedding is not None:
+                    relation_query = f"""
+                        RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
+                            predicate = $predicate,
+                            confidence = $confidence,
+                            strength = 1.0,
+                            embedding = $embedding,
+                            created_at = time::now();
+                    """
+                    query_params['embedding'] = embedding
+                else:
+                    relation_query = f"""
+                        RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
+                            predicate = $predicate,
+                            confidence = $confidence,
+                            strength = 1.0,
+                            created_at = time::now();
+                    """
+                
+                result = await self.db.query(relation_query, query_params)
             logger.debug(f"Relation result structure: {result}")
             
             # Check if relation was created successfully
@@ -880,21 +944,47 @@ class SurrealConnectionManager:
     
     async def search_knowledge_relations(self, query: str, limit: int = 10) -> List[Dict]:
         """
-        Search knowledge using direct SurrealQL - simple and reliable
+        Advanced search using embeddings and hybrid matching
         """
         await self.ensure_connected()
         
         try:
-            # Use the schema's built-in search function - designed for natural language queries
-            result = await self.db.query("""
-                SELECT *, 
-                       in.canonical_name as subject,
-                       out.canonical_name as object
-                FROM fn::search_knowledge($query, $limit);
-            """, {
-                'query': query,
-                'limit': limit
-            })
+            # Generate query embedding for semantic search
+            query_embedding = None
+            transformer = get_query_sentence_transformer()
+            
+            if transformer:
+                try:
+                    query_embedding = transformer.encode(query, convert_to_numpy=True).tolist()
+                    logger.debug(f"Generated query embedding ({len(query_embedding)} dims) for: '{query[:50]}...'")
+                except Exception as e:
+                    logger.warning(f"Failed to generate query embedding: {e}")
+            
+            # Use advanced search function if embedding is available, fallback to text search
+            if query_embedding:
+                result = await self.db.query("""
+                    SELECT *, 
+                           in.canonical_name as subject,
+                           out.canonical_name as object
+                    FROM fn::search_knowledge_advanced($query, $query_embedding, $limit);
+                """, {
+                    'query': query,
+                    'query_embedding': query_embedding,
+                    'limit': limit
+                })
+                logger.debug(f"🔍 Advanced search with embeddings returned {len(result)} results")
+            else:
+                # Fallback to text-only search
+                result = await self.db.query("""
+                    SELECT *, 
+                           in.canonical_name as subject,
+                           out.canonical_name as object
+                    FROM fn::search_knowledge($query, $limit);
+                """, {
+                    'query': query,
+                    'limit': limit
+                })
+                logger.debug(f"🔍 Text-only search returned {len(result)} results")
             
             # Update last_accessed timestamp for retrieved facts to track usage
             if result and isinstance(result, list) and result:
@@ -917,7 +1007,14 @@ class SurrealConnectionManager:
                     except Exception as e:
                         logger.warning(f"Failed to update access tracking: {e}")
             
-            logger.debug(f"Search result structure: {result}")
+            # Log result structure without embeddings (too verbose)
+            if result:
+                sample_result = result[0].copy() if result[0] else {}
+                if 'embedding' in sample_result:
+                    sample_result['embedding'] = f"[{len(sample_result['embedding'])} dims]"
+                logger.debug(f"Search result structure: {sample_result}")
+            else:
+                logger.debug("Search result structure: None")
             
             # SurrealDB Python SDK returns the data directly as a list
             if result and isinstance(result, list):

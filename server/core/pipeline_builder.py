@@ -609,9 +609,10 @@ class PipelineBuilder:
             processors['speaker_context'],
             rtvi,  # ORIGINAL POSITION: between speaker_context and speaker_name_manager
             processors['speaker_name_manager'],
-            # SmartContextManager replaces context_aggregator.user() for fixed 4096 token context
-            # (SmartContextManager internally handles SurrealDB message storage and LLM triggering)
+            # SmartContextManager prepares fixed 4096 token context, then context_aggregator processes
             smart_ctx,
+            # context_aggregator.user() converts TranscriptionFrame → LLMMessagesFrame (REQUIRED)
+            context_aggregator.user(),
             # Ensure clean, alternating message history before calling the LLM
             processors.get('message_deduplicator'),
             # Enhance LLM messages with neural field context for consciousness-aware responses
