@@ -30,6 +30,7 @@ except Exception:
 import os
 from memory import create_smart_memory_system, extract_facts_from_text
 from memory import create_query_classifier
+from memory.graph_integration import get_graph_integration
 try:
     from memory.dynamic_tape_head import DynamicTapeHead  # optional
 except Exception:
@@ -51,6 +52,7 @@ class SessionMetadata:
     last_interaction: float = 0
     total_interactions: int = 0
     speaker_id: str = "unknown"
+    session_id: str = None  # Store the facts_graph session_id
 
 
 @dataclass
@@ -695,18 +697,25 @@ class SmartContextManager(FrameProcessor):
                             
                             # Try to detect and create engrams if we have enough coherent symbols
                             try:
-                                # Generate a session_id from speaker and timestamp for engram detection
-                                speaker_key = self._speaker_key()
-                                session_id = f"{speaker_key}_{int(time.time())}"
+                                # Use the same session_id as facts for engram detection
+                                current_session_id = getattr(self.session, 'session_id', None) if hasattr(self, 'session') else None
                                 
-                                engram_result = await conn.db.query("""
-                                    RETURN fn::detect_engrams($session_id, 0.7, 2);
-                                """, {"session_id": session_id})
-                                
-                                if engram_result and engram_result[0] and engram_result[0].get('engram_created'):
-                                    logger.info(f"🧠 ENGRAM CREATED: {engram_result[0]}")
+                                # Only proceed with engram detection if we have a valid session_id
+                                if current_session_id:
+                                    # Use new graph-based engram detection
+                                    graph = get_graph_integration()
+                                    engram_result = await graph.detect_session_engrams(current_session_id, min_coherence=0.6, min_facts=2)
+                                    
+                                    if engram_result and engram_result.get('success'):
+                                        action = engram_result.get('action', 'unknown')
+                                        narrative = engram_result.get('narrative', '')
+                                        coherence = engram_result.get('coherence', 0)
+                                        logger.info(f"🧠 ENGRAM {action.upper()}: {narrative[:60]}... (coherence: {coherence:.2f})")
+                                    else:
+                                        reason = engram_result.get('reason', 'unknown') if engram_result else 'no_result'
+                                        logger.debug(f"🧠 Engram detection: {reason}")
                                 else:
-                                    logger.debug(f"🧠 Engram detection result: {engram_result}")
+                                    logger.debug("⚠️ No session_id available for engram detection, skipping")
                             except Exception as engram_e:
                                 logger.debug(f"Engram detection failed: {engram_e}")
             except Exception as e:
@@ -1620,6 +1629,10 @@ class SmartContextManager(FrameProcessor):
                 logger.info(f"🚀 Calling start_session() for {spk}")
                 session_id = await self._maybe_await(self.memory_system.facts_graph.start_session(spk))
                 
+                # Store session_id in our SessionMetadata for fact extraction
+                self.session.session_id = session_id
+                logger.info(f"🔄 Updated session metadata with session_id: {session_id}")
+                
                 # Register session with SessionManager so SurrealMessageStore can reuse it
                 try:
                     from memory.session_manager import SessionManager
@@ -2388,10 +2401,31 @@ class SmartContextManager(FrameProcessor):
         try:
             self.fact_extractions += 1
             
-            # Extract and store facts using memory system
-            facts_count = await self.memory_system.store_facts(text)
+            # Extract and store facts using memory system with session_id
+            session_id = getattr(self.session, 'session_id', None) if hasattr(self, 'session') else None
+            facts_count = await self.memory_system.store_facts(text, session_id=session_id)
             
             logger.debug(f"🔍 Extracted and stored {facts_count} facts from: '{text[:30]}...'")
+            
+            # 🧬 TRIGGER ENGRAM DETECTION: Let consciousness patterns emerge
+            if facts_count > 0 and session_id:
+                try:
+                    # Use new graph-based engram detection
+                    graph = get_graph_integration()
+                    engram_result = await graph.detect_session_engrams(session_id, min_coherence=0.7, min_facts=3)
+                    
+                    if engram_result and engram_result.get('success'):
+                        action = engram_result.get('action', 'unknown')
+                        narrative = engram_result.get('narrative', '')
+                        coherence = engram_result.get('coherence', 0)
+                        pattern_hash = engram_result.get('pattern_hash', '')
+                        logger.info(f"🧬 Engram {action}: {narrative[:80]}... (coherence: {coherence:.2f}, hash: {pattern_hash[:8]})")
+                    else:
+                        reason = engram_result.get('reason', 'unknown') if engram_result else 'no_result'
+                        logger.debug(f"🧠 Engram detection: {reason}")
+                        
+                except Exception as e:
+                    logger.debug(f"Engram detection failed (non-blocking): {e}")
             
         except Exception as e:
             logger.error(f"Fact extraction failed: {e}")

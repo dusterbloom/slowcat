@@ -239,11 +239,38 @@ class SurrealConnectionManager:
                 created_record = result[0]  # First record
                 message_id = created_record.get('id')
                 logger.debug(f"📝 Stored {message.role} message: {message_id}")
-                
+
+                # Canonical relation: messages -> message_belongs_to -> sessions
+                try:
+                    if message.session_id:
+                        sess_res = await self.db.query(
+                            "SELECT * FROM sessions WHERE session_id = $sid LIMIT 1;",
+                            {"sid": message.session_id},
+                        )
+                        if isinstance(sess_res, list) and sess_res:
+                            session_record_id = sess_res[0].get('id')
+                            if session_record_id and message_id:
+                                await self.db.query(
+                                    """
+                                    RELATE $mid -> message_belongs_to -> $sid SET
+                                        timestamp = $ts,
+                                        speaker_role = $role,
+                                        message_order = 0
+                                    """,
+                                    {
+                                        "mid": message_id,
+                                        "sid": session_record_id,
+                                        "ts": data.get('timestamp'),
+                                        "role": data.get('role', 'user'),
+                                    },
+                                )
+                except Exception as e:
+                    logger.debug(f"message_belongs_to creation skipped: {e}")
+
                 # Update session if provided
                 if message.session_id and message.session_id in self._active_sessions:
                     await self._update_session_stats(message.session_id, message.tokens)
-                
+
                 return str(message_id) if message_id else None
             
             return None
@@ -559,7 +586,7 @@ class SurrealConnectionManager:
             logger.error(f"Search failed: {e}")
             return []
     
-    async def store_facts(self, facts: list, speaker_id: str = None) -> int:
+    async def store_facts(self, facts: list, speaker_id: str = None, session_id: str = None) -> int:
         """
         FactsGraph compatibility - convert to unified knowledge system
         """
@@ -583,13 +610,19 @@ class SurrealConnectionManager:
                     embedding = getattr(fact, 'embedding', None)
                     confidence = getattr(fact, 'confidence', 0.8)
                 
+                # DATA QUALITY GATE: Discard low-confidence facts
+                if confidence < 0.75:
+                    logger.debug(f"Discarding low-confidence fact: {subject} -> {predicate} -> {obj} ({confidence})")
+                    continue
+
                 # Store using unified knowledge system
                 success = await self.store_knowledge_relation(
                     subject_name=subject,
                     predicate=predicate, 
                     object_name=obj,
                     confidence=confidence,
-                    embedding=embedding
+                    embedding=embedding,
+                    session_id=session_id
                 )
                 if success:
                     stored_count += 1
@@ -835,11 +868,36 @@ class SurrealConnectionManager:
     async def store_knowledge_relation(self, subject_name: str, predicate: str, object_name: str, 
                                      subject_type: str = 'user', object_type: str = 'concept',
                                      confidence: float = 0.8, source_message_id: str = None,
-                                     embedding: Optional[List[float]] = None) -> bool:
+                                     embedding: Optional[List[float]] = None,
+                                     session_id: Optional[str] = None) -> bool:
         """
         Store knowledge using direct SurrealQL with adaptive predicate normalization
         """
         await self.ensure_connected()
+
+        # VALIDATION & NORMALIZATION (Phase 1 Fix)
+        try:
+            from memory.validation import normalize_entity, validate_fact
+            import os
+
+            # Normalize subject and object names first
+            subject_norm = normalize_entity(subject_name)
+            object_norm = normalize_entity(object_name)
+
+            # Check if validation bypass is enabled for testing
+            bypass_validation = os.getenv("BYPASS_GUARDIAN", "false").lower() == "true"
+            
+            if bypass_validation:
+                logger.debug(f"🚧 Validation BYPASSED for testing: {subject_name} -> {predicate} -> {object_name}")
+            else:
+                # Validate the fact before proceeding
+                if not validate_fact(subject_norm, predicate, object_norm):
+                    logger.warning(f"Fact validation failed for: {subject_name} -> {predicate} -> {object_name}")
+                    return False
+        except ImportError:
+            logger.error("Could not import validation module. Skipping fact validation.")
+            subject_norm = subject_name
+            object_norm = object_name
         
         # 🧬 ADAPTIVE NORMALIZATION: Let the knowledge graph learn and normalize predicates
         try:
@@ -878,17 +936,17 @@ class SurrealConnectionManager:
                     safe_name = 'entity_' + safe_name
                 return safe_name.lower() or 'unknown'  # Lowercase for consistency
             
-            subject_safe = make_safe_id(subject_name)
-            object_safe = make_safe_id(object_name)
+            subject_safe = make_safe_id(subject_norm)
+            object_safe = make_safe_id(object_norm)
             
             # Use cleaned names for canonical_name (prevents "Sardinia's" in display)
-            subject_clean = subject_name.strip()
+            subject_clean = subject_norm.strip()
             if subject_clean.endswith("'s"):
                 subject_clean = subject_clean[:-2]
             elif subject_clean.endswith("s'"):
                 subject_clean = subject_clean[:-1]
             
-            object_clean = object_name.strip()  
+            object_clean = object_norm.strip()  
             if object_clean.endswith("'s"):
                 object_clean = object_clean[:-2]
             elif object_clean.endswith("s'"):
@@ -898,31 +956,25 @@ class SurrealConnectionManager:
             
             # Create entities with parameterized queries - ignore if they exist
             try:
-                await self.db.query(f"CREATE entity:{subject_safe} SET type=$subject_type, canonical_name=$subject_name;", {
+                await self.db.query(f"CREATE entity:{subject_safe} SET type=$subject_type, canonical_name=$subject_name, session_id=$session_id;", {
                     'subject_type': subject_type,
-                    'subject_name': subject_clean  # Use cleaned name
+                    'subject_name': subject_clean,  # Use cleaned name
+                    'session_id': session_id
                 })
             except Exception:
                 pass  # Entity might already exist
             
             try:
-                await self.db.query(f"CREATE entity:{object_safe} SET type=$object_type, canonical_name=$object_name;", {
+                await self.db.query(f"CREATE entity:{object_safe} SET type=$object_type, canonical_name=$object_name, session_id=$session_id;", {
                     'object_type': object_type,
-                    'object_name': object_clean  # Use cleaned name
+                    'object_name': object_clean,  # Use cleaned name
+                    'session_id': session_id
                 })
             except Exception:
                 pass  # Entity might already exist
             
-            # Check if relation already exists to prevent duplicates
-            existing_query = f"""
-                SELECT * FROM knowledge 
-                WHERE in = entity:{subject_safe} 
-                  AND out = entity:{object_safe} 
-                  AND predicate = $predicate
-                LIMIT 1;
-            """
-            
-            existing = await self.db.query(existing_query, {'predicate': predicate})
+            # Check for existing fact (disabled for node-based model; rely on downstream consolidation)
+            existing = []
             
             if existing and len(existing) > 0:
                 # Relation exists, update access stats and embedding if provided
@@ -969,47 +1021,119 @@ class SurrealConnectionManager:
                 except:
                     pass  # Don't block on validation errors
                     
-                # Create new relation
-                query_params = {
-                    'predicate': canonical_predicate,  # Use canonical predicate
-                    'confidence': confidence
+                # Create knowledge as node and link per latest schema
+                result = []
+                # 1) CREATE knowledge node
+                k_params = {
+                    'predicate': canonical_predicate,
+                    'confidence': float(confidence),
+                    'session_id': session_id,
+                    'embedding': embedding or None,
+                    'method': 'conversation'
                 }
-                
-                if embedding is not None:
-                    relation_query = f"""
-                        RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
-                            predicate = $predicate,
-                            confidence = $confidence,
-                            strength = 1.0,
-                            embedding = $embedding,
-                            created_at = time::now();
-                    """
-                    query_params['embedding'] = embedding
-                else:
-                    relation_query = f"""
-                        RELATE entity:{subject_safe}->knowledge->entity:{object_safe} SET
-                            predicate = $predicate,
-                            confidence = $confidence,
-                            strength = 1.0,
-                            created_at = time::now();
-                    """
-                
-                result = await self.db.query(relation_query, query_params)
-            logger.debug(f"Relation result structure: {result}")
+                kq = """
+                    CREATE knowledge SET
+                        predicate = $predicate,
+                        confidence = $confidence,
+                        strength = $confidence,
+                        created_at = time::now(),
+                        last_accessed = time::now(),
+                        session_id = $session_id,
+                        extraction_method = $method,
+                        embedding = $embedding
+                    RETURN id;
+                """
+                kres = await self.db.query(kq, k_params)
+                knowledge_id = None
+                if isinstance(kres, list) and kres:
+                    knowledge_id = kres[0].get('id') if isinstance(kres[0], dict) else None
+
+                # 2) Link subject/object via knowledge_about
+                if knowledge_id:
+                    try:
+                        await self.db.query(
+                            """
+                            RELATE $kid -> knowledge_about -> $sub_eid SET
+                                relationship_type = 'subject',
+                                relevance_score = $confidence,
+                                discovered_at = time::now();
+                            """,
+                            {"kid": knowledge_id, "sub_eid": f"entity:{subject_safe}", "confidence": float(confidence)},
+                        )
+                        await self.db.query(
+                            """
+                            RELATE $kid -> knowledge_about -> $obj_eid SET
+                                relationship_type = 'object',
+                                relevance_score = $confidence,
+                                discovered_at = time::now();
+                            """,
+                            {"kid": knowledge_id, "obj_eid": f"entity:{object_safe}", "confidence": float(confidence)},
+                        )
+                    except Exception as e:
+                        logger.debug(f"knowledge_about link skipped: {e}")
+
+                # 3) Link provenance to session via knowledge_from
+                if knowledge_id and session_id:
+                    try:
+                        sess = await self.db.query("SELECT * FROM sessions WHERE session_id = $sid LIMIT 1;", {"sid": session_id})
+                        if isinstance(sess, list) and sess:
+                            sess_id = sess[0].get('id')
+                            if sess_id:
+                                await self.db.query(
+                                    """
+                                    RELATE $kid -> knowledge_from -> $sid SET
+                                        extraction_method = 'conversation',
+                                        extraction_confidence = $confidence,
+                                        learned_at = time::now();
+                                    """,
+                                    {"kid": knowledge_id, "sid": sess_id, "confidence": float(confidence)},
+                                )
+                    except Exception as e:
+                        logger.debug(f"knowledge_from link skipped: {e}")
+
+            logger.debug(f"Relation result structure: {kres}")
             
-            # Check if relation was created successfully
-            success = False
-            if result and len(result) > 0:
-                if hasattr(result[0], 'result'):
-                    success = bool(result[0].result)
-                elif isinstance(result[0], dict) and 'result' in result[0]:
-                    success = bool(result[0]['result'])
-                else:
-                    success = bool(result[0])
-            
+            # Consider success if we created a knowledge node id
+            success = bool(knowledge_id)
+
             if success:
-                logger.info(f"✅ Stored knowledge: {subject_name} -{predicate}-> {object_name}")
-                
+                logger.info(f"✅ Stored knowledge: {subject_norm} -{predicate}-> {object_norm}")
+
+                # 🔗 Link message provenance and session/entity associations
+                try:
+                    if source_message_id and knowledge_id:
+                        # Link message -> knowledge
+                        await self.db.query(
+                            "RELATE $mid -> message_contains -> $kid SET created_at = time::now();",
+                            {"mid": source_message_id, "kid": knowledge_id},
+                        )
+
+                    if session_id:
+                        sess = await self.db.query("SELECT * FROM sessions WHERE session_id = $sid LIMIT 1;", {"sid": session_id})
+                        if isinstance(sess, list) and sess:
+                            sess_id = sess[0].get('id')
+                            # session_involves
+                            if sess_id:
+                                await self.db.query(
+                                    "RELATE $sid -> session_involves -> $sub_eid SET message_count += 1, last_interaction = time::now();",
+                                    {"sid": sess_id, "sub_eid": f"entity:{subject_safe}"},
+                                )
+                                await self.db.query(
+                                    "RELATE $sid -> session_involves -> $obj_eid SET message_count += 1, last_interaction = time::now();",
+                                    {"sid": sess_id, "obj_eid": f"entity:{object_safe}"},
+                                )
+                                # entity_mentioned_in (entity -> sessions)
+                                await self.db.query(
+                                    "RELATE $sub_eid -> entity_mentioned_in -> $sid SET last_mentioned = time::now();",
+                                    {"sub_eid": f"entity:{subject_safe}", "sid": sess_id},
+                                )
+                                await self.db.query(
+                                    "RELATE $obj_eid -> entity_mentioned_in -> $sid SET last_mentioned = time::now();",
+                                    {"obj_eid": f"entity:{object_safe}", "sid": sess_id},
+                                )
+                except Exception as relate_error:
+                    logger.warning(f"⚠️ Failed to create some relations: {relate_error}")
+
                 # 🧬 NOTIFY EVOLUTION SERVICE: Let the adaptive system learn from this new fact
                 try:
                     from services.knowledge_evolution_service import on_knowledge_stored
@@ -1017,7 +1141,7 @@ class SurrealConnectionManager:
                 except ImportError:
                     pass  # Evolution service not available, continue normally
             else:
-                logger.warning(f"Relation creation may have failed: {result}")
+                logger.warning(f"Knowledge creation did not return id (predicate={predicate})")
             
             return success
             

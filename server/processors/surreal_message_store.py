@@ -145,6 +145,12 @@ class SurrealMessageStore(FrameProcessor):
             message_id = await self.surreal.store_message(message)
             if message_id:
                 logger.debug(f"📝 Stored {message.role} message: {message_id}")
+                # Kick off post-persist fact extraction for user messages so we can attach edges
+                try:
+                    if message.role == 'user':
+                        asyncio.create_task(self._extract_and_store_for_message(message_id, message.content))
+                except Exception as e:
+                    logger.debug(f"Post-persist extraction not scheduled: {e}")
             else:
                 logger.warning(f"Failed to store {message.role} message")
         
@@ -155,6 +161,48 @@ class SurrealMessageStore(FrameProcessor):
         """Queue message for async storage"""
         if self.surreal:
             asyncio.create_task(self._store_message_async(message))
+
+    async def _extract_and_store_for_message(self, message_id: str, text: str):
+        """Extract relations from the just-stored message and persist knowledge with edges.
+
+        Creates knowledge with source_message and RELATE edges via SurrealConnectionManager.
+        """
+        try:
+            t = (text or '').strip()
+            if not t or len(t.split()) < 3:
+                return
+            # Prefer DSPy extractor if available; fallback to hybrid
+            try:
+                from memory.dspy_integration import extract_facts_from_text_dspy as _extract
+            except Exception:
+                from memory.hybrid_fact_extractor import extract_facts_from_text as _extract  # type: ignore
+
+            facts = _extract(t) or []
+            if not facts:
+                return
+            stored = 0
+            for f in facts:
+                subj = f.get('subject') or 'user'
+                pred = f.get('predicate') or 'related_to'
+                obj = f.get('value') or f.get('object') or ''
+                if not obj:
+                    continue
+                ok = await self.surreal.store_knowledge_relation(
+                    subject_name=subj,
+                    predicate=pred,
+                    object_name=obj,
+                    subject_type='user' if subj == 'user' else 'concept',
+                    object_type='concept',
+                    confidence=float(f.get('confidence', 0.7)),
+                    source_message_id=message_id,
+                    session_id=self.session_id,
+                )
+                if ok:
+                    stored += 1
+            if stored:
+                logger.info(f"🔗 Post-persist: stored {stored} knowledge relation(s) for {message_id}")
+        except Exception as e:
+            logger.debug(f"Post-persist extract/store failed: {e}")
     
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # COMPLETELY DISABLE FRAME PROCESSING - this is now storage-only helper

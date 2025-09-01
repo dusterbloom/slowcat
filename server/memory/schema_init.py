@@ -268,6 +268,100 @@ async def ensure_schema_functions(connection_manager: SurrealConnectionManager =
         logger.debug("✅ fn::detect_engrams applied")
         
         logger.info("✅ All schema functions + consciousness fields + engrams table + detection applied successfully")
+
+        # ================================================================================
+        # SOTA VALIDATION EVENTS (THE IMMUTABLE GUARDIAN)
+        # ================================================================================
+        logger.info("🛡️ Applying SOTA validation and normalization events...")
+
+        # ENHANCED ENTITY VALIDATION
+        await connection_manager.db.query("""
+            DEFINE EVENT normalize_entity ON TABLE entity WHEN $event = 'CREATE' THEN {
+                -- Clean canonical name (language-agnostic)
+                LET $clean = string::trim($value.canonical_name);
+                
+                -- Remove possessive markers (English-specific but harmless for others)
+                IF string::ends_with($clean, "'s") {
+                    LET $clean = string::slice($clean, 0, string::len($clean) - 2);
+                } ELSE IF string::ends_with($clean, "s'") {
+                    LET $clean = string::slice($clean, 0, string::len($clean) - 1);
+                };
+                
+                -- Remove leading articles (English but harmless to check)
+                LET $words = string::words($clean);
+                IF array::len($words) > 1 AND array::at($words, 0) IN ['the', 'a', 'an', 'The', 'A', 'An'] {
+                    LET $clean = string::join(array::slice($words, 1), ' ');
+                };
+                
+                -- Convert to lowercase for canonicalization
+                LET $clean = string::lowercase($clean);
+                
+                -- Reject empty or too-short entities
+                IF string::len($clean) < 2 {
+                    THROW "Entity name too short after cleaning";
+                };
+                
+                -- Check for existing entity (exact match or alias)
+                LET $existing = (SELECT * FROM entity WHERE 
+                    canonical_name = $clean OR 
+                    $clean IN aliases
+                LIMIT 1)[0];
+                
+                IF $existing != NONE {
+                    -- Merge into existing entity instead of duplicating
+                    UPDATE $existing.id SET 
+                        aliases = array::union(aliases, [$value.canonical_name]),
+                        reference_count = reference_count + 1,
+                        last_referenced = time::now();
+                    THROW "Entity merged into existing: " + <string>$existing.id;
+                };
+                
+                -- Set the cleaned canonical name
+                SET $value.canonical_name = $clean;
+            };
+        """)
+        logger.debug("✅ SOTA normalize_entity event applied")
+
+        # FACT VALIDATION
+        await connection_manager.db.query("""
+            DEFINE EVENT validate_knowledge ON TABLE knowledge WHEN $event = 'CREATE' THEN {
+                -- CRITICAL: Prevent self-referential relations
+                IF $value.in == $value.out {
+                    THROW "Self-referential relation not allowed: " + <string>$value.in;
+                };
+                
+                -- Validate predicate is meaningful
+                IF string::len($value.predicate) < 2 {
+                    THROW "Predicate too short: " + $value.predicate;
+                };
+                
+                -- Check for generic predicates without semantic value
+                IF $value.predicate IN ['is', 'has', 'was'] AND string::len(<string>$value.out) < 3 {
+                    THROW "Generic predicate requires meaningful object: " + $value.predicate + " -> " + <string>$value.out;
+                };
+                
+                -- Check for exact duplicates
+                LET $duplicate = (SELECT * FROM knowledge WHERE 
+                    in = $value.in AND 
+                    out = $value.out AND 
+                    predicate = $value.predicate
+                LIMIT 1)[0];
+                
+                IF $duplicate != NONE {
+                    -- Strengthen existing fact instead of duplicating
+                    UPDATE $duplicate.id SET 
+                        confidence = math::min(1.0, confidence + 0.1),
+                        access_count = access_count + 1,
+                        last_accessed = time::now(),
+                        strength = math::min(1.0, strength + 0.05);
+                    
+                    THROW "Fact strengthened instead of duplicated: " + <string>$duplicate.id;
+                };
+            };
+        """)
+        logger.debug("✅ SOTA validate_knowledge event applied")
+
+        logger.info("✅ Guardian validation events are now active.")
         return True
         
     except Exception as e:

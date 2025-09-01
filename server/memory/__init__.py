@@ -336,7 +336,7 @@ class SurrealMemorySystem:
         #     logger.error(f"Message storage failed: {e}")
         #     return False
     
-    async def store_facts(self, text: str, speaker_id: str = 'default_user') -> int:
+    async def store_facts(self, text: str, speaker_id: str = 'default_user', session_id: str = None) -> int:
         """Store facts using SOTA Three Pillars Architecture"""
         from loguru import logger
         from memory.cognitive_scribe import process_and_store_facts
@@ -387,19 +387,48 @@ class SurrealMemorySystem:
                     object_type='concept',
                     confidence=confidence,
                     source_message_id=source_message_id,
-                    embedding=embedding
+                    embedding=embedding,
+                    session_id=session_id
                 )
             
-            # Use the Scribe to process and store via Guardian
-            results = await process_and_store_facts(
-                llm_relations=standardized_facts,
-                store_function=guardian_store_function,
-                source='spacy'
-            )
+            # Check if Guardian bypass is enabled for testing
+            import os
+            bypass_guardian = os.getenv("BYPASS_GUARDIAN", "false").lower() == "true"
             
-            stored_count = results['accepted']
-            logger.debug(f"🧠 Three Pillars result: {stored_count} facts stored via Guardian")
-            logger.debug(f"   📊 Breakdown: {results['accepted']} accepted, {results['rejected']} rejected by Guardian")
+            if bypass_guardian:
+                logger.info("🚧 Guardian BYPASSED - storing facts directly for testing")
+                stored_count = 0
+                
+                # Store facts directly without Guardian validation
+                for fact in standardized_facts:
+                    try:
+                        success = await guardian_store_function(
+                            subject_name=fact['subject'],
+                            predicate=fact['predicate'],
+                            object_name=fact['value'],
+                            confidence=fact['confidence']
+                        )
+                        if success:
+                            stored_count += 1
+                            logger.debug(f"✅ Direct store: {fact['subject']} {fact['predicate']} {fact['value']}")
+                        else:
+                            logger.debug(f"❌ Direct store failed: {fact['subject']} {fact['predicate']} {fact['value']}")
+                    except Exception as e:
+                        logger.debug(f"💥 Direct store error: {e}")
+                
+                results = {'accepted': stored_count, 'rejected': 0, 'errors': 0}
+                logger.debug(f"🚧 Bypass result: {stored_count} facts stored directly (no Guardian)")
+            else:
+                # Use the Scribe to process and store via Guardian (normal flow)
+                results = await process_and_store_facts(
+                    llm_relations=standardized_facts,
+                    store_function=guardian_store_function,
+                    source='spacy'
+                )
+                
+                stored_count = results['accepted']
+                logger.debug(f"🧠 Three Pillars result: {stored_count} facts stored via Guardian")
+                logger.debug(f"   📊 Breakdown: {results['accepted']} accepted, {results['rejected']} rejected by Guardian")
             
             return stored_count
             
