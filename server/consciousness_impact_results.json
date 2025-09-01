@@ -1,0 +1,14 @@
+{
+  "consciousness_enabled": {
+    "setup": {
+      "has_consciousness": true,
+      "has_field_persistence": true
+    }
+  },
+  "consciousness_disabled": {
+    "setup": {
+      "has_consciousness": false,
+      "has_field_persistence": false
+    }
+  }
+}
