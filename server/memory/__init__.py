@@ -337,53 +337,70 @@ class SurrealMemorySystem:
         #     return False
     
     async def store_facts(self, text: str, speaker_id: str = 'default_user') -> int:
-        """Store facts using SurrealDB with SpaCy fact extraction and knowledge relations"""
+        """Store facts using SOTA Three Pillars Architecture"""
         from loguru import logger
+        from memory.cognitive_scribe import process_and_store_facts
+        
         try:
-            # Extract facts using SpaCy
-            logger.debug(f"🔍 About to call extract_facts_from_text function: {extract_facts_from_text}")
-            logger.debug(f"🔍 Module: {extract_facts_from_text.__module__}")
-            facts = extract_facts_from_text(text)
-            logger.debug(f"🔍 SurrealMemorySystem extracted {len(facts)} facts from: '{text[:50]}...'")
-            logger.debug(f"🔍 Facts detail: {facts}")
+            # Phase 1: Extract raw facts using existing extractors
+            logger.debug(f"🔍 Extracting raw facts from: '{text[:50]}...'")
+            raw_facts = extract_facts_from_text(text)
+            logger.debug(f"🔍 Extracted {len(raw_facts)} raw facts")
             
-            if not facts:
+            if not raw_facts:
                 logger.debug("🔍 No facts extracted, returning 0")
                 return 0
             
-            stored_count = 0
-            
-            # Store facts as knowledge relations
-            for i, fact in enumerate(facts):
-                logger.debug(f"🔄 Processing fact {i+1}: {fact}")
-                
+            # Convert to standardized format for the Scribe
+            standardized_facts = []
+            for fact in raw_facts:
                 if isinstance(fact, dict):
-                    subject = fact.get('subject', speaker_id)
-                    predicate = fact.get('predicate', 'mentioned')
-                    obj = fact.get('value') or fact.get('object', '')
-                    
-                    logger.debug(f"   📋 Extracted: subject={subject}, predicate={predicate}, obj={obj}")
-                    
-                    if obj:  # Only store if we have an object
-                        logger.debug(f"   💾 Storing knowledge relation...")
-                        success = await self.connection_manager.store_knowledge_relation(
-                            subject_name=subject,
-                            predicate=predicate,
-                            object_name=obj,
-                            subject_type='user' if subject == speaker_id else 'concept',
-                            object_type='concept'
-                        )
-                        logger.debug(f"   📊 Storage success: {success}")
-                        if success:
-                            stored_count += 1
-                            logger.debug(f"   ✅ Stored count now: {stored_count}")
-                    else:
-                        logger.debug(f"   ⚠️ Skipping fact with empty object")
+                    standardized_facts.append({
+                        'subject': fact.get('subject', speaker_id),
+                        'predicate': fact.get('predicate', 'mentioned'),
+                        'value': fact.get('value') or fact.get('object', ''),
+                        'confidence': fact.get('confidence', 0.8)
+                    })
+                else:
+                    # Handle Fact dataclass instances
+                    try:
+                        fact_dict = fact.to_dict() if hasattr(fact, 'to_dict') else fact.__dict__
+                        standardized_facts.append({
+                            'subject': fact_dict.get('subject', speaker_id),
+                            'predicate': fact_dict.get('predicate', 'mentioned'),
+                            'value': fact_dict.get('value', ''),
+                            'confidence': fact_dict.get('confidence', 0.8)
+                        })
+                    except:
+                        logger.warning(f"Could not standardize fact: {fact}")
+                        continue
             
-            # Legacy compatibility storage removed to prevent duplicates
-            # Facts are already stored as knowledge relations above
+            # Phase 2: Process through the Cognitive Scribe and Guardian
+            async def guardian_store_function(subject_name, predicate, object_name, 
+                                            confidence=0.8, source_message_id=None, embedding=None):
+                """Wrapper for Guardian storage function"""
+                return await self.connection_manager.store_knowledge_relation(
+                    subject_name=subject_name,
+                    predicate=predicate,
+                    object_name=object_name,
+                    subject_type='user' if subject_name == speaker_id else 'concept',
+                    object_type='concept',
+                    confidence=confidence,
+                    source_message_id=source_message_id,
+                    embedding=embedding
+                )
             
-            logger.debug(f"🧠 Final result: extracted and stored {stored_count} facts as knowledge relations")
+            # Use the Scribe to process and store via Guardian
+            results = await process_and_store_facts(
+                llm_relations=standardized_facts,
+                store_function=guardian_store_function,
+                source='spacy'
+            )
+            
+            stored_count = results['accepted']
+            logger.debug(f"🧠 Three Pillars result: {stored_count} facts stored via Guardian")
+            logger.debug(f"   📊 Breakdown: {results['accepted']} accepted, {results['rejected']} rejected by Guardian")
+            
             return stored_count
             
         except Exception as e:

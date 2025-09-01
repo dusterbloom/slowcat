@@ -837,25 +837,62 @@ class SurrealConnectionManager:
                                      confidence: float = 0.8, source_message_id: str = None,
                                      embedding: Optional[List[float]] = None) -> bool:
         """
-        Store knowledge using direct SurrealQL - simple and reliable
+        Store knowledge using direct SurrealQL with adaptive predicate normalization
         """
         await self.ensure_connected()
+        
+        # 🧬 ADAPTIVE NORMALIZATION: Let the knowledge graph learn and normalize predicates
+        try:
+            from memory.adaptive_knowledge_graph import normalize_predicate_adaptive
+            normalized_predicate = await normalize_predicate_adaptive(predicate)
+            if normalized_predicate != predicate:
+                logger.debug(f"🔄 Predicate normalized: '{predicate}' → '{normalized_predicate}'")
+                predicate = normalized_predicate
+        except Exception as e:
+            logger.warning(f"Adaptive normalization failed, using original predicate: {e}")
+            # Continue with original predicate if adaptive system fails
         
         try:
             # Create safe entity IDs by removing/replacing problematic characters
             import re
             def make_safe_id(name: str) -> str:
+                # Clean the name first (remove possessives, articles)
+                clean_name = name.strip()
+                
+                # Remove possessives (fixes "Sardinia's" → "Sardinia")
+                if clean_name.endswith("'s"):
+                    clean_name = clean_name[:-2]
+                elif clean_name.endswith("s'"):
+                    clean_name = clean_name[:-1]
+                
+                # Remove leading articles
+                import re as regex
+                clean_name = regex.sub(r'^(the|a|an)\s+', '', clean_name, flags=regex.IGNORECASE).strip()
+                
                 # Replace problematic characters with underscores or remove them
-                safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+                safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', clean_name)
                 # Remove consecutive underscores and leading/trailing ones
                 safe_name = re.sub(r'_+', '_', safe_name).strip('_')
                 # Ensure it doesn't start with a number
                 if safe_name and safe_name[0].isdigit():
                     safe_name = 'entity_' + safe_name
-                return safe_name or 'unknown'
+                return safe_name.lower() or 'unknown'  # Lowercase for consistency
             
             subject_safe = make_safe_id(subject_name)
             object_safe = make_safe_id(object_name)
+            
+            # Use cleaned names for canonical_name (prevents "Sardinia's" in display)
+            subject_clean = subject_name.strip()
+            if subject_clean.endswith("'s"):
+                subject_clean = subject_clean[:-2]
+            elif subject_clean.endswith("s'"):
+                subject_clean = subject_clean[:-1]
+            
+            object_clean = object_name.strip()  
+            if object_clean.endswith("'s"):
+                object_clean = object_clean[:-2]
+            elif object_clean.endswith("s'"):
+                object_clean = object_clean[:-1]
             
             logger.debug(f"Creating entities: {subject_safe}, {object_safe}")
             
@@ -863,7 +900,7 @@ class SurrealConnectionManager:
             try:
                 await self.db.query(f"CREATE entity:{subject_safe} SET type=$subject_type, canonical_name=$subject_name;", {
                     'subject_type': subject_type,
-                    'subject_name': subject_name
+                    'subject_name': subject_clean  # Use cleaned name
                 })
             except Exception:
                 pass  # Entity might already exist
@@ -871,7 +908,7 @@ class SurrealConnectionManager:
             try:
                 await self.db.query(f"CREATE entity:{object_safe} SET type=$object_type, canonical_name=$object_name;", {
                     'object_type': object_type,
-                    'object_name': object_name
+                    'object_name': object_clean  # Use cleaned name
                 })
             except Exception:
                 pass  # Entity might already exist
@@ -913,9 +950,28 @@ class SurrealConnectionManager:
                 
                 result = existing  # Return existing relation
             else:
+                # Normalize predicate using ontology
+                try:
+                    normalize_result = await self.db.query("RETURN fn::normalize_predicate($pred);", {'pred': predicate})
+                    canonical_predicate = normalize_result[0]['result'] if normalize_result and normalize_result[0] else predicate
+                except:
+                    canonical_predicate = predicate  # Fallback to original
+                
+                # Validate predicate usage (optional - log warnings but don't block)
+                try:
+                    validation_result = await self.db.query(
+                        "RETURN fn::validate_predicate_usage($pred, $subj_type, $obj_type);", 
+                        {'pred': canonical_predicate, 'subj_type': subject_type, 'obj_type': object_type}
+                    )
+                    validation = validation_result[0]['result'] if validation_result and validation_result[0] else {'valid': True}
+                    if not validation.get('valid', True):
+                        logger.warning(f"Predicate validation warning: {canonical_predicate} - {validation.get('reason')}")
+                except:
+                    pass  # Don't block on validation errors
+                    
                 # Create new relation
                 query_params = {
-                    'predicate': predicate,
+                    'predicate': canonical_predicate,  # Use canonical predicate
                     'confidence': confidence
                 }
                 
@@ -953,6 +1009,13 @@ class SurrealConnectionManager:
             
             if success:
                 logger.info(f"✅ Stored knowledge: {subject_name} -{predicate}-> {object_name}")
+                
+                # 🧬 NOTIFY EVOLUTION SERVICE: Let the adaptive system learn from this new fact
+                try:
+                    from services.knowledge_evolution_service import on_knowledge_stored
+                    on_knowledge_stored()
+                except ImportError:
+                    pass  # Evolution service not available, continue normally
             else:
                 logger.warning(f"Relation creation may have failed: {result}")
             

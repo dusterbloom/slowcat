@@ -416,6 +416,8 @@ if [ "${ENABLE_DTH:-false}" = "true" ]; then
   echo "   (Set HF_HOME/TRANSFORMERS_CACHE to control cache location; offline runs supported after first fetch)"
 fi
 
+# DSPy fact extraction is now initialized directly in bot_v2.py
+
 # Run the bot with comprehensive error handling
 set -e  # Exit on any error
 

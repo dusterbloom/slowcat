@@ -44,6 +44,18 @@ if os.getenv("TRANSFORMERS_OFFLINE", "0") == "1":
 else:
     logger.info("🌐 Transformers online mode (can download models)")
 
+# 🚀 CRITICAL: Initialize DSPy fact extraction BEFORE any memory/config imports
+# This must happen first to ensure monkey-patching works correctly
+logger.info("🚀 Initializing DSPy fact extraction (before memory imports)...")
+try:
+    from memory.dspy_integration import enable_dspy_extraction
+    if enable_dspy_extraction():
+        logger.info("✅ DSPy fact extraction enabled - using production single-call extractor")
+    else:
+        logger.warning("⚠️ DSPy initialization failed - falling back to hybrid extractor")
+except Exception as e:
+    logger.warning(f"⚠️ DSPy import/initialization failed: {e} - using hybrid extractor")
+
 from loguru import logger
 from config import config
 

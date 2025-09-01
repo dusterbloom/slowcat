@@ -1,0 +1,20 @@
+[
+  {
+    "input": "I lived in Sardinia",
+    "subject": "user",
+    "predicate": "has_place",
+    "value": "Sardinia"
+  },
+  {
+    "input": "I lived in Sardinia",
+    "subject": "I",
+    "predicate": "lived_in",
+    "value": "Sardinia"
+  },
+  {
+    "input": "I lived in Sardinia",
+    "subject": " Sardinia",
+    "predicate": "was_lived_in",
+    "value": "Sardinia"
+  }
+]

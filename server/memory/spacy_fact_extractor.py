@@ -235,9 +235,18 @@ class HighAccuracyFactExtractor:
                                     poss_child = ch
                                     break
                             if poss_child is not None:
-                                # Determine subject: user if possessor chain includes user pronoun
-                                poss_owner = self._find_possessive_owner(poss_child)
-                                sub = "user" if (poss_owner and self._is_user_pronoun(poss_owner)) else self._normalize_pronoun(self._get_full_noun_phrase(poss_child))
+                                # Clean possessive handling: poss_child is the possessor (dog, cat, etc)
+                                poss_entity = self._clean_np(self._get_full_noun_phrase(poss_child))
+                                
+                                # Check if possessor has its own possessor (e.g., "my dog's name")
+                                ultimate_owner = self._find_possessive_owner(poss_child)
+                                if ultimate_owner and self._is_user_pronoun(ultimate_owner):
+                                    sub = "user"
+                                elif self._is_user_pronoun(poss_child.text):
+                                    sub = "user"
+                                else:
+                                    sub = self._normalize_pronoun(poss_entity)
+                                
                                 pred2 = f"{poss_child.lemma_.lower()}_name"
                                 facts.append(Fact(
                                     subject=sub,

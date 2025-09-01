@@ -634,7 +634,7 @@ class PipelineBuilder:
             # processors['greeting_filter'],
             # processors['streaming_deduplicator'],  # FIX cumulative duplication patterns
             # processors['context_filter'],  # FILTER streaming frames for assistant response RIGHT BEFORE context
-            # context_aggregator.assistant(),  # MOVED to end after filtering
+            context_aggregator.assistant(),  # MOVED to end after filtering
         ]
         
         # Filter out None components

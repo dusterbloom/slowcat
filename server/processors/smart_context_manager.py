@@ -2192,7 +2192,17 @@ class SmartContextManager(FrameProcessor):
                     # Special-case malformed 'where' location
                     if p in ('location', 'live', 'lives', 'hometown') and str(val).strip().lower() == 'where':
                         continue
-                    lines.append(f"- {subj}'s {pred} is {val}")
+                    
+                    # FIX: Check if subject already has possessive form to avoid "Sardinia's's"
+                    if subj.endswith("'s") or subj.endswith("s'"):
+                        # Subject already possessive - don't add another 's
+                        # Also skip if predicate is "is" to avoid "Sardinia's is is Italy"
+                        if p == "is":
+                            lines.append(f"- {subj} is {val}")
+                        else:
+                            lines.append(f"- {subj} {pred} is {val}")
+                    else:
+                        lines.append(f"- {subj}'s {pred} is {val}")
                 else:
                     lines.append(f"- {subj} has {pred}")
 
