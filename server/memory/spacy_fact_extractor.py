@@ -294,25 +294,38 @@ class HighAccuracyFactExtractor:
                             source_text=source_text
                         ))
             
-            # 3. Possessive relationships (my X, user's Y)
+            # 3. Possessive relationships (my X, user's Y) - FIXED DECOMPOSITION
             elif token.dep_ == "poss":
                 possessor = self._normalize_pronoun(token.text)
                 possessed_head = token.head
-                possessed = self._get_full_noun_phrase(possessed_head)
                 
+                # Extract just the owned entity without possessive prefix
+                owned_entity = self._clean_np(possessed_head.text)  # Just "dog", not "my dog"
+                
+                # Create ownership relation with clean entity
                 facts.append(Fact(
                     subject=possessor,
-                    predicate="has",
-                    value=possessed,
+                    predicate="owns",
+                    value=owned_entity,
                     source_text=source_text
                 ))
                 
-                # Also extract name relationships (my dog Luna -> user.dog_name = Luna)
+                # Create entity type fact for the owned thing
+                if possessed_head.pos_ in ["NOUN", "PROPN"]:
+                    entity_type = "object" if possessed_head.pos_ == "NOUN" else "concept"
+                    facts.append(Fact(
+                        subject=owned_entity,
+                        predicate="type",
+                        value=entity_type,
+                        source_text=source_text
+                    ))
+                
+                # Also extract name relationships (my dog Luna -> dog_name = Luna)
                 name_info = self._extract_name_from_apposition(possessed_head)
                 if name_info:
                     facts.append(Fact(
-                        subject=possessor,
-                        predicate=f"{possessed.replace(' ', '_')}_name",
+                        subject=owned_entity,  # Use the owned entity as subject for names
+                        predicate="named",
                         value=name_info,
                         source_text=source_text
                     ))

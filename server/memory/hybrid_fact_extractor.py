@@ -256,17 +256,38 @@ class HybridFactExtractor:
             entity_names = [e['name'] for e in entities[:5]]  # Limit to top 5 entities
             entity_list = ', '.join(entity_names)
             
-            prompt = f"""Text: "{text}"
-Entities: {entity_list}
+            prompt = f"""You are an expert knowledge graph builder. Extract ALL factual relationships from text.
 
-Find relationships between these entities:
-- Use ONLY entities listed above
-- Simple predicates: is, has_name, works_as, lives_in, happened_on, related_to
-- Maximum 3 most important relations
-- Be precise, don't guess"""
+Examples:
+Text: "My dog Rex is brown"
+Relations: [
+  {{"subject": "user", "predicate": "has_pet", "object": "Rex", "confidence": 0.9}},
+  {{"subject": "Rex", "predicate": "is_a", "object": "dog", "confidence": 1.0}},
+  {{"subject": "Rex", "predicate": "has_color", "object": "brown", "confidence": 1.0}}
+]
 
+Text: "I work at Microsoft in Seattle"
+Relations: [
+  {{"subject": "user", "predicate": "works_at", "object": "Microsoft", "confidence": 0.9}},
+  {{"subject": "Microsoft", "predicate": "located_in", "object": "Seattle", "confidence": 0.9}},
+  {{"subject": "user", "predicate": "works_in", "object": "Seattle", "confidence": 0.8}}
+]
+
+Text: "Sarah is a doctor"
+Relations: [
+  {{"subject": "Sarah", "predicate": "is_a", "object": "doctor", "confidence": 1.0}},
+  {{"subject": "Sarah", "predicate": "has_occupation", "object": "doctor", "confidence": 0.9}}
+]
+
+RULES:
+- "I", "my", "me" → "user" entity  
+- Extract ownership, locations, occupations, names, attributes, relationships
+- Use predicates: has_pet, works_at, is_a, has_name, located_in, owns, employed_by, lives_in, is_named, has_color, has_occupation, etc.
+
+Now extract from: "{text}"
+Entities found: {entity_list}"""
             request_data = {
-                "model": "google/gemma-3-270m",
+                "model": "mlx-community/llama-3.2-1b-instruct",
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 200,
                 "temperature": 0.0,
@@ -314,6 +335,7 @@ Find relationships between these entities:
                     
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse Gemma JSON response: {e}")
+                    logger.debug(f"Raw response that failed parsing: {raw_response[:500]}...")
                     return []
             else:
                 logger.warning(f"Gemma API error: {response.status_code}")

@@ -15,8 +15,10 @@ class DSPySingleCallExtractor:
     
     def __init__(self):
         self.name = "DSPy-SingleCall-Qwen"
-        self.base_url = "http://localhost:1234/v1/chat/completions"
-        self.model = "qwen2.5-0.5b-instruct-mlx"
+        # Allow overriding via env to try more capable local models (e.g., qwen3-4b)
+        import os
+        self.base_url = os.getenv("DSPY_EXTRACTION_BASE_URL", "http://localhost:1234/v1/chat/completions")
+        self.model = os.getenv("DSPY_EXTRACTION_MODEL", "qwen2.5-0.5b-instruct-mlx")
     
     def extract_facts(self, text: str) -> List[Dict[str, Any]]:
         """Extract both factual and personal relations in ONE optimized call"""
@@ -24,19 +26,33 @@ class DSPySingleCallExtractor:
         start_time = time.perf_counter()
         print(f"🔍 DSPy extract_facts called with: '{text}' (len={len(text)})")
         
-        # Context-bleeding resistant prompt - NO EXAMPLES
-        prompt = f"""Extract knowledge relations from this text: "{text}"
+        # Minimal, small-model-friendly prompt: open-vocab predicate, one relation max
+        prompt = f"""Extract at most ONE knowledge relation from the text below.
 
-RULES:
-- Extract ONLY from the text above
-- Ignore any previous conversations
-- Be conservative - if unsure, don't extract
-- Return max 3 relations
+Constraints:
+- subject: 'user' for first-person (I, me, my, we); otherwise a proper name if present
+- predicate: ONE short action/relationship word (lemma; lowercase/underscores; not a sentence)
+- object: 1-3 words; specific noun phrase; no pronouns
+- If nothing meaningful, return {{"relations": []}}
 
-For personal statements (my, I, we): use "user" as subject
-For facts about entities: use actual names as subjects
+Text: "{text}"
 
-Return JSON format:"""
+Return ONLY JSON for the schema."""
+
+# prompt = f"""Extract knowledge relations from this text: "{text}"
+
+# RULES:
+# - Extract ONLY from the text above
+# - Ignore any previous conversations
+# - Be conservative - if unsure, don't extract
+# - Return max 3 relations
+
+# For personal statements (my, I, we): use "user" as subject
+# For facts about entities: use actual names as subjects
+
+# Return JSON format:"""
+
+
 
         try:
             payload = {
@@ -51,7 +67,8 @@ Return JSON format:"""
                         "content": prompt
                     }
                 ],
-                "max_tokens": 200,  # Conservative limit for clean responses
+                # Allow a bit more room to prevent truncation
+                "max_tokens": 300,
                 "temperature": 0.05,  # Very low for consistency
                 "stream": False,  # CRITICAL: Disable streaming to prevent JSON truncation
                 "presence_penalty": 0.0,  # No penalty for repeating concepts
@@ -99,14 +116,25 @@ Return JSON format:"""
             content = result["choices"][0]["message"]["content"]
             
             # Parse structured response with error handling
-            try:
-                parsed = json.loads(content)
-                relations = parsed.get("relations", [])
-            except json.JSONDecodeError as e:
-                print(f"❌ JSON parsing failed: {e}")
-                print(f"Raw response: {content[:500]}...")
-                return []
-            
+            # Robust JSON parse with trimming if LM trails off
+            def _parse_relations(raw: str):
+                try:
+                    parsed = json.loads(raw)
+                    return parsed.get("relations", [])
+                except json.JSONDecodeError:
+                    # Try trimming to last closing brace
+                    start = raw.find('{')
+                    end = raw.rfind('}')
+                    if start != -1 and end != -1 and end > start:
+                        try:
+                            parsed2 = json.loads(raw[start:end+1])
+                            return parsed2.get("relations", [])
+                        except json.JSONDecodeError:
+                            return []
+                    return []
+
+            relations = _parse_relations(content)
+
             extraction_time = time.perf_counter() - start_time
             
             # Add metadata to each fact with anti-hallucination validation
