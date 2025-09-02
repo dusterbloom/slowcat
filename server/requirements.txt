@@ -46,3 +46,9 @@ sentence-transformers>=2.2.2
 
 # --- DSPy for self-optimization (optional) ---
 dspy-ai>=2.4.0
+
+# --- M3 Agent Dependencies ---
+scikit-learn>=1.7.0  # For DBSCAN clustering in M3 memory graphs
+hdbscan>=0.8.40  # Hierarchical DBSCAN for advanced clustering
+insightface>=0.7.3  # Face recognition and analysis
+moviepy>=1.0.3  # Video processing for M3 memory clips
