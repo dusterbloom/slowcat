@@ -174,6 +174,14 @@ class PipelineBuilder:
             processors['memory_processor'] = None
             processors['memory_injector'] = None
         
+        # M3 Memory System
+        m3_processor = await self._setup_m3_processor()
+        if m3_processor:
+            processors['m3_memory_processor'] = m3_processor
+            logger.info("🧠 M3 Memory System ENABLED")
+        else:
+            processors['m3_memory_processor'] = None
+        
         # Video processor
         if config.video.enabled:
             logger.info("📹 Video is ENABLED")
@@ -599,6 +607,7 @@ class PipelineBuilder:
             processors['audio_tee'],
             processors['vad_bridge'],
             services['stt'],
+            processors.get('m3_memory_processor'),  # M3 Memory System - process frames into memory nodes
             processors.get('neural_field_processor'),  # Neural field consciousness processing - RIGHT AFTER STT
             processors['memory_processor'],  # Stateless memory processor - MOVED RIGHT AFTER STT
             processors['dictation_mode'],  # Must be after STT but before LLM
@@ -821,4 +830,65 @@ class PipelineBuilder:
         except Exception as e:
             from loguru import logger
             logger.warning(f"ResponseTap unavailable: {e}")
+            return None
+    
+    async def _setup_m3_processor(self) -> Optional[Any]:
+        """Setup M3 memory processor if enabled"""
+        try:
+            import os
+            
+            # Check if M3 is enabled
+            if not os.getenv('M3_MEMORY_ENABLED', 'false').lower() == 'true':
+                return None
+            
+            logger.info("🧠 Initializing M3 Memory System...")
+            
+            # Import M3 components
+            from memory.m3_surreal_integration import M3SurrealIntegration
+            from memory.m3_llm_generator import M3LLMGenerator
+            from services.embedding_service import EmbeddingService
+            from processors.m3_memory_processor import M3MemoryProcessor
+            from memory.surreal_connection import SurrealConnectionManager
+            
+            # Initialize SurrealDB connection
+            surreal_connection = SurrealConnectionManager()
+            await surreal_connection.connect()
+            
+            # Initialize M3 integration
+            m3_integration = M3SurrealIntegration(surreal_connection)
+            await m3_integration.initialize()
+            
+            # Initialize embedding service
+            embedding_service = EmbeddingService()
+            await embedding_service.test_embedding_generation()
+            
+            # Initialize LLM generator (optional)
+            llm_generator = None
+            if os.getenv('ENABLE_LLM_MEMORY_GENERATION', 'true').lower() == 'true':
+                try:
+                    llm_generator = M3LLMGenerator()
+                    connection_ok = await llm_generator.test_connection()
+                    if not connection_ok:
+                        logger.warning("⚠️ LLM generator connection test failed, using fallback")
+                        llm_generator = None
+                except Exception as e:
+                    logger.warning(f"⚠️ LLM generator initialization failed: {e}")
+                    llm_generator = None
+            
+            # Create M3 memory processor
+            m3_processor = M3MemoryProcessor(
+                m3_integration=m3_integration,
+                embedding_service=embedding_service,
+                llm_generator=llm_generator,
+                similarity_threshold=float(os.getenv('M3_SIMILARITY_THRESHOLD', '0.7')),
+                auto_create_edges=os.getenv('M3_AUTO_CREATE_EDGES', 'true').lower() == 'true',
+                clip_duration_seconds=int(os.getenv('M3_CLIP_DURATION_SECONDS', '30')),
+                enable_llm_generation=llm_generator is not None
+            )
+            
+            logger.info("✓ M3 Memory System initialized successfully")
+            return m3_processor
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize M3 Memory System: {e}")
             return None

@@ -13,22 +13,19 @@ from datetime import datetime
 
 from pipecat.frames.frames import (
     Frame, StartFrame, EndFrame, CancelFrame, 
-    AudioFrame, TextFrame, TranscriptionFrame,
+    AudioRawFrame, TextFrame, TranscriptionFrame,
     LLMFullResponseStartFrame, LLMFullResponseEndFrame
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
-from ..memory.m3_surreal_integration import M3SurrealIntegration
+from memory.m3_surreal_integration import M3SurrealIntegration
+from memory.m3_llm_generator import M3LLMGenerator, EpisodicMemory, SemanticMemory
+from services.embedding_service import EmbeddingService
 # Optional imports for enhanced functionality
 try:
-    from ..memory.spacy_fact_extractor import SpacyFactExtractor
+    from memory.spacy_fact_extractor import SpacyFactExtractor
 except ImportError:
     SpacyFactExtractor = None
-
-try:
-    from ..services.embedding_service import EmbeddingService  
-except ImportError:
-    EmbeddingService = None
 
 logger = logging.getLogger(__name__)
 
@@ -38,28 +35,34 @@ class M3MemoryProcessor(FrameProcessor):
     def __init__(self, 
                  m3_integration: M3SurrealIntegration,
                  embedding_service: Optional[EmbeddingService] = None,
+                 llm_generator: Optional[M3LLMGenerator] = None,
                  fact_extractor: Optional[SpacyFactExtractor] = None,
                  similarity_threshold: float = 0.7,
                  auto_create_edges: bool = True,
                  clip_duration_seconds: int = 30,
+                 enable_llm_generation: bool = True,
                  **kwargs):
         """Initialize M3 Memory Processor
         
         Args:
             m3_integration: M3 SurrealDB integration instance
             embedding_service: Service for generating embeddings
+            llm_generator: LLM-powered memory generator
             fact_extractor: Service for extracting facts from text
             similarity_threshold: Minimum similarity for auto-edge creation
             auto_create_edges: Whether to automatically infer edges
             clip_duration_seconds: Duration before creating new clips
+            enable_llm_generation: Whether to use LLM for enhanced memory generation
         """
         super().__init__(**kwargs)
         self.m3_integration = m3_integration
         self.embedding_service = embedding_service
+        self.llm_generator = llm_generator
         self.fact_extractor = fact_extractor
         self.similarity_threshold = similarity_threshold
         self.auto_create_edges = auto_create_edges
         self.clip_duration_seconds = clip_duration_seconds
+        self.enable_llm_generation = enable_llm_generation
         
         # State tracking
         self._current_session_id: str = "default"
@@ -69,10 +72,15 @@ class M3MemoryProcessor(FrameProcessor):
         self._last_clip_time: Optional[datetime] = None
         
         # Audio processing state
-        self._audio_buffer: List[AudioFrame] = []
+        self._audio_buffer: List[AudioRawFrame] = []
         self._transcription_buffer: List[str] = []
         
-        logger.info("M3 Memory Processor initialized")
+        # LLM-enhanced memory generation state
+        self._conversation_window: List[Dict[str, Any]] = []  # For episodic memory
+        self._speaker_utterances: Dict[str, List[str]] = {}  # Track per-speaker utterances
+        self._last_episodic_generation: Optional[datetime] = None
+        
+        logger.info(f"M3 Memory Processor initialized (LLM generation: {enable_llm_generation})")
     
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process different frame types into M3 nodes"""
@@ -109,7 +117,7 @@ class M3MemoryProcessor(FrameProcessor):
                     # User text input (not transcription)
                     await self._process_user_text(frame.text)
             
-            elif isinstance(frame, AudioFrame):
+            elif isinstance(frame, AudioRawFrame):
                 await self._buffer_audio_frame(frame)
             
             # Handle data frames if needed
@@ -212,9 +220,21 @@ class M3MemoryProcessor(FrameProcessor):
                 except Exception as e:
                     logger.warning(f"Failed to generate embedding for assistant response: {e}")
             
-            # Extract facts if fact extractor is available
+            # Enhanced semantic extraction using LLM if available
             facts = []
-            if self.fact_extractor:
+            semantic_memory = None
+            
+            if self.enable_llm_generation and self.llm_generator:
+                try:
+                    semantic_memory = await self.llm_generator.generate_semantic_memory(full_response)
+                    if semantic_memory:
+                        facts.extend(semantic_memory.facts)
+                        logger.info(f"LLM extracted {len(semantic_memory.facts)} facts from assistant response")
+                except Exception as e:
+                    logger.warning(f"Failed to extract semantic memory via LLM: {e}")
+            
+            # Fallback to traditional fact extractor
+            if not facts and self.fact_extractor:
                 try:
                     extracted_facts = await self.fact_extractor.extract_facts(
                         full_response, self._current_speaker_id
@@ -223,10 +243,18 @@ class M3MemoryProcessor(FrameProcessor):
                 except Exception as e:
                     logger.warning(f"Failed to extract facts from response: {e}")
             
-            # Create semantic node with response content
+            # Create semantic node with response content and enhanced metadata
             contents = [full_response]
             if facts:
                 contents.extend(facts)
+            
+            # Add concepts and relationships if available from LLM
+            if semantic_memory:
+                if semantic_memory.concepts:
+                    contents.append(f"CONCEPTS: {', '.join(semantic_memory.concepts)}")
+                if semantic_memory.relationships:
+                    for rel in semantic_memory.relationships:
+                        contents.append(f"RELATION: {rel.get('subject')} {rel.get('predicate')} {rel.get('object')}")
             
             node_id = await self.m3_integration.store_m3_node(
                 node_type="semantic",
@@ -349,7 +377,7 @@ class M3MemoryProcessor(FrameProcessor):
         except Exception as e:
             logger.error(f"Failed to create episodic node: {e}")
     
-    async def _buffer_audio_frame(self, frame: AudioFrame):
+    async def _buffer_audio_frame(self, frame: AudioRawFrame):
         """Buffer audio frames for potential audio processing"""
         try:
             # Keep audio buffer limited
@@ -477,6 +505,8 @@ class M3MemoryProcessor(FrameProcessor):
             self._transcription_buffer = []
             self._audio_buffer = []
             self._assistant_response_buffer = []
+            self._conversation_window = []
+            self._speaker_utterances = {}
             
             logger.info(f"Finalized M3 memory session {self._current_session_id}")
             
@@ -530,3 +560,301 @@ class M3MemoryProcessor(FrameProcessor):
         except Exception as e:
             logger.error(f"Failed to get memory context: {e}")
             return {"nodes": [], "context": "", "query": query}
+    
+    async def _track_conversation_turn(self, turn_data: Dict[str, Any]):
+        """Track conversation turns for episodic memory generation"""
+        try:
+            # Add to conversation window
+            self._conversation_window.append(turn_data)
+            
+            # Keep window size manageable (last 10 turns)
+            if len(self._conversation_window) > 10:
+                self._conversation_window = self._conversation_window[-10:]
+            
+            # Track per-speaker utterances
+            speaker_id = turn_data.get('speaker_id', 'unknown')
+            if speaker_id not in self._speaker_utterances:
+                self._speaker_utterances[speaker_id] = []
+            
+            self._speaker_utterances[speaker_id].append(turn_data['text'])
+            
+            # Keep per-speaker history reasonable
+            if len(self._speaker_utterances[speaker_id]) > 20:
+                self._speaker_utterances[speaker_id] = self._speaker_utterances[speaker_id][-20:]
+            
+            logger.debug(f"Tracked conversation turn for {speaker_id}: {turn_data['text'][:30]}...")
+            
+        except Exception as e:
+            logger.error(f"Failed to track conversation turn: {e}")
+    
+    async def _extract_speaker_facts_llm(self, text: str, speaker_id: str):
+        """Extract speaker-specific facts using LLM"""
+        try:
+            if not self.llm_generator:
+                return
+            
+            facts = await self.llm_generator.extract_speaker_facts(text, speaker_id)
+            
+            if facts:
+                # Store each fact as a semantic node
+                for fact_data in facts:
+                    # Generate embedding for the fact
+                    fact_text = f"{fact_data['subject']} {fact_data['predicate']} {fact_data['object']}"
+                    
+                    embeddings = []
+                    if self.embedding_service:
+                        try:
+                            embedding = await self.embedding_service.get_embedding(fact_text)
+                            embeddings = [embedding]
+                        except Exception as e:
+                            logger.warning(f"Failed to generate embedding for fact: {e}")
+                    
+                    # Create semantic node for the fact
+                    node_id = await self.m3_integration.store_m3_node(
+                        node_type="semantic",
+                        contents=[fact_text, f"FACT: {fact_data['subject']} -> {fact_data['object']}"],
+                        embeddings=embeddings,
+                        speaker_id=speaker_id,
+                        extraction_method="llm_fact_extraction",
+                        confidence=fact_data.get('confidence', 0.8)
+                    )
+                    
+                    if node_id and self.auto_create_edges:
+                        await self.m3_integration.infer_edges_for_node(
+                            node_id,
+                            similarity_threshold=self.similarity_threshold * 0.9  # Higher threshold for facts
+                        )
+                
+                logger.info(f"Extracted and stored {len(facts)} speaker facts via LLM")
+        
+        except Exception as e:
+            logger.error(f"Failed to extract speaker facts via LLM: {e}")
+    
+    async def _maybe_create_episodic_node(self):
+        """Create episodic node from recent interaction using LLM if available"""
+        try:
+            # Only create episodic nodes if we have sufficient interaction
+            if len(self._conversation_window) < 3:
+                return
+            
+            # Check time since last episodic generation
+            if self._last_episodic_generation:
+                time_since_last = datetime.now() - self._last_episodic_generation
+                if time_since_last.total_seconds() < 60:  # Don't generate too frequently
+                    return
+            
+            if self.enable_llm_generation and self.llm_generator:
+                # Use LLM for enhanced episodic memory generation
+                await self._create_episodic_memory_llm()
+            else:
+                # Fall back to simple episodic aggregation
+                await self._create_simple_episodic_memory()
+                
+        except Exception as e:
+            logger.error(f"Failed to create episodic node: {e}")
+    
+    async def _create_episodic_memory_llm(self):
+        """Create episodic memory using LLM-powered generation"""
+        try:
+            # Get recent conversation sequence
+            conversation_texts = [turn['text'] for turn in self._conversation_window[-5:]]
+            speaker_ids = [turn['speaker_id'] for turn in self._conversation_window[-5:]]
+            
+            if len(conversation_texts) < 2:
+                return
+            
+            # Generate episodic memory using LLM
+            episodic_memory = await self.llm_generator.generate_episodic_memory(
+                conversation_texts, speaker_ids
+            )
+            
+            if not episodic_memory:
+                logger.warning("LLM failed to generate episodic memory")
+                return
+            
+            # Generate embedding for the episodic summary
+            embeddings = []
+            if self.embedding_service:
+                try:
+                    embedding = await self.embedding_service.get_embedding(episodic_memory.summary)
+                    embeddings = [embedding]
+                except Exception as e:
+                    logger.warning(f"Failed to generate embedding for episodic memory: {e}")
+            
+            # Create episodic node with rich content
+            contents = [
+                episodic_memory.summary,
+                f"SEQUENCE: {' | '.join(conversation_texts[:3])}",
+            ]
+            
+            if episodic_memory.key_events:
+                contents.append(f"KEY_EVENTS: {'; '.join(episodic_memory.key_events)}")
+            
+            if episodic_memory.participants:
+                contents.append(f"PARTICIPANTS: {', '.join(episodic_memory.participants)}")
+            
+            if episodic_memory.temporal_markers:
+                contents.append(f"TEMPORAL: {', '.join(episodic_memory.temporal_markers)}")
+            
+            node_id = await self.m3_integration.store_m3_node(
+                node_type="episodic",
+                contents=contents,
+                embeddings=embeddings,
+                speaker_id="conversation",
+                extraction_method="llm_episodic_generation",
+                confidence=episodic_memory.confidence
+            )
+            
+            if node_id and self.auto_create_edges:
+                await self.m3_integration.infer_edges_for_node(
+                    node_id,
+                    similarity_threshold=self.similarity_threshold * 0.8  # Lower threshold for episodes
+                )
+            
+            self._last_episodic_generation = datetime.now()
+            
+            logger.info(f"Created LLM-enhanced episodic node {node_id}: {episodic_memory.summary[:50]}...")
+            
+            # Clear part of the conversation window to avoid over-creation
+            self._conversation_window = self._conversation_window[-3:]
+            
+        except Exception as e:
+            logger.error(f"Failed to create LLM episodic memory: {e}")
+    
+    async def _create_simple_episodic_memory(self):
+        """Create simple episodic memory without LLM (fallback)"""
+        try:
+            # Get recent transcriptions
+            recent_transcriptions = self._transcription_buffer[-5:]  # Last 5 utterances
+            combined_text = " ".join(recent_transcriptions)
+            
+            if len(recent_transcriptions) < 2:
+                return
+            
+            # Generate embedding for the episode
+            embeddings = []
+            if self.embedding_service and combined_text.strip():
+                try:
+                    embedding = await self.embedding_service.get_embedding(combined_text)
+                    embeddings = [embedding]
+                except Exception as e:
+                    logger.warning(f"Failed to generate embedding for episode: {e}")
+            
+            # Create episodic node
+            node_id = await self.m3_integration.store_m3_node(
+                node_type="episodic",
+                contents=recent_transcriptions,
+                embeddings=embeddings,
+                speaker_id=self._current_speaker_id,
+                extraction_method="episodic_aggregation",
+                confidence=0.7
+            )
+            
+            if node_id and self.auto_create_edges:
+                await self.m3_integration.infer_edges_for_node(
+                    node_id,
+                    similarity_threshold=self.similarity_threshold * 0.8  # Lower threshold for episodes
+                )
+            
+            logger.info(f"Created simple episodic node {node_id} from recent interactions")
+            
+            # Clear part of the buffer to avoid over-creation
+            self._transcription_buffer = self._transcription_buffer[-2:]
+            
+        except Exception as e:
+            logger.error(f"Failed to create simple episodic memory: {e}")
+    
+    async def get_enhanced_memory_context(self, 
+                                        query: str, 
+                                        max_nodes: int = 10,
+                                        include_episodic: bool = True,
+                                        include_semantic: bool = True,
+                                        include_voice: bool = False) -> Dict[str, Any]:
+        """Get enhanced memory context with LLM summarization
+        
+        Args:
+            query: Query to find relevant memory for
+            max_nodes: Maximum nodes to return
+            include_episodic: Include episodic memories
+            include_semantic: Include semantic memories 
+            include_voice: Include voice transcriptions
+            
+        Returns:
+            Enhanced memory context with LLM-generated summary
+        """
+        try:
+            if not self.embedding_service:
+                return {"nodes": [], "context": "", "summary": ""}
+            
+            # Generate embedding for query
+            query_embedding = await self.embedding_service.get_embedding(query)
+            
+            # Search for similar nodes with type filtering
+            all_memories = []
+            
+            if include_episodic:
+                episodic_nodes = await self.m3_integration.search_similar_nodes(
+                    query_embedding,
+                    node_type="episodic",
+                    limit=max_nodes // 3,
+                    min_similarity=0.3
+                )
+                all_memories.extend(episodic_nodes)
+            
+            if include_semantic:
+                semantic_nodes = await self.m3_integration.search_similar_nodes(
+                    query_embedding,
+                    node_type="semantic",
+                    limit=max_nodes // 2,
+                    min_similarity=0.3
+                )
+                all_memories.extend(semantic_nodes)
+            
+            if include_voice:
+                voice_nodes = await self.m3_integration.search_similar_nodes(
+                    query_embedding,
+                    node_type="voice",
+                    limit=max_nodes // 3,
+                    min_similarity=0.4
+                )
+                all_memories.extend(voice_nodes)
+            
+            # Sort by similarity and limit
+            all_memories.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+            top_memories = all_memories[:max_nodes]
+            
+            # Format basic context
+            context_parts = []
+            for node in top_memories:
+                node_type = node.get('node_type', 'unknown')
+                contents = node.get('contents', [])
+                similarity = node.get('similarity', 0)
+                
+                for content in contents:
+                    context_parts.append(f"[{node_type.upper()}] {content} (similarity: {similarity:.2f})")
+            
+            basic_context = "\n".join(context_parts)
+            
+            # Generate LLM summary if available
+            summary = ""
+            if self.enable_llm_generation and self.llm_generator and top_memories:
+                try:
+                    summary = await self.llm_generator.generate_context_summary(top_memories, query)
+                except Exception as e:
+                    logger.warning(f"Failed to generate context summary: {e}")
+            
+            return {
+                "nodes": top_memories,
+                "context": basic_context,
+                "summary": summary,
+                "query": query,
+                "node_types": {
+                    "episodic": len([n for n in top_memories if n.get('node_type') == 'episodic']),
+                    "semantic": len([n for n in top_memories if n.get('node_type') == 'semantic']),
+                    "voice": len([n for n in top_memories if n.get('node_type') == 'voice'])
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get enhanced memory context: {e}")
+            return {"nodes": [], "context": "", "summary": "", "query": query, "node_types": {}}
