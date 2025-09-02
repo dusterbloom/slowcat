@@ -144,6 +144,83 @@ class M3AudioGraphFactory:
         return processor
     
     @staticmethod
+    def create_voice_integration(audio_graph: AudioGraph = None, 
+                                config: Optional[Dict] = None):
+        """
+        Create M3 voice recognition integration.
+        
+        Args:
+            audio_graph: Optional AudioGraph instance (will create if None)
+            config: Optional voice integration configuration
+            
+        Returns:
+            M3VoiceIntegration instance or None if not available
+        """
+        try:
+            from ..voice_recognition.m3_voice_integration import create_m3_voice_integration
+            
+            # Use provided AudioGraph or create new one
+            if not audio_graph:
+                audio_graph = M3AudioGraphFactory.create_audio_graph(config)
+            
+            integration = create_m3_voice_integration(audio_graph, config)
+            
+            if integration:
+                logger.info("🎤 Created M3 voice recognition integration")
+            else:
+                logger.warning("Failed to create M3 voice integration")
+            
+            return integration
+            
+        except ImportError:
+            logger.error("M3 voice integration components not available")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to create M3 voice integration: {e}")
+            return None
+    
+    @staticmethod
+    def integrate_with_voice_recognition(voice_recognition, audio_graph: AudioGraph = None,
+                                       config: Optional[Dict] = None) -> bool:
+        """
+        Integrate existing voice recognition instance with M3-AudioGraph.
+        
+        Args:
+            voice_recognition: LightweightVoiceRecognition instance
+            audio_graph: Optional AudioGraph instance
+            config: Optional configuration
+            
+        Returns:
+            Success indicator
+        """
+        try:
+            # Check if voice recognition supports M3 integration
+            if not hasattr(voice_recognition, 'use_m3_integration'):
+                logger.warning("Voice recognition instance does not support M3 integration")
+                return False
+            
+            # If M3 is already enabled, nothing to do
+            if voice_recognition.use_m3_integration and voice_recognition.m3_integration:
+                logger.debug("M3 integration already enabled for voice recognition")
+                return True
+            
+            # Create M3 integration
+            integration = M3AudioGraphFactory.create_voice_integration(audio_graph, config)
+            
+            if integration:
+                voice_recognition.m3_integration = integration
+                voice_recognition.use_m3_integration = True
+                logger.info("🔗 Successfully integrated voice recognition with M3-AudioGraph")
+                return True
+            else:
+                logger.error("Failed to create M3 integration for voice recognition")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error integrating voice recognition with M3: {e}")
+            return False
+    
+    @staticmethod
     async def create_surreal_integration(audio_graph: AudioGraph, 
                                         connection_config: Optional[Dict] = None) -> Optional[M3SurrealIntegration]:
         """

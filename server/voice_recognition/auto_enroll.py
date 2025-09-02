@@ -74,17 +74,32 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             best_match = None
             best_similarity = 0
             
-            for speaker_name, stored_fingerprints in self.speakers.items():
-                for stored_fp in stored_fingerprints:
-                    if fingerprint.shape != stored_fp.shape:
-                        logger.warning(f"Skipping incompatible fingerprint for {speaker_name}.")
-                        continue
-                    
-                    similarity = self._calculate_similarity(fingerprint, stored_fp)
-                    
-                    if similarity > best_similarity:
-                        best_similarity = similarity
-                        best_match = speaker_name
+            # First try M3-AudioGraph voice node matching if available
+            if self.use_m3_integration:
+                try:
+                    m3_match, m3_similarity = self.find_speaker_m3(fingerprint)
+                    if m3_match and m3_similarity > 0:
+                        # Resolve canonical identity using M3 equivalences
+                        canonical_identity = self.resolve_speaker_identity(m3_match)
+                        best_match = canonical_identity
+                        best_similarity = m3_similarity
+                        logger.debug(f"🧠 M3 match: {m3_match} -> {canonical_identity} (similarity: {m3_similarity:.3f})")
+                except Exception as e:
+                    logger.error(f"Error in M3 speaker matching: {e}")
+            
+            # Fallback to legacy matching if M3 didn't find a match
+            if not best_match:
+                for speaker_name, stored_fingerprints in self.speakers.items():
+                    for stored_fp in stored_fingerprints:
+                        if fingerprint.shape != stored_fp.shape:
+                            logger.warning(f"Skipping incompatible fingerprint for {speaker_name}.")
+                            continue
+                        
+                        similarity = self._calculate_similarity(fingerprint, stored_fp)
+                        
+                        if similarity > best_similarity:
+                            best_similarity = similarity
+                            best_match = speaker_name
             
             if self.last_enrollment_time and (datetime.now() - self.last_enrollment_time) < self.new_speaker_grace_period:
                 active_similarity_threshold = self.new_speaker_similarity_threshold
@@ -114,12 +129,20 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
                 # Dynamic profile adaptation based on confidence
                 if best_similarity >= self.config.min_adaptation_confidence:
                     try:
+                        # Legacy profile adaptation
                         stored_centroid = self.speakers[best_match][0]
                         # Simple fixed adaptation rate
                         alpha = self.config.profile_adaptation_rate
                         updated_centroid = (1 - alpha) * stored_centroid + alpha * fingerprint
                         updated_centroid /= np.linalg.norm(updated_centroid)
                         self.speakers[best_match][0] = updated_centroid
+                        
+                        # Update M3 voice node with new fingerprint
+                        try:
+                            self.update_voice_node(best_match, [fingerprint])
+                        except Exception as e:
+                            logger.debug(f"M3 voice node update failed for {best_match}: {e}")
+                        
                         logger.debug(f"Adapted profile for {best_match} with rate {alpha:.3f} (confidence: {best_similarity:.2f})")
                     except (IndexError, KeyError) as e:
                         logger.warning(f"Could not adapt profile for {best_match}: {e}")
@@ -235,8 +258,25 @@ class AutoEnrollVoiceRecognition(LightweightVoiceRecognition):
             centroid = np.mean(fingerprints, axis=0)
             centroid /= np.linalg.norm(centroid)
 
+            # Legacy speaker storage
             self.speakers[speaker_name] = [centroid]
             self._save_auto_profile(speaker_name, [centroid])
+            
+            # Create M3-AudioGraph voice node for enrolled speaker
+            try:
+                voice_node_created = self.create_voice_node(
+                    speaker_name, 
+                    fingerprints,  # Use all fingerprints, not just centroid
+                    f"Auto-enrolled speaker with {avg_consistency:.2f} consistency"
+                )
+                
+                if voice_node_created:
+                    logger.debug(f"🧠 Created M3 voice node for auto-enrolled speaker: {speaker_name}")
+                else:
+                    logger.debug(f"M3 voice node creation skipped for {speaker_name} (integration disabled)")
+                    
+            except Exception as e:
+                logger.error(f"Failed to create M3 voice node for {speaker_name}: {e}")
             
             self.current_speaker = speaker_name
             self.last_enrollment_time = datetime.now()
