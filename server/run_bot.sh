@@ -162,7 +162,7 @@ fi
 # ---------------------------------------------
 # Simplified high-level configuration switches
 # ---------------------------------------------
-# MEMORY_BACKEND: sqlite | surreal | stateless
+# MEMORY_BACKEND: sqlite | surreal | stateless | m3
 MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
 # GREETING_MODE: pipeline | model | off
 GREETING_MODE=${GREETING_MODE:-pipeline}
@@ -172,8 +172,23 @@ FACTS_PROMPT_STYLE=${FACTS_PROMPT_STYLE:-clean}
 # RESPONSE_FORMATTER_MODE: off | minimal | full
 RESPONSE_FORMATTER_MODE=${RESPONSE_FORMATTER_MODE:-off}
 
+# M3 Memory Configuration
+export M3_MEMORY_ENABLED=${M3_MEMORY_ENABLED:-false}
+export M3_NAMESPACE=${M3_NAMESPACE:-slowcat}
+export M3_DATABASE=${M3_DATABASE:-m3_memory}
+export M3_EMBEDDING_MODEL=${M3_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+export M3_CLIP_DURATION_SECONDS=${M3_CLIP_DURATION_SECONDS:-30}
+export M3_EDGE_THRESHOLD=${M3_EDGE_THRESHOLD:-0.7}
+export M3_DECAY_RATE=${M3_DECAY_RATE:-0.01}
+export M3_AUTO_CREATE_EDGES=${M3_AUTO_CREATE_EDGES:-true}
+export M3_MAX_EDGES_PER_NODE=${M3_MAX_EDGES_PER_NODE:-5}
+
 # Map high-level switches to detailed flags
 case "$MEMORY_BACKEND" in
+  m3)
+    export M3_MEMORY_ENABLED=true
+    export USE_SURREALDB=true  # M3 requires SurrealDB
+    export USE_STATELESS_MEMORY=false ;;
   surreal)
     export USE_SURREALDB=true ;;
   stateless)
@@ -210,15 +225,35 @@ esac
 USE_SURREALDB=${USE_SURREALDB:-${USE_SLOWCAT_MEMORY:-false}}
 
 if [ "$USE_SURREALDB" = "true" ]; then
-    echo "   Using SURREALDB memory system (multi-model, time-travel)"
-    export USE_SURREALDB=true
+    if [ "$M3_MEMORY_ENABLED" = "true" ]; then
+        echo "   Using M3 MEMORY system (graph-based, Apple Silicon optimized)"
+        
+        # Set M3-specific SurrealDB configuration
+        export SURREALDB_URL="${SURREALDB_URL:-ws://127.0.0.1:8000/rpc}"
+        export SURREALDB_USER="${SURREALDB_USER:-root}"
+        export SURREALDB_PASS="${SURREALDB_PASS:-slowcat_secure_2024}"
+        export SURREALDB_NAMESPACE="${SURREALDB_NAMESPACE:-$M3_NAMESPACE}"
+        export SURREALDB_DATABASE="${SURREALDB_DATABASE:-$M3_DATABASE}"
+        
+        echo "   M3 Configuration:"
+        echo "     - Namespace: $SURREALDB_NAMESPACE"
+        echo "     - Database: $SURREALDB_DATABASE"  
+        echo "     - Clip duration: ${M3_CLIP_DURATION_SECONDS}s"
+        echo "     - Edge threshold: $M3_EDGE_THRESHOLD"
+        echo "     - Auto-create edges: $M3_AUTO_CREATE_EDGES"
+        echo "     - Max edges per node: $M3_MAX_EDGES_PER_NODE"
+    else
+        echo "   Using SURREALDB memory system (multi-model, time-travel)"
+        
+        # Set standard SurrealDB configuration
+        export SURREALDB_URL="${SURREALDB_URL:-ws://127.0.0.1:8000/rpc}"
+        export SURREALDB_USER="${SURREALDB_USER:-root}"
+        export SURREALDB_PASS="${SURREALDB_PASS:-slowcat_secure_2024}"
+        export SURREALDB_NAMESPACE="${SURREALDB_NAMESPACE:-slowcat}"
+        export SURREALDB_DATABASE="${SURREALDB_DATABASE:-memory}"
+    fi
     
-    # Set SurrealDB configuration
-    export SURREALDB_URL="${SURREALDB_URL:-ws://127.0.0.1:8000/rpc}"
-    export SURREALDB_USER="${SURREALDB_USER:-root}"
-    export SURREALDB_PASS="${SURREALDB_PASS:-slowcat_secure_2024}"
-    export SURREALDB_NAMESPACE="${SURREALDB_NAMESPACE:-slowcat}"
-    export SURREALDB_DATABASE="${SURREALDB_DATABASE:-memory}"
+    export USE_SURREALDB=true
     
     echo "   Checking SurrealDB dependencies..."
     python -c "import surrealdb; print('   ✅ SurrealDB client available')" 2>/dev/null || {
@@ -342,6 +377,8 @@ mkdir -p data/tool_memory
 mkdir -p data/dictation
 mkdir -p data/speaker_profiles
 mkdir -p data/surrealdb
+mkdir -p data/m3_memory
+mkdir -p backups
 mkdir -p logs
 echo "✅ Directories created"
 
@@ -363,7 +400,12 @@ echo ""
 echo "🚀 Starting Slowcat Bot with comprehensive error handling..."
 echo "🔧 Arguments: $@"
 echo "🌍 Environment:"
-if [ "$USE_SURREALDB" = "true" ]; then
+if [ "$M3_MEMORY_ENABLED" = "true" ]; then
+    echo "   - Memory system: M3 (graph-based, Apple Silicon optimized)"
+    echo "   - SurrealDB URL: $SURREALDB_URL"
+    echo "   - M3 namespace: $SURREALDB_NAMESPACE"
+    echo "   - M3 database: $SURREALDB_DATABASE"
+elif [ "$USE_SURREALDB" = "true" ]; then
     echo "   - Memory system: SurrealDB (multi-model, time-travel)"
     echo "   - SurrealDB URL: $SURREALDB_URL"
 elif [ "$USE_STATELESS_MEMORY" = "true" ]; then
