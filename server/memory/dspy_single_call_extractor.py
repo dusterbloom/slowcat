@@ -18,10 +18,230 @@ class DSPySingleCallExtractor:
         # Allow overriding via env to try more capable local models (e.g., qwen3-4b)
         import os
         self.base_url = os.getenv("DSPY_EXTRACTION_BASE_URL", "http://localhost:1234/v1/chat/completions")
-        self.model = os.getenv("DSPY_EXTRACTION_MODEL", "qwen2.5-0.5b-instruct-mlx")
+        # Two-model strategy:
+        # - relations model (strict JSON schema)
+        # - general model (looser JSON object), used to backfill when strict fails
+        self.model_rel = os.getenv("DSPY_REL_MODEL", "qwen2.5-0.5b-instruct-mlx:2")
+        self.model_facts = os.getenv("DSPY_FACTS_MODEL", "qwen2.5-0.5b-instruct-mlx")
     
+    def _call_chat(self, model: str, messages: List[Dict[str, str]], response_format: Dict[str, Any], max_tokens: int = 300) -> Dict[str, Any]:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.05,
+            "stream": False,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0,
+            "top_p": 0.9,
+            "response_format": response_format,
+        }
+        response = requests.post(
+            self.base_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=15
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text}")
+        return response.json()
+
+    def _parse_strict_relations(self, raw: str) -> List[Dict[str, Any]]:
+        """Parse the simple array format from qwen2.5-0.5b-instruct-mlx:2"""
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                # Convert string facts to relation objects
+                relations = []
+                for fact_str in parsed:
+                    if isinstance(fact_str, str) and len(fact_str.strip()) > 0:
+                        # Parse "subject predicate object" format
+                        parts = fact_str.strip().split(None, 2)  # Split on first 2 spaces
+                        if len(parts) >= 3:
+                            relations.append({
+                                'subject': parts[0],
+                                'predicate': parts[1], 
+                                'object': parts[2],
+                                'confidence': 0.8
+                            })
+                return relations
+            return []
+        except json.JSONDecodeError:
+            # Try to extract array from truncated JSON
+            start = raw.find('[')
+            end = raw.rfind(']')
+            if start != -1 and end != -1 and end > start:
+                try:
+                    parsed2 = json.loads(raw[start:end+1])
+                    if isinstance(parsed2, list):
+                        relations = []
+                        for fact_str in parsed2:
+                            if isinstance(fact_str, str) and len(fact_str.strip()) > 0:
+                                parts = fact_str.strip().split(None, 2)
+                                if len(parts) >= 3:
+                                    relations.append({
+                                        'subject': parts[0],
+                                        'predicate': parts[1],
+                                        'object': parts[2], 
+                                        'confidence': 0.8
+                                    })
+                        return relations
+                except json.JSONDecodeError:
+                    return []
+            return []
+    
+    def _parse_general_relations(self, raw: str) -> List[Dict[str, Any]]:
+        """Parse the complex object format from qwen2.5-0.5b-instruct-mlx"""
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                # Extract relationships from the complex schema
+                relationships = parsed.get("relationships", [])
+                if isinstance(relationships, list):
+                    # Convert to our standard format with confidence
+                    relations = []
+                    for rel in relationships:
+                        if isinstance(rel, dict) and all(key in rel for key in ['subject', 'predicate', 'object']):
+                            relations.append({
+                                'subject': rel['subject'],
+                                'predicate': rel['predicate'],
+                                'object': rel['object'],
+                                'confidence': 0.7  # Default confidence
+                            })
+                    return relations
+            return []
+        except json.JSONDecodeError:
+            # Try to extract object from truncated JSON
+            start = raw.find('{')
+            end = raw.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                try:
+                    parsed2 = json.loads(raw[start:end+1])
+                    if isinstance(parsed2, dict):
+                        relationships = parsed2.get("relationships", [])
+                        if isinstance(relationships, list):
+                            relations = []
+                            for rel in relationships:
+                                if isinstance(rel, dict) and all(key in rel for key in ['subject', 'predicate', 'object']):
+                                    relations.append({
+                                        'subject': rel['subject'],
+                                        'predicate': rel['predicate'],
+                                        'object': rel['object'],
+                                        'confidence': 0.7
+                                    })
+                            return relations
+                except json.JSONDecodeError:
+                    return []
+            return []
+
+    def extract_relations_strict(self, text: str) -> List[Dict[str, Any]]:
+        """Extract relations using strict JSON schema (simple array format for qwen2.5-0.5b-instruct-mlx:2)."""
+        prompt = f"""Extract knowledge facts from this text in 'subject predicate object' format.
+
+Rules:
+- For personal statements (I, my, we): use 'user' as subject
+- Use simple predicates: likes, prefers, has_pet, works_at, lives_in
+- Keep objects specific and short (1-3 words)
+- Return array of fact strings like: ["user likes samples", "user prefers hip-hop"]
+- If no clear facts, return empty array: []
+
+Text: "{text}"
+
+Return JSON array of fact strings:"""
+
+        messages = [
+            {"role": "system", "content": "You are a precise fact extractor. Extract only what is clearly stated in the text. Return valid JSON array."},
+            {"role": "user", "content": prompt},
+        ]
+        # Use the correct schema for qwen2.5-0.5b-instruct-mlx:2 (simple array format)
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "speaker_facts",
+                "schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Array of speaker facts in 'subject predicate object' format"
+                }
+            }
+        }
+        result = self._call_chat(self.model_rel, messages, response_format)
+        content = result["choices"][0]["message"]["content"]
+        return self._parse_strict_relations(content)
+
+    def extract_relations_general(self, text: str) -> List[Dict[str, Any]]:
+        """Extract relations using general model (complex object format for qwen2.5-0.5b-instruct-mlx)."""
+        prompt = f"""Analyze this text and extract structured knowledge.
+
+Text: "{text}"
+
+Return JSON with:
+- facts: concrete statements from the text
+- concepts: important topics mentioned
+- relationships: connections between entities (subject/predicate/object)
+- domain: classify as personal, technical, general, or creative
+
+Focus on what's actually stated in the text. Be conservative."""
+
+        messages = [
+            {"role": "system", "content": "You are a knowledge extraction system. Analyze the text and return structured JSON. Be conservative and accurate."},
+            {"role": "user", "content": prompt},
+        ]
+        # Use the correct schema for qwen2.5-0.5b-instruct-mlx (complex object format)
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "knowledge_extraction",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "facts": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Concrete factual statements from the text"
+                        },
+                        "concepts": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Important topics, entities, or ideas mentioned"
+                        },
+                        "relationships": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "subject": {"type": "string"},
+                                    "predicate": {"type": "string"},
+                                    "object": {"type": "string"}
+                                },
+                                "required": ["subject", "predicate", "object"],
+                                "additionalProperties": false
+                            },
+                            "description": "Relationships between entities"
+                        },
+                        "domain": {
+                            "type": "string",
+                            "enum": ["personal", "technical", "general", "creative"],
+                            "description": "Knowledge domain classification"
+                        }
+                    },
+                    "required": ["facts", "concepts", "relationships", "domain"],
+                    "additionalProperties": false
+                }
+            }
+        }
+        result = self._call_chat(self.model_facts, messages, response_format)
+        content = result["choices"][0]["message"]["content"]
+        return self._parse_general_relations(content)
+
     def extract_facts(self, text: str) -> List[Dict[str, Any]]:
-        """Extract both factual and personal relations in ONE optimized call"""
+        """Extract both factual and personal relations using two-model strategy."""
         
         start_time = time.perf_counter()
         print(f"🔍 DSPy extract_facts called with: '{text}' (len={len(text)})")
@@ -55,85 +275,11 @@ Return ONLY JSON for the schema."""
 
 
         try:
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a stateless assistant. Forget everything from previous conversations. Treat each user message independently. Extract ONLY relations that appear in the current input text. Do not use information from previous examples or other contexts. Return precise JSON only."
-                    },
-                    {
-                        "role": "user", 
-                        "content": prompt
-                    }
-                ],
-                # Allow a bit more room to prevent truncation
-                "max_tokens": 300,
-                "temperature": 0.05,  # Very low for consistency
-                "stream": False,  # CRITICAL: Disable streaming to prevent JSON truncation
-                "presence_penalty": 0.0,  # No penalty for repeating concepts
-                "frequency_penalty": 0.0,  # No penalty for repeating words
-                "top_p": 0.9,  # Focus on high-probability tokens
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "comprehensive_extraction",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "relations": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "subject": {"type": "string"},
-                                            "predicate": {"type": "string"},
-                                            "object": {"type": "string"},
-                                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
-                                        },
-                                        "required": ["subject", "predicate", "object", "confidence"]
-                                    }
-                                }
-                            },
-                            "required": ["relations"]
-                        }
-                    }
-                }
-            }
-            
-            response = requests.post(
-                self.base_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=15  # Reasonable timeout
-            )
-            
-            if response.status_code != 200:
-                print(f"❌ HTTP error {response.status_code}: {response.text}")
-                return []
-            
-            result = response.json()
-            content = result["choices"][0]["message"]["content"]
-            
-            # Parse structured response with error handling
-            # Robust JSON parse with trimming if LM trails off
-            def _parse_relations(raw: str):
-                try:
-                    parsed = json.loads(raw)
-                    return parsed.get("relations", [])
-                except json.JSONDecodeError:
-                    # Try trimming to last closing brace
-                    start = raw.find('{')
-                    end = raw.rfind('}')
-                    if start != -1 and end != -1 and end > start:
-                        try:
-                            parsed2 = json.loads(raw[start:end+1])
-                            return parsed2.get("relations", [])
-                        except json.JSONDecodeError:
-                            return []
-                    return []
-
-            relations = _parse_relations(content)
+            # 1) Strict relations (relations model)
+            relations = self.extract_relations_strict(text) or []
+            # 2) If empty, try general model (looser json_object)
+            if not relations:
+                relations = self.extract_relations_general(text) or []
 
             extraction_time = time.perf_counter() - start_time
             

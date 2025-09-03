@@ -10,6 +10,10 @@ from loguru import logger
 
 # Import our best production DSPy extractor
 from memory.dspy_single_call_extractor import DSPySingleCallExtractor
+try:
+    from memory.dspy_lmstudio_extractor import LMStudioFactExtractor
+except Exception:
+    LMStudioFactExtractor = None
 
 # Global extractor instance (initialized once)
 _dspy_extractor = None
@@ -21,10 +25,16 @@ def get_dspy_extractor():
     
     if _dspy_extractor is None:
         try:
-            _dspy_extractor = DSPySingleCallExtractor()
-            logger.info("🚀 DSPy fact extractor initialized successfully")
+            # Switch to DSPySingleCallExtractor for better quality
+            mode = os.getenv('DSPY_EXTRACTOR_MODE', 'dspy').lower()  # lmstudio | dspy
+            if mode == 'lmstudio' and LMStudioFactExtractor is not None:
+                _dspy_extractor = LMStudioFactExtractor()
+                logger.info("🚀 Using LMStudioFactExtractor (legacy working pipeline)")
+            else:
+                _dspy_extractor = DSPySingleCallExtractor()
+                logger.info("🚀 Using DSPySingleCallExtractor (improved prompts)")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize DSPy extractor: {e}")
+            logger.error(f"❌ Failed to initialize fact extractor: {e}")
             return None
     
     return _dspy_extractor
