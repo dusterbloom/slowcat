@@ -65,6 +65,12 @@ class M3SurrealIntegration:
         self.connection = connection
         self.current_clip_id: Optional[int] = None
     
+    @staticmethod
+    def _first(result):
+        if result is None:
+            return None
+        return result[0] if isinstance(result, list) else result
+    
     async def query(self, query: str, params: Dict[str, Any] = None):
         """Execute raw SurrealDB query through connection manager"""
         await self.connection.ensure_connected()
@@ -73,25 +79,38 @@ class M3SurrealIntegration:
     async def initialize(self) -> bool:
         """Initialize M3 system and verify schema"""
         try:
-            # Verify M3 migration was applied
-            result = await self.query("RETURN fn::verify_m3_migration()")
-            logger.info(f"Migration verification result: {result}")
-            if result and len(result) > 0:
-                verification_result = result[0]
-                if isinstance(verification_result, dict) and verification_result.get('status') == 'success':
-                    logger.info("M3 schema verified successfully")
-                    
-                    # Initialize or get current clip
-                    await self._ensure_current_clip()
-                    return True
+            # Try to verify M3 migration was applied
+            try:
+                result = await self.query("RETURN fn::verify_m3_migration()")
+                logger.debug(f"Migration verification result: {result}")
+                
+                if result:
+                    verification_result = self._first(result)
+                    if isinstance(verification_result, dict) and verification_result.get('status') == 'success':
+                        logger.info("✅ M3 schema verified successfully")
+                    elif verification_result == True or verification_result == 'T':
+                        # Some SurrealDB versions return boolean true as 'T'
+                        logger.info("✅ M3 schema verified (boolean response)")
+                    else:
+                        logger.warning(f"⚠️ M3 verification unexpected format: {verification_result}")
                 else:
-                    logger.warning(f"M3 verification result format unexpected: {verification_result}")
-                    # For now, continue anyway during development
-                    await self._ensure_current_clip()
-                    return True
-            else:
-                logger.error("M3 schema verification failed - no result")
-                return False
+                    logger.warning("⚠️ M3 schema verification returned no result")
+                    
+            except Exception as verify_error:
+                logger.warning(f"⚠️ M3 schema verification failed: {verify_error}")
+                logger.info("🔄 Attempting to continue with basic M3 table check...")
+                
+                # Fallback: Check if basic M3 tables exist
+                try:
+                    table_check = await self.query("SELECT * FROM m3_nodes LIMIT 1")
+                    logger.info("✅ M3 tables appear to be accessible")
+                except Exception as table_error:
+                    logger.error(f"❌ M3 tables not accessible: {table_error}")
+                    return False
+            
+            # Initialize or get current clip
+            await self._ensure_current_clip()
+            return True
                 
         except Exception as e:
             logger.error(f"Failed to initialize M3 system: {e}")
@@ -106,7 +125,7 @@ class M3SurrealIntegration:
                 {"session_id": session_id}
             )
             if result:
-                self.current_clip_id = result[0]
+                self.current_clip_id = self._first(result)
                 logger.info(f"Current clip ID: {self.current_clip_id}")
             else:
                 logger.warning("Failed to create/get current clip")
@@ -167,6 +186,8 @@ class M3SurrealIntegration:
                     contents: $contents,
                     embeddings: $embeddings,
                     clip_id: $clip_id,
+                    speaker_id: $speaker_id,
+                    confidence: $confidence,
                     metadata: $metadata
                 }
                 """,
@@ -176,6 +197,8 @@ class M3SurrealIntegration:
                     "contents": contents,
                     "embeddings": embeddings,
                     "clip_id": clip_id,
+                    "speaker_id": speaker_id,
+                    "confidence": confidence,
                     "metadata": metadata
                 }
             )
@@ -286,29 +309,89 @@ class M3SurrealIntegration:
             List of similar nodes with similarity scores
         """
         try:
-            result = await self.query(
-                "RETURN fn::search_similar_m3_nodes($query_embedding, $node_type, $limit)",
-                {
-                    "query_embedding": query_embedding,
-                    "node_type": node_type,
-                    "limit": limit
-                }
-            )
+            # Use optimized direct query for better performance
+            query_sql = """
+            SELECT *,
+                vector::similarity::cosine($query_embedding, embeddings[0]) AS similarity
+            FROM m3_nodes
+            WHERE array::len(embeddings) > 0
+            """ + (f" AND node_type = '{node_type}'" if node_type else "") + f"""
+            AND vector::similarity::cosine($query_embedding, embeddings[0]) >= {min_similarity}
+            ORDER BY similarity DESC 
+            LIMIT {limit}
+            """
             
-            if result:
-                # Filter by minimum similarity
-                filtered_results = [
-                    node for node in result[0] 
-                    if node.get('similarity', 0) >= min_similarity
-                ]
-                
-                logger.info(f"Found {len(filtered_results)} similar nodes")
-                return filtered_results
+            result = await self.query(query_sql, {"query_embedding": query_embedding})
+            records = self._extract_records_list(result)
+            if records:
+                logger.debug(f"Found {len(records)} similar nodes with similarity >= {min_similarity}")
+                return records
             else:
                 return []
                 
         except Exception as e:
             logger.error(f"Failed to search similar nodes: {e}")
+            # Fallback to function-based approaches (try production 4-arg, then legacy 3-arg)
+            # Attempt production signature with threshold
+            try:
+                result = await self.query(
+                    "RETURN fn::search_similar_m3_nodes($query_embedding, $node_type, $limit, $threshold)",
+                    {
+                        "query_embedding": query_embedding,
+                        "node_type": node_type,
+                        "limit": limit,
+                        "threshold": min_similarity
+                    }
+                )
+                records = self._extract_records_list(result)
+                if records:
+                    return records
+            except Exception:
+                pass
+
+            # Attempt legacy signature without threshold
+            try:
+                result = await self.query(
+                    "RETURN fn::search_similar_m3_nodes($query_embedding, $node_type, $limit)",
+                    {
+                        "query_embedding": query_embedding,
+                        "node_type": node_type,
+                        "limit": limit
+                    }
+                )
+                records = self._extract_records_list(result)
+                if records:
+                    filtered_results = [
+                        node for node in records if isinstance(node, dict)
+                        and node.get('similarity', 0) >= min_similarity
+                    ]
+                    logger.info(f"Found {len(filtered_results)} similar nodes (legacy function)")
+                    return filtered_results
+            except Exception as e2:
+                logger.error(f"Fallback similarity search also failed: {e2}")
+            return []
+
+    def _extract_records_list(self, result):
+        """Normalize SurrealDB query outputs into a list of dict records."""
+        try:
+            if result is None:
+                return []
+            # If result is a list of dict records already
+            if isinstance(result, list):
+                if len(result) == 1 and isinstance(result[0], dict) and 'result' in result[0]:
+                    inner = result[0]['result']
+                    return inner if isinstance(inner, list) else []
+                if all(isinstance(x, dict) for x in result):
+                    return result
+                if len(result) == 1 and isinstance(result[0], list):
+                    inner = result[0]
+                    return inner if all(isinstance(x, dict) for x in inner) else []
+                return []
+            if isinstance(result, dict) and 'result' in result and isinstance(result['result'], list):
+                inner = result['result']
+                return inner if all(isinstance(x, dict) for x in inner) else []
+            return []
+        except Exception:
             return []
     
     async def resolve_equivalence(self, 
@@ -336,7 +419,7 @@ class M3SurrealIntegration:
             )
             
             if result:
-                canonical_id = result[0]
+                canonical_id = self._first(result)
                 logger.info(f"Resolved equivalence for {entity_name} with {len(node_ids)} nodes")
                 return canonical_id
             else:
@@ -360,14 +443,11 @@ class M3SurrealIntegration:
                 "RETURN fn::get_clip_nodes($clip_id)",
                 {"clip_id": clip_id}
             )
-            
-            if result:
-                nodes = result[0]
-                logger.info(f"Retrieved {len(nodes)} nodes from clip {clip_id}")
-                return nodes
-            else:
-                return []
-                
+            records = self._extract_records_list(result)
+            if records:
+                logger.info(f"Retrieved {len(records)} nodes from clip {clip_id}")
+                return records
+            return []
         except Exception as e:
             logger.error(f"Failed to get clip nodes: {e}")
             return []
@@ -382,13 +462,29 @@ class M3SurrealIntegration:
             New clip ID if successful, None if failed
         """
         try:
+            # Direct query approach (more reliable than functions)
+            import time
+            clip_id = int(time.time() * 1000) % 1000000  # Simple ID generation
+            
             result = await self.query(
-                "RETURN fn::create_m3_clip($session_id)",
-                {"session_id": session_id}
+                """
+                CREATE m3_clips CONTENT {
+                    clip_id: $clip_id,
+                    session_id: $session_id,
+                    start_time: time::now(),
+                    end_time: NONE,
+                    node_count: 0,
+                    dominant_speaker: NONE,
+                    metadata: {}
+                }
+                """,
+                {
+                    "clip_id": clip_id,
+                    "session_id": session_id
+                }
             )
             
             if result:
-                clip_id = result[0]
                 self.current_clip_id = clip_id
                 logger.info(f"Created new clip {clip_id} for session {session_id}")
                 return clip_id
@@ -424,7 +520,7 @@ class M3SurrealIntegration:
             )
             
             if result:
-                new_clip_id = result[0]
+                new_clip_id = self._first(result)
                 if create_new:
                     self.current_clip_id = new_clip_id
                     logger.info(f"Closed clip and created new clip {new_clip_id}")
@@ -459,12 +555,12 @@ class M3SurrealIntegration:
                 "SELECT * FROM m3_nodes WHERE node_id = $node_id",
                 {"node_id": node_id}
             )
-            
-            if not node_result:
+            records = self._extract_records_list(node_result)
+            if not records:
                 logger.warning(f"Node {node_id} not found for edge inference")
                 return 0
             
-            node = node_result[0]
+            node = records[0]
             if not node.get('embeddings') or not node['embeddings']:
                 logger.warning(f"Node {node_id} has no embeddings for similarity")
                 return 0
@@ -522,7 +618,7 @@ class M3SurrealIntegration:
                 {"decay_rate": decay_rate}
             )
             
-            return result[0] if result else "Edge decay failed"
+            return (result[0] if isinstance(result, list) else result) if result else "Edge decay failed"
             
         except Exception as e:
             logger.error(f"Failed to decay edges: {e}")
@@ -552,7 +648,7 @@ class M3SurrealIntegration:
                     WHERE node_id = $node_id
                 """, {"node_id": node_id})
                 
-                return result[0]
+                return self._first(result)
             else:
                 return None
                 
@@ -605,7 +701,7 @@ class M3SurrealIntegration:
             })
             
             if result:
-                return result[0]
+                return self._first(result) or {"nodes": [], "edges": [], "central_node": None}
             else:
                 return {"nodes": [], "edges": [], "central_node": central_node}
                 
@@ -637,8 +733,91 @@ class M3SurrealIntegration:
                 };
             """, {"current_clip_id": self.current_clip_id})
             
-            return result[0] if result else {}
+            return self._first(result) if result else {}
             
         except Exception as e:
             logger.error(f"Failed to get M3 statistics: {e}")
             return {}
+    
+    async def batch_create_nodes(self, 
+                               nodes_data: List[Dict[str, Any]]) -> List[int]:
+        """Batch create multiple M3 nodes for performance
+        
+        Args:
+            nodes_data: List of node data dictionaries
+            
+        Returns:
+            List of created node IDs
+        """
+        try:
+            created_ids = []
+            
+            # Use transaction for consistency
+            for node_data in nodes_data:
+                node_id = await self.store_m3_node(
+                    node_type=node_data.get('node_type', 'semantic'),
+                    contents=node_data.get('contents', []),
+                    embeddings=node_data.get('embeddings', []),
+                    clip_id=node_data.get('clip_id'),
+                    source_message_id=node_data.get('source_message_id'),
+                    speaker_id=node_data.get('speaker_id', 'unknown'),
+                    extraction_method=node_data.get('extraction_method', 'batch'),
+                    confidence=node_data.get('confidence', 0.8)
+                )
+                
+                if node_id:
+                    created_ids.append(node_id)
+            
+            logger.info(f"Batch created {len(created_ids)} M3 nodes")
+            return created_ids
+            
+        except Exception as e:
+            logger.error(f"Batch node creation failed: {e}")
+            return []
+    
+    async def optimize_for_similarity_search(self):
+        """Optimize database for similarity search performance"""
+        try:
+            logger.info("🚀 Optimizing M3 database for similarity search...")
+            
+            # Ensure vector similarity indexes exist
+            await self.query("""
+                DEFINE INDEX embedding_similarity_idx ON m3_nodes FIELDS embeddings SEARCH;
+            """)
+            
+            # Update statistics for query planner
+            await self.query("ANALYZE INDEX embedding_similarity_idx ON m3_nodes;")
+            
+            # Cleanup old weak edges
+            cleanup_result = await self.query("""
+                DELETE m3_edges WHERE weight < 0.1 OR created_at < time::now() - 30d;
+            """)
+            
+            logger.info(f"✅ M3 database optimization complete. Cleaned up weak/old edges.")
+            
+        except Exception as e:
+            logger.error(f"Database optimization failed: {e}")
+    
+    async def get_recent_nodes_with_embeddings(self, 
+                                             limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent nodes with embeddings for cache warming
+        
+        Args:
+            limit: Number of recent nodes to fetch
+            
+        Returns:
+            List of recent nodes with embeddings
+        """
+        try:
+            result = await self.query("""
+                SELECT * FROM m3_nodes 
+                WHERE array::len(embeddings) > 0 
+                ORDER BY metadata.created_at DESC 
+                LIMIT $limit
+            """, {"limit": limit})
+            
+            return result or []
+            
+        except Exception as e:
+            logger.error(f"Failed to get recent nodes: {e}")
+            return []

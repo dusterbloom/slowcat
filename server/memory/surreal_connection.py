@@ -660,24 +660,50 @@ class SurrealConnectionManager:
         try:
             await self.ensure_connected()
             
-            # Use proper SurrealDB COUNT aggregation with GROUP ALL for single result
-            result = await self.db.query(
-                "SELECT count() AS session_count FROM sessions WHERE speaker_id = $speaker_id GROUP ALL;",
+            # Get sessions count and first_seen
+            sess_res = await self.db.query(
+                "SELECT count() AS session_count, math::min(start_time) AS first_seen FROM sessions WHERE speaker_id = $speaker_id GROUP ALL;",
                 {'speaker_id': speaker_id}
             )
-            
-            logger.debug(f"Session count query result for {speaker_id}: {result}")
-            
+            logger.debug(f"Session info query (sessions) for {speaker_id}: {sess_res}")
+
             session_count = 0
-            if result and len(result) > 0:
-                # SurrealDB COUNT returns format: [{"session_count": N}] 
-                count_record = result[0]  # First query result
-                session_count = count_record.get('session_count', 0)
-                logger.debug(f"Found {session_count} sessions for {speaker_id}")
-            
+            first_seen = None
+            if isinstance(sess_res, list) and sess_res:
+                rec = sess_res[0]
+                session_count = rec.get('session_count', 0)
+                first_seen = rec.get('first_seen')
+
+            # Get last interaction from messages
+            msg_res = await self.db.query(
+                "SELECT math::max(timestamp) AS last_interaction FROM messages WHERE speaker_id = $speaker_id GROUP ALL;",
+                {'speaker_id': speaker_id}
+            )
+            logger.debug(f"Session info query (messages) for {speaker_id}: {msg_res}")
+
+            last_interaction = None
+            if isinstance(msg_res, list) and msg_res:
+                rec2 = msg_res[0]
+                last_interaction = rec2.get('last_interaction')
+
+            # Convert datetimes to epoch seconds if needed
+            def _to_ts(dt):
+                try:
+                    from datetime import datetime
+                    if isinstance(dt, datetime):
+                        return dt.timestamp()
+                    return None
+                except Exception:
+                    return None
+
+            first_seen_ts = _to_ts(first_seen)
+            last_interaction_ts = _to_ts(last_interaction)
+
             return {
                 'speaker_id': speaker_id,
-                'session_count': session_count,
+                'session_count': int(session_count or 0),
+                'first_seen': first_seen_ts,
+                'last_interaction': last_interaction_ts,
                 'type': 'SurrealDB'
             }
             
@@ -686,6 +712,8 @@ class SurrealConnectionManager:
             return {
                 'speaker_id': speaker_id,
                 'session_count': 0,
+                'first_seen': None,
+                'last_interaction': None,
                 'type': 'SurrealDB'
             }
     

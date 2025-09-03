@@ -808,12 +808,32 @@ class PipelineBuilder:
         return task
     
     def _create_smart_context_manager(self, context, memory_processor):
-        """Create Smart Context Manager with consciousness integration"""
+        """Create Smart Context Manager with optional M3 integration"""
         import os
         
         # Get user_id from environment or use default
         user_id = os.getenv('USER_ID', 'default_user')
         
+        # Use M3-integrated context manager if enabled, otherwise use standard
+        if config.m3.enabled and config.m3.use_m3_context:
+            logger.info("🧠 Creating M3-integrated context manager...")
+            try:
+                from processors.m3_integrated_context_manager import M3IntegratedContextManager
+                return M3IntegratedContextManager(
+                    context=context,
+                    config=config.m3,
+                    max_tokens=config.m3.max_context_tokens,
+                    facts_db_path=config.memory.facts_db_path
+                )
+            except Exception as e:
+                logger.error(f"❌ M3 context manager creation failed: {e}")
+                if config.m3.fallback_to_standard_memory:
+                    logger.info("🔄 Falling back to standard SmartContextManager")
+                else:
+                    raise
+        
+        # Standard SmartContextManager (fallback or when M3 disabled)
+        logger.info("📝 Creating standard SmartContextManager...")
         return create_smart_context_manager(
             context=context,
             facts_db_path=config.memory.facts_db_path,
@@ -837,8 +857,17 @@ class PipelineBuilder:
         try:
             import os
             
-            # Check if M3 is enabled
-            if not os.getenv('M3_MEMORY_ENABLED', 'false').lower() == 'true':
+            # Check if M3 memory processing is enabled
+            env_flag = os.getenv('M3_MEMORY_ENABLED', '').lower()
+            cfg_enabled = False
+            try:
+                from config import config as main_config
+                cfg_enabled = getattr(main_config, 'm3', None) and (
+                    getattr(main_config.m3, 'enabled', False) or getattr(main_config.m3, 'use_m3_context', False)
+                )
+            except Exception:
+                cfg_enabled = False
+            if not (env_flag == 'true' or cfg_enabled):
                 return None
             
             logger.info("🧠 Initializing M3 Memory System...")

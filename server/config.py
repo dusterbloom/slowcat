@@ -118,6 +118,38 @@ class MemoryConfig:
     file_extension: str = ".json"  # Memory file extension
 
 
+@dataclass
+class M3Config:
+    """M3 (Multimodal Memory Management) configuration"""
+    # Core M3 settings
+    enabled: bool = field(default_factory=lambda: os.getenv("ENABLE_M3", "false").lower() == "true")
+    use_m3_context: bool = field(default_factory=lambda: os.getenv("USE_M3_CONTEXT", "false").lower() == "true")
+    
+    # SurrealDB connection settings
+    surrealdb_host: str = field(default_factory=lambda: os.getenv("SURREALDB_HOST", "localhost"))
+    surrealdb_port: int = field(default_factory=lambda: int(os.getenv("SURREALDB_PORT", "8000")))
+    surrealdb_namespace: str = field(default_factory=lambda: os.getenv("SURREALDB_NAMESPACE", "slowcat"))
+    surrealdb_database: str = field(default_factory=lambda: os.getenv("SURREALDB_DATABASE", "memory_graph"))
+    
+    # M3 retrieval settings
+    max_context_tokens: int = field(default_factory=lambda: int(os.getenv("M3_MAX_CONTEXT_TOKENS", "4096")))
+    memory_tokens: int = field(default_factory=lambda: int(os.getenv("M3_MEMORY_TOKENS", "2000")))
+    similarity_threshold: float = field(default_factory=lambda: float(os.getenv("M3_SIMILARITY_THRESHOLD", "0.7")))
+    max_retrieval_items: int = field(default_factory=lambda: int(os.getenv("M3_MAX_RETRIEVAL_ITEMS", "20")))
+    
+    # Context retrieval strategy
+    retrieval_strategy: str = field(default_factory=lambda: os.getenv("M3_RETRIEVAL_STRATEGY", "hybrid"))
+    enable_equivalence_resolution: bool = field(default_factory=lambda: os.getenv("M3_ENABLE_EQUIVALENCE", "true").lower() == "true")
+    
+    # Performance settings  
+    embedding_cache_size: int = field(default_factory=lambda: int(os.getenv("M3_EMBEDDING_CACHE_SIZE", "1000")))
+    connection_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("M3_CONNECTION_TIMEOUT", "10")))
+    query_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("M3_QUERY_TIMEOUT", "5")))
+    
+    # Graceful degradation
+    fallback_to_standard_memory: bool = field(default_factory=lambda: os.getenv("M3_FALLBACK_TO_STANDARD", "true").lower() == "true")
+    startup_retry_attempts: int = field(default_factory=lambda: int(os.getenv("M3_STARTUP_RETRIES", "3")))
+    startup_retry_delay_seconds: int = field(default_factory=lambda: int(os.getenv("M3_STARTUP_RETRY_DELAY", "2")))
 
 
 @dataclass
@@ -715,6 +747,7 @@ class Config:
     models: ModelConfig = field(default_factory=ModelConfig)
     voice_recognition: VoiceRecognitionConfig = field(default_factory=VoiceRecognitionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    m3: M3Config = field(default_factory=M3Config)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     conversation_timer: ConversationTimerConfig = field(default_factory=ConversationTimerConfig)
     dictation_mode: DictationModeConfig = field(default_factory=DictationModeConfig)

@@ -316,8 +316,8 @@ async def ensure_schema_functions(connection_manager: SurrealConnectionManager =
                     THROW "Entity merged into existing: " + <string>$existing.id;
                 };
                 
-                -- Set the cleaned canonical name
-                SET $value.canonical_name = $clean;
+                -- Return updated record with cleaned canonical name
+                RETURN object::set($value, 'canonical_name', $clean);
             };
         """)
         logger.debug("✅ SOTA normalize_entity event applied")

@@ -19,6 +19,7 @@ import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
+from collections import defaultdict
 from loguru import logger
 import os
 
@@ -558,21 +559,113 @@ class TapeStoreAdapter(MemoryStoreInterface):
 
 
 class EmbeddingStoreAdapter(MemoryStoreInterface):
-    """Adapter for semantic/embedding-based search (placeholder)"""
+    """Adapter for semantic/embedding-based search using M3 system"""
     
-    def __init__(self, embedding_store=None):
-        self.embedding_store = embedding_store
+    def __init__(self, embedding_store=None, m3_context_retriever=None):
+        self.embedding_store = embedding_store  # Legacy support
+        self.m3_context_retriever = m3_context_retriever
     
     async def search(self, query: str, limit: int = 10, **kwargs) -> List[MemoryResult]:
-        """Semantic search using embeddings"""
-        # Placeholder - will integrate with FAISS or similar
-        return []
+        """Semantic search using M3 context retrieval system"""
+        try:
+            if self.m3_context_retriever:
+                # Use M3 context retriever for intelligent semantic search
+                from .m3_context_retriever import ContextType, RetrievalStrategy
+                
+                # Determine context type based on kwargs
+                context_type = kwargs.get('context_type')
+                if isinstance(context_type, str):
+                    context_type = getattr(ContextType, context_type.upper(), None)
+                
+                # Retrieve context using M3 system
+                retrieval_result = await self.m3_context_retriever.retrieve_context(
+                    query=query,
+                    context_type=context_type,
+                    max_items=limit,
+                    strategy=RetrievalStrategy.SIMILARITY_FIRST,
+                    entity_filter=kwargs.get('entity_filter'),
+                    time_range=kwargs.get('time_range')
+                )
+                
+                # Convert M3 context items to MemoryResult format
+                results = []
+                for item in retrieval_result.items:
+                    result = MemoryResult(
+                        content=item.content,
+                        source_store='m3_semantic',
+                        relevance_score=item.relevance_score,
+                        timestamp=item.timestamp,
+                        metadata={
+                            'node_id': item.node_id,
+                            'context_type': item.context_type.value,
+                            'source_clip_id': item.source_clip_id,
+                            'entity_refs': item.entity_refs,
+                            'retrieval_strategy': retrieval_result.retrieval_strategy.value
+                        }
+                    )
+                    results.append(result)
+                
+                logger.debug(f"🧠 M3 semantic search found {len(results)} results for: '{query[:50]}...'")
+                return results
+            
+            elif self.embedding_store:
+                # Fallback to legacy embedding store
+                logger.debug("Using legacy embedding store (placeholder)")
+                return []
+            
+            else:
+                logger.warning("No M3 context retriever or embedding store available")
+                return []
+                
+        except Exception as e:
+            logger.error(f"M3 semantic search failed: {e}")
+            return []
     
     async def get_recent(self, limit: int = 10, since: float = None) -> List[MemoryResult]:
-        return []
+        """Get recent semantic memories"""
+        try:
+            if self.m3_context_retriever:
+                from .m3_context_retriever import ContextType, RetrievalStrategy
+                
+                # Build temporal query
+                time_range = None
+                if since:
+                    time_range = (since, time.time())
+                
+                retrieval_result = await self.m3_context_retriever.retrieve_context(
+                    query="recent memories",
+                    context_type=ContextType.RECENT,
+                    max_items=limit,
+                    strategy=RetrievalStrategy.TEMPORAL_FIRST,
+                    time_range=time_range
+                )
+                
+                # Convert to MemoryResult format
+                results = []
+                for item in retrieval_result.items:
+                    result = MemoryResult(
+                        content=item.content,
+                        source_store='m3_recent',
+                        relevance_score=item.relevance_score,
+                        timestamp=item.timestamp,
+                        metadata={
+                            'node_id': item.node_id,
+                            'context_type': item.context_type.value,
+                            'source_clip_id': item.source_clip_id
+                        }
+                    )
+                    results.append(result)
+                
+                return results
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"M3 recent search failed: {e}")
+            return []
     
     def get_store_name(self) -> str:
-        return "Semantic Search"
+        return "M3 Semantic Search" if self.m3_context_retriever else "Legacy Semantic Search"
 
 
 class QueryRouter:
@@ -891,6 +984,79 @@ def create_query_router(facts_graph = None,
             )
     except Exception as e:
         logger.warning(f"Router thresholds env override failed: {e}")
+    return router
+
+
+def create_m3_query_router(m3_context_retriever=None,
+                          facts_graph=None,
+                          tape_store=None,
+                          config: Optional[Dict] = None) -> QueryRouter:
+    """
+    Create M3-enabled query router with intelligent context retrieval
+    
+    Args:
+        m3_context_retriever: M3ContextRetriever instance
+        facts_graph: Facts graph (optional, can be None)
+        tape_store: Tape store for conversation history
+        config: Optional configuration overrides
+        
+    Returns:
+        M3-enabled QueryRouter instance
+    """
+    # Create memory store adapters
+    stores = {}
+    
+    if facts_graph:
+        stores['facts'] = FactsStoreAdapter(facts_graph)
+    
+    if tape_store:
+        stores['tape'] = TapeStoreAdapter(tape_store)
+    
+    # Create M3-enabled embedding store
+    if m3_context_retriever:
+        stores['embeddings'] = EmbeddingStoreAdapter(
+            embedding_store=None,  # No legacy store
+            m3_context_retriever=m3_context_retriever
+        )
+        logger.info("🧠 Created M3-enabled embedding store adapter")
+    
+    # Create router with M3 stores
+    router = QueryRouter.__new__(QueryRouter)
+    router.classifier = create_query_classifier()
+    router.stores = stores
+    
+    # M3-optimized confidence thresholds (from M3 paper)
+    router.thresholds = {
+        'high_confidence': 0.85,   # Direct routing confidence
+        'medium_confidence': 0.65, # Fallback routing confidence  
+        'low_confidence': 0.45,    # Hybrid search confidence
+        'bypass_threshold': 0.25   # Skip memory threshold
+    }
+    
+    # Initialize performance tracking
+    router.total_queries = 0
+    router.avg_response_time_ms = 0.0
+    router.routing_stats = defaultdict(int)
+    
+    # Apply environment overrides
+    import os
+    try:
+        hi = os.getenv('ROUTER_THRESHOLD_HIGH')
+        med = os.getenv('ROUTER_THRESHOLD_MED')
+        low = os.getenv('ROUTER_THRESHOLD_LOW')
+        if hi or med or low:
+            if hi:
+                router.thresholds['high_confidence'] = float(hi)
+            if med:
+                router.thresholds['medium_confidence'] = float(med)
+            if low:
+                router.thresholds['low_confidence'] = float(low)
+    except Exception as e:
+        logger.warning(f"M3 router thresholds env override failed: {e}")
+    
+    logger.info(f"📋 Created M3-enabled QueryRouter with {len(stores)} memory stores")
+    logger.info(f"   Thresholds: {router.thresholds}")
+    
     return router
 
 

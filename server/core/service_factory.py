@@ -140,6 +140,47 @@ class ServiceFactory:
             singleton=True,
             lazy=True
         )
+        
+        # M3 Services (optional, only when M3 enabled)
+        self.registry.register(
+            "m3_connection",
+            self._create_m3_connection,
+            dependencies=[],
+            singleton=True,
+            lazy=True
+        )
+        
+        self.registry.register(
+            "m3_integration",
+            self._create_m3_integration,
+            dependencies=["m3_connection"],
+            singleton=True,
+            lazy=True
+        )
+        
+        self.registry.register(
+            "m3_similarity_search",
+            self._create_m3_similarity_search,
+            dependencies=["m3_integration"],
+            singleton=True,
+            lazy=True
+        )
+        
+        self.registry.register(
+            "m3_equivalence_resolver",
+            self._create_m3_equivalence_resolver,
+            dependencies=["m3_integration"],
+            singleton=True,
+            lazy=True
+        )
+        
+        self.registry.register(
+            "m3_context_retriever",
+            self._create_m3_context_retriever,
+            dependencies=["m3_integration", "m3_similarity_search", "m3_equivalence_resolver"],
+            singleton=True,
+            lazy=True
+        )
     
     async def get_service(self, name: str) -> Any:
         """Get service instance, creating if necessary"""
@@ -589,6 +630,169 @@ class ServiceFactory:
         # which is created directly in the pipeline builder, not as a service
         logger.info("📝 Memory system using SmartContextManager (created in pipeline)")
         return None
+
+    # M3 Service Factory Methods
+    
+    async def _create_m3_connection(self):
+        """Create M3 SurrealDB connection if M3 enabled"""
+        try:
+            if not config.m3.enabled:
+                logger.info("🔄 M3 disabled, skipping SurrealDB connection")
+                return None
+                
+            logger.info("🔄 Creating M3 SurrealDB connection...")
+            from memory.surreal_connection import SurrealConnectionManager
+            
+            # Create connection with config parameters in constructor
+            url = f"ws://{config.m3.surrealdb_host}:{config.m3.surrealdb_port}/rpc"
+            connection = SurrealConnectionManager(
+                url=url,
+                namespace=config.m3.surrealdb_namespace,
+                database=config.m3.surrealdb_database
+            )
+            
+            # Connect with no parameters
+            await connection.connect()
+            
+            logger.info("✅ M3 SurrealDB connection established")
+            return connection
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create M3 connection: {e}")
+            if config.m3.fallback_to_standard_memory:
+                logger.info("🔄 M3 connection failed, will fallback to standard memory")
+                return None
+            else:
+                raise
+    
+    async def _create_m3_integration(self, connection):
+        """Create M3 SurrealDB integration"""
+        try:
+            if not connection:
+                return None
+                
+            logger.info("🔄 Creating M3 SurrealDB integration...")
+            from memory.m3_surreal_integration import M3SurrealIntegration
+            
+            integration = M3SurrealIntegration(connection)
+            await integration.initialize()
+            
+            logger.info("✅ M3 SurrealDB integration initialized")
+            return integration
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create M3 integration: {e}")
+            if config.m3.fallback_to_standard_memory:
+                return None
+            else:
+                raise
+    
+    def _create_m3_similarity_search(self, m3_integration):
+        """Create M3 similarity search component"""
+        try:
+            if not m3_integration:
+                return None
+                
+            logger.info("🔄 Creating M3 similarity search...")
+            from memory.m3_similarity_search import M3SimilaritySearch
+            
+            similarity_search = M3SimilaritySearch(m3_integration)
+            logger.info("✅ M3 similarity search created")
+            return similarity_search
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create M3 similarity search: {e}")
+            if config.m3.fallback_to_standard_memory:
+                return None
+            else:
+                raise
+    
+    def _create_m3_equivalence_resolver(self, m3_integration):
+        """Create M3 equivalence resolver component"""
+        try:
+            if not m3_integration:
+                return None
+                
+            logger.info("🔄 Creating M3 equivalence resolver...")
+            from memory.m3_equivalence_resolver import M3EquivalenceResolver
+            
+            equivalence_resolver = M3EquivalenceResolver(m3_integration)
+            logger.info("✅ M3 equivalence resolver created")
+            return equivalence_resolver
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create M3 equivalence resolver: {e}")
+            if config.m3.fallback_to_standard_memory:
+                return None
+            else:
+                raise
+    
+    def _create_m3_context_retriever(self, m3_integration, m3_similarity_search, m3_equivalence_resolver):
+        """Create M3 context retriever component"""
+        try:
+            if not all([m3_integration, m3_similarity_search, m3_equivalence_resolver]):
+                return None
+                
+            logger.info("🔄 Creating M3 context retriever...")
+            from memory.m3_context_retriever import M3ContextRetriever
+            
+            context_retriever = M3ContextRetriever(
+                m3_integration,
+                m3_similarity_search,
+                m3_equivalence_resolver,
+                max_tokens=config.m3.memory_tokens,
+                similarity_threshold=config.m3.similarity_threshold
+            )
+            
+            logger.info("✅ M3 context retriever created")
+            return context_retriever
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create M3 context retriever: {e}")
+            if config.m3.fallback_to_standard_memory:
+                return None
+            else:
+                raise
+    
+    # Public M3 service creation methods
+    
+    async def create_m3_context_manager(self, context):
+        """Create M3-integrated context manager"""
+        try:
+            if config.m3.enabled and config.m3.use_m3_context:
+                logger.info("🔄 Creating M3-integrated context manager...")
+                from processors.m3_integrated_context_manager import M3IntegratedContextManager
+                
+                return M3IntegratedContextManager(
+                    context=context,
+                    config=config.m3,
+                    max_tokens=config.m3.max_context_tokens
+                )
+            else:
+                # Fallback to standard SmartContextManager
+                logger.info("🔄 M3 disabled, using standard SmartContextManager...")
+                from processors.smart_context_manager import create_smart_context_manager
+                
+                return create_smart_context_manager(
+                    context=context,
+                    facts_db_path=config.memory.facts_db_path,
+                    max_tokens=4096
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to create M3 context manager: {e}")
+            # Emergency fallback to standard manager
+            logger.info("🔄 Falling back to standard SmartContextManager...")
+            try:
+                from processors.smart_context_manager import create_smart_context_manager
+                return create_smart_context_manager(
+                    context=context,
+                    facts_db_path=config.memory.facts_db_path,
+                    max_tokens=4096
+                )
+            except Exception as fallback_e:
+                logger.error(f"❌ Even standard context manager failed: {fallback_e}")
+                raise
 
 
 # Global service factory instance

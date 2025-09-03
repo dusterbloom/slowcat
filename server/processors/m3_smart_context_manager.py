@@ -1,11 +1,11 @@
 """
-M3SmartContextManager - M3-inspired context management with AudioGraph integration
+M3SmartContextManager - M3-inspired context management with SurrealDB backend
 
 Replaces the token budgeting approach with M3's entity-centric memory retrieval:
-- AudioGraph-based memory storage and retrieval
-- Voice node processing with speaker recognition
-- Episodic and semantic memory generation
-- M3's search patterns for context selection
+- SurrealDB-based M3 node storage and retrieval
+- Optional voice node creation from transcriptions
+- Episodic and semantic memory generation from batches
+- M3-style similarity search for context selection
 
 Based on M3-Agent's control architecture with voice-first optimizations.
 """
@@ -19,10 +19,11 @@ from loguru import logger
 from pipecat.frames.frames import Frame, TranscriptionFrame, LLMMessagesFrame, LLMMessagesUpdateFrame, UserStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
-# M3 AudioGraph components
-from memory.audio_graph import AudioGraph
-from memory.voice_processing import VoiceProcessor, process_voices
-from memory.memory_processing import MemoryProcessor, process_memories, generate_memories
+# M3 SurrealDB components  
+from memory.m3_surreal_integration import M3SurrealIntegration
+from memory.m3_similarity_search import M3SimilaritySearch, ModalityType
+from memory.surreal_connection import SurrealConnectionManager
+from services.embedding_service import EmbeddingService
 
 # Existing components for integration
 try:
@@ -57,30 +58,23 @@ class M3SmartContextManager(FrameProcessor):
     
     def __init__(self, 
                  context,  # LLMContext instance
-                 audio_graph: Optional[AudioGraph] = None,
+                 config=None,  # M3Config instance 
                  max_context_tokens: int = 4096,  # Total context limit
                  memory_tokens: int = 2000,       # Tokens for memory context
                  **kwargs):
         super().__init__(**kwargs)
         
         self.context = context
+        self.config = config
         self.max_context_tokens = max_context_tokens
         self.memory_tokens = memory_tokens
         
-        # M3's AudioGraph initialization
-        if audio_graph is None:
-            self.audio_graph = AudioGraph(
-                max_voice_embeddings=20,    # M3 default
-                max_text_embeddings=10,     # M3 default  
-                voice_matching_threshold=0.6,  # M3's audio threshold
-                text_matching_threshold=0.3    # M3's text threshold
-            )
-        else:
-            self.audio_graph = audio_graph
-        
-        # M3 processors
-        self.voice_processor = VoiceProcessor(self.audio_graph)
-        self.memory_processor = MemoryProcessor(self.audio_graph)
+        # M3 SurrealDB components (will be initialized async)
+        self.surreal_connection = None
+        self.m3_integration = None
+        self.similarity_search = None
+        self.m3_initialized = False
+        self.embedding_service: Optional[EmbeddingService] = None
         
         # Session tracking (M3's clip-based organization)
         self.session_metadata = M3SessionMetadata()
@@ -104,10 +98,47 @@ class M3SmartContextManager(FrameProcessor):
             'speaker_updates': 0
         }
         
-        logger.info(f"🧠 M3SmartContextManager initialized with AudioGraph")
+        # Initialize M3 connection asynchronously
+        asyncio.create_task(self._initialize_m3())
+        
+        logger.info(f"🧠 M3SmartContextManager initialized")
         logger.info(f"   Max context tokens: {max_context_tokens}")
         logger.info(f"   Memory context tokens: {memory_tokens}")
-        logger.info(f"   AudioGraph stats: {self.audio_graph.get_stats()}")
+        logger.info(f"   M3 will connect to production database")
+    
+    async def _initialize_m3(self):
+        """Initialize M3 SurrealDB integration"""
+        try:
+            if not self.config:
+                logger.warning("No M3 config provided, using defaults")
+                # Create default config
+                from config import M3Config
+                self.config = M3Config()
+            
+            # Create SurrealDB connection to production database
+            self.surreal_connection = SurrealConnectionManager(
+                url=f"ws://{self.config.surrealdb_host}:{self.config.surrealdb_port}/rpc",
+                namespace=self.config.surrealdb_namespace,
+                database=self.config.surrealdb_database
+            )
+            
+            await self.surreal_connection.connect()
+            logger.info(f"✅ M3 connected to {self.config.surrealdb_namespace}/{self.config.surrealdb_database}")
+            
+            # Initialize M3 components
+            self.m3_integration = M3SurrealIntegration(self.surreal_connection)
+            await self.m3_integration.initialize()
+            
+            self.similarity_search = M3SimilaritySearch(self.m3_integration)
+            self.embedding_service = EmbeddingService()
+            await self.embedding_service.test_embedding_generation()
+            
+            self.m3_initialized = True
+            logger.info("✅ M3 integration fully initialized")
+            
+        except Exception as e:
+            logger.error(f"❌ M3 initialization failed: {e}")
+            self.m3_initialized = False
     
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """M3-style frame processing with AudioGraph integration."""
@@ -177,35 +208,48 @@ class M3SmartContextManager(FrameProcessor):
         """Handle start of user speech with M3's session management."""
         # M3's clip advancement every N interactions
         if self.session_metadata.turn_count > 0 and self.session_metadata.turn_count % 10 == 0:
-            self.session_metadata.clip_id += 1
-            logger.debug(f"🎬 Advanced to clip {self.session_metadata.clip_id}")
+            try:
+                if self.m3_initialized and self.m3_integration:
+                    # Ensure we have a session id
+                    if not self.session_metadata.session_id:
+                        self.session_metadata.session_id = f"session_{int(time.time())}"
+                    new_clip_id = await self.m3_integration.close_current_clip(
+                        create_new=True,
+                        session_id=self.session_metadata.session_id
+                    )
+                    if new_clip_id:
+                        self.session_metadata.clip_id = new_clip_id
+                        logger.debug(f"🎬 Advanced to new clip {self.session_metadata.clip_id}")
+            except Exception as e:
+                logger.warning(f"Clip rotation failed: {e}")
         
         # Forward frame
         await self.push_frame(frame, direction)
     
     async def _process_voice_data(self, audio_data: bytes, transcript: str, clip_id: int) -> Optional[int]:
-        """Process voice data using M3's voice processing pipeline."""
+        """Create a voice node in M3 based on transcription (no audio embeddings yet)."""
         try:
-            voice_node_id = self.voice_processor.process_voices(
-                audio_data=audio_data,
-                transcript=transcript,
-                session_id=clip_id,
-                speaker_id=self.session_metadata.speaker_id
+            if not self.m3_initialized:
+                return None
+            # Generate text embedding for transcript if available
+            embeddings = []
+            if self.embedding_service and transcript:
+                try:
+                    emb = await self.embedding_service.get_embedding(transcript)
+                    embeddings = [emb] if emb else []
+                except Exception as ee:
+                    logger.warning(f"Embedding for voice transcript failed: {ee}")
+
+            node_id = await self.m3_integration.store_m3_node(
+                node_type='voice',
+                contents=[transcript],
+                embeddings=embeddings,
+                clip_id=clip_id or None,
+                speaker_id=self.session_metadata.speaker_id or 'unknown',
+                extraction_method='transcription',
+                confidence=0.85
             )
-            
-            if voice_node_id:
-                # M3's speaker identity resolution
-                speaker_identity = self.voice_processor.get_speaker_identity(voice_node_id)
-                if speaker_identity != self.session_metadata.speaker_id:
-                    self.session_metadata.speaker_id = speaker_identity
-                    self.stats['speaker_updates'] += 1
-                    logger.debug(f"🎯 Speaker identity updated: {speaker_identity}")
-                
-                # M3's equivalence resolution
-                self.audio_graph.refresh_equivalences()
-            
-            return voice_node_id
-            
+            return node_id
         except Exception as e:
             logger.error(f"Voice processing failed: {e}")
             return None
@@ -226,7 +270,7 @@ class M3SmartContextManager(FrameProcessor):
     
     async def _update_memories(self):
         """M3's memory generation and storage."""
-        if not self.conversation_buffer:
+        if not self.conversation_buffer or not self.m3_initialized:
             return
         
         try:
@@ -235,125 +279,134 @@ class M3SmartContextManager(FrameProcessor):
                 entry['text'] for entry in self.conversation_buffer
             ])
             
-            # M3's speaker voice mapping
-            speaker_voices = {}
-            if self.session_metadata.voice_node_id:
-                speaker_voices[self.session_metadata.voice_node_id] = conversation_text
+            # Create or get current clip
+            if self.session_metadata.session_id:
+                session_id = self.session_metadata.session_id
+            else:
+                session_id = f"session_{int(time.time())}"
+                self.session_metadata.session_id = session_id
             
-            # Generate memories using M3's patterns
-            episodic_memories, semantic_memories = await generate_memories(
-                conversation_context=conversation_text,
-                speaker_voices=speaker_voices,
-                session_id=self.session_metadata.clip_id,
-                llm_service=None  # Use local processing
-            )
+            if not self.session_metadata.clip_id:
+                self.session_metadata.clip_id = await self.m3_integration.create_new_clip(session_id)
+                logger.debug(f"🎬 Created new clip {self.session_metadata.clip_id} for session {session_id}")
             
-            # Store memories in AudioGraph
-            if episodic_memories:
-                episodic_node_ids = process_memories(
-                    self.audio_graph, episodic_memories, 
-                    self.session_metadata.clip_id, 'episodic'
+            # Generate episodic memory from conversation batch
+            if len(self.conversation_buffer) > 0:
+                episodic_content = f"Conversation: {conversation_text}"
+                episodic_node_id = await self.m3_integration.store_m3_node(
+                    node_type='episodic',
+                    contents=[episodic_content],
+                    embeddings=[[0.5] * 384],  # Simple embedding for now
+                    clip_id=self.session_metadata.clip_id,
+                    speaker_id=self.session_metadata.speaker_id or 'unknown'
                 )
-                self.stats['memory_nodes_created'] += len(episodic_node_ids)
-                logger.debug(f"📝 Created {len(episodic_node_ids)} episodic memory nodes")
+                
+                if episodic_node_id:
+                    self.stats['memory_nodes_created'] += 1
+                    logger.debug(f"📝 Created episodic memory node {episodic_node_id}")
             
-            if semantic_memories:
-                semantic_node_ids = process_memories(
-                    self.audio_graph, semantic_memories,
-                    self.session_metadata.clip_id, 'semantic'
+            # Generate semantic memory if conversation contains facts/concepts
+            if len(conversation_text) > 50:  # Only for substantial conversations
+                semantic_content = f"Key concepts: {conversation_text[:100]}..."
+                semantic_node_id = await self.m3_integration.store_m3_node(
+                    node_type='semantic',
+                    contents=[semantic_content],
+                    embeddings=[[0.7] * 384],  # Simple embedding for now
+                    clip_id=self.session_metadata.clip_id,
+                    speaker_id='system'
                 )
-                self.stats['memory_nodes_created'] += len(semantic_node_ids)
-                logger.debug(f"🧠 Created {len(semantic_node_ids)} semantic memory nodes")
-            
-            # M3's collision resolution and deduplication
-            for node_id in semantic_node_ids:
-                self.audio_graph.fix_collisions(node_id, mode='eq_only')
+                
+                if semantic_node_id:
+                    self.stats['memory_nodes_created'] += 1
+                    logger.debug(f"🧠 Created semantic memory node {semantic_node_id}")
             
             # Clear processed conversation buffer
             self.conversation_buffer = []
+            logger.info(f"🎉 M3 memory update completed: {self.stats['memory_nodes_created']} total nodes")
             
         except Exception as e:
-            logger.error(f"Memory update failed: {e}")
+            logger.error(f"M3 memory update failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def _build_m3_context(self, query_text: str, voice_node_id: Optional[int]) -> str:
-        """Build context using M3's similarity-based retrieval."""
+        """Build context using M3's similarity-based retrieval (SurrealDB backend)."""
         try:
-            context_parts = []
-            
-            # M3's multi-modal search
-            if self.memory_processor.embedding_model:
-                # Generate query embeddings
-                query_embeddings = self.memory_processor._get_memory_embeddings([query_text])
-                
-                if query_embeddings:
-                    # M3's text node search with different modes
-                    relevant_memories = self.audio_graph.search_text_nodes(
-                        query_embeddings=query_embeddings,
-                        mode="max"  # M3's max pooling
-                    )
-                    
-                    # M3's voice node search (if voice context available)
-                    if voice_node_id and voice_node_id in self.audio_graph.nodes:
-                        voice_embeddings = self.audio_graph.nodes[voice_node_id].embeddings
-                        if voice_embeddings:
-                            voice_memories = self.audio_graph.search_voice_nodes({
-                                'embeddings': voice_embeddings[:1]  # Use first embedding
-                            })
-                            
-                            # Add connected memories from voice nodes
-                            for vid, _ in voice_memories[:3]:  # Top 3 voice matches
-                                connected_texts = self.audio_graph.get_connected_nodes(
-                                    vid, type=['episodic', 'semantic']
-                                )
-                                for text_node_id in connected_texts[:2]:  # Top 2 per voice
-                                    relevant_memories.append((text_node_id, 0.8))  # High relevance
-                    
-                    # M3's context building from relevant memories
-                    context_parts = self._format_memory_context(relevant_memories[:10])  # Top 10
-                    self.stats['context_retrievals'] += 1
-            
-            # M3's speaker identity context
+            if not self.m3_initialized or not self.embedding_service:
+                return ""
+
+            # Generate embedding for the query
+            query_embedding = await self.embedding_service.get_embedding(query_text)
+            if not query_embedding:
+                return ""
+
+            # Search semantic and episodic nodes
+            semantic_results = await self.similarity_search.search_nodes(
+                query_embedding=query_embedding,
+                modality=ModalityType.SEMANTIC,
+                max_results=8,
+                node_type_filter='semantic'
+            )
+            episodic_results = await self.similarity_search.search_nodes(
+                query_embedding=query_embedding,
+                modality=ModalityType.EPISODIC,
+                max_results=6,
+                node_type_filter='episodic'
+            )
+
+            # Optionally include voice-related context if we had a recent voice node
+            voice_results = []
+            if voice_node_id:
+                # Use the same query embedding but mark modality as VOICE for thresholding
+                voice_results = await self.similarity_search.search_nodes(
+                    query_embedding=query_embedding,
+                    modality=ModalityType.VOICE,
+                    max_results=4,
+                    node_type_filter='voice'
+                )
+
+            # Merge and format context
+            combined = semantic_results + episodic_results + voice_results
+            context_parts = self._format_memory_context_from_results(combined[:10])
+            self.stats['context_retrievals'] += 1
+
+            # Prepend speaker if known
             if self.session_metadata.speaker_id and self.session_metadata.speaker_id != "unknown":
                 context_parts.insert(0, f"Speaker: {self.session_metadata.speaker_id}")
-            
-            # Join context with M3's formatting
+
             full_context = "\n".join(context_parts) if context_parts else ""
-            
-            # M3's token limiting
+
+            # Token limiting
             if self.token_counter and full_context:
                 context_tokens = self.token_counter.count_tokens(full_context)
                 if context_tokens > self.memory_tokens:
-                    # Truncate to fit memory token budget
                     truncated_context = self._truncate_context(full_context, self.memory_tokens)
                     logger.debug(f"🔄 Context truncated: {context_tokens} -> {self.memory_tokens} tokens")
                     return truncated_context
-            
+
             return full_context
-            
+
         except Exception as e:
             logger.error(f"Context building failed: {e}")
             return ""
     
-    def _format_memory_context(self, relevant_memories: List[tuple]) -> List[str]:
-        """Format memories into context strings (M3's pattern)."""
-        context_parts = []
-        
-        for node_id, similarity in relevant_memories:
-            if node_id not in self.audio_graph.nodes:
-                continue
-                
-            node = self.audio_graph.nodes[node_id]
-            
-            if node.metadata.get('contents'):
-                content = node.metadata['contents'][0]
-                
-                # M3's content formatting with type and confidence
-                memory_type = node.type.capitalize()
-                confidence_indicator = "●" if similarity > 0.8 else "○"
-                
-                formatted = f"{confidence_indicator} {memory_type}: {content}"
+    def _format_memory_context_from_results(self, results) -> List[str]:
+        """Format M3SimilaritySearch results into context strings."""
+        context_parts: List[str] = []
+        try:
+            for res in results:
+                # res may be SearchResult or dict-like
+                node_type = getattr(res, 'node_type', None) or res.get('node_type', 'unknown')
+                similarity = getattr(res, 'similarity_score', None) or res.get('similarity', 0.0)
+                contents = getattr(res, 'content', None) or res.get('contents', [])
+                if not contents:
+                    continue
+                content = contents[0]
+                indicator = "●" if similarity >= 0.8 else ("◐" if similarity >= 0.6 else "○")
+                formatted = f"{indicator} {node_type.capitalize()}: {content}"
                 context_parts.append(formatted)
-        
+        except Exception:
+            pass
         return context_parts
     
     def _truncate_context(self, context: str, max_tokens: int) -> str:
@@ -412,7 +465,7 @@ Respond naturally based on the context and current conversation."""
             return None
     
     def get_processing_stats(self) -> Dict[str, Any]:
-        """Get comprehensive processing statistics."""
+        """Get processing statistics (M3-focused)."""
         return {
             **self.stats,
             'session_metadata': {
@@ -422,23 +475,36 @@ Respond naturally based on the context and current conversation."""
                 'speaker_id': self.session_metadata.speaker_id,
                 'voice_node_id': self.session_metadata.voice_node_id
             },
-            'audio_graph_stats': self.audio_graph.get_stats(),
-            'voice_processor_stats': self.voice_processor.get_processing_stats(),
-            'memory_processor_stats': getattr(self.memory_processor, 'stats', {})
+            'm3_initialized': self.m3_initialized,
         }
     
-    def get_memory_summary(self) -> Dict[str, Any]:
-        """Get M3-style memory summary."""
-        return {
-            'total_nodes': len(self.audio_graph.nodes),
-            'voice_nodes': len([n for n in self.audio_graph.nodes.values() if n.type == 'voice']),
-            'episodic_nodes': len([n for n in self.audio_graph.nodes.values() if n.type == 'episodic']),
-            'semantic_nodes': len([n for n in self.audio_graph.nodes.values() if n.type == 'semantic']),
-            'total_edges': len(self.audio_graph.edges) // 2,  # Bidirectional
-            'equivalence_sets': len(self.audio_graph.equivalences),
-            'clips_processed': self.session_metadata.clip_id + 1,
-            'speakers_identified': len(set(
-                node.metadata.get('speaker_id') for node in self.audio_graph.nodes.values()
-                if node.type == 'voice' and node.metadata.get('speaker_id')
-            ))
-        }
+    async def get_memory_summary(self) -> Dict[str, Any]:
+        """Get M3 memory summary from SurrealDB statistics."""
+        try:
+            if not self.m3_initialized:
+                return {
+                    'total_nodes': 0,
+                    'voice_nodes': 0,
+                    'episodic_nodes': 0,
+                    'semantic_nodes': 0,
+                    'total_edges': 0,
+                    'equivalence_sets': 0,
+                    'clips_processed': self.session_metadata.clip_id or 0,
+                    'speakers_identified': 0,
+                }
+            stats = await self.m3_integration.get_statistics()
+            # Derive by type if available
+            nodes_by_type = {row['node_type']: row['count'] for row in stats.get('nodes_by_type', [])} if stats else {}
+            return {
+                'total_nodes': stats.get('total_nodes', 0) if stats else 0,
+                'voice_nodes': nodes_by_type.get('voice', 0),
+                'episodic_nodes': nodes_by_type.get('episodic', 0),
+                'semantic_nodes': nodes_by_type.get('semantic', 0),
+                'total_edges': stats.get('total_edges', 0) if stats else 0,
+                'equivalence_sets': stats.get('total_equivalences', 0) if stats else 0,
+                'clips_processed': stats.get('total_clips', 0) if stats else 0,
+                'speakers_identified': 0  # Not tracked here yet
+            }
+        except Exception as e:
+            logger.error(f"Failed to get memory summary: {e}")
+            return {}

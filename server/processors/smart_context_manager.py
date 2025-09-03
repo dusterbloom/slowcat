@@ -3095,7 +3095,18 @@ class SmartContextManager(FrameProcessor):
 def create_smart_context_manager(context, facts_db_path="data/facts.db", max_tokens=8192, 
                                  enable_consciousness=None, user_id=None, consciousness_config=None):
     """Create SmartContextManager instance with consciousness integration"""
-    
+    # Prefer M3 integrated context manager when enabled
+    try:
+        from config import config as global_config
+        if getattr(global_config, 'm3', None) and (
+            getattr(global_config.m3, 'use_m3_context', False) or getattr(global_config.m3, 'enabled', False)
+        ):
+            from processors.m3_integrated_context_manager import create_m3_integrated_context_manager
+            logger.info("🧠 Using M3IntegratedContextManager for context management")
+            return create_m3_integrated_context_manager(context=context, config=global_config.m3)
+    except Exception as e:
+        logger.warning(f"M3IntegratedContextManager unavailable or failed to initialize, falling back: {e}")
+
     # Import configuration if not provided
     if consciousness_config is None:
         from config import config

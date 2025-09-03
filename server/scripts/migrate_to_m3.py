@@ -226,15 +226,23 @@ class M3Migration:
                 logger.info("[DRY RUN] Would apply M3 schema migration")
                 return True
             
-            # Read migration script
-            migration_file = Path(__file__).parent.parent / "schema" / "m3_migration.surql"
-            
-            if not migration_file.exists():
-                logger.error(f"Migration file not found: {migration_file}")
+            # Prefer production migration aligned with slowcat/memory_graph schema
+            schema_dir = Path(__file__).parent.parent / "schema"
+            prod_file = schema_dir / "m3_production_migration.surql"
+            legacy_file = schema_dir / "m3_migration.surql"
+
+            if prod_file.exists():
+                migration_file = prod_file
+            elif legacy_file.exists():
+                migration_file = legacy_file
+            else:
+                logger.error("No M3 migration file found (expected m3_production_migration.surql or m3_migration.surql)")
                 return False
-            
+
             with open(migration_file, 'r') as f:
                 migration_sql = f.read()
+            logger.info(f"Using migration file: {migration_file.name}
+")
             
             # Apply migration
             logger.info("Executing M3 schema migration...")
@@ -376,42 +384,39 @@ class M3Migration:
                 logger.info("[DRY RUN] Would verify M3 migration")
                 return True
             
-            # Use built-in verification function
-            result = await self.connection.db.query("RETURN fn::verify_m3_migration()")
-            logger.info(f"Verification query result: {result}")
+            # Try built-in verification function if available
+            try:
+                result = await self.connection.db.query("RETURN fn::verify_m3_migration()")
+                logger.info(f"Verification query result: {result}")
+            except Exception as e:
+                logger.info(f"verify_m3_migration() unavailable, proceeding with direct verification: {e}")
+
+            # Test basic M3 operations
+            m3_integration = M3SurrealIntegration(self.connection)
+            await m3_integration.initialize()
             
-            if result is not None:
-                logger.info(f"M3 migration verification completed: {result}")
+            # Test node creation
+            test_node_id = await m3_integration.store_m3_node(
+                node_type="semantic",
+                contents=["Migration verification test"],
+                embeddings=[],
+                speaker_id="test",
+                extraction_method="verification",
+                confidence=1.0
+            )
+            
+            if test_node_id:
+                logger.info(f"Test node created successfully: {test_node_id}")
                 
-                # Test basic M3 operations
-                m3_integration = M3SurrealIntegration(self.connection)
-                await m3_integration.initialize()
-                
-                # Test node creation
-                test_node_id = await m3_integration.store_m3_node(
-                    node_type="semantic",
-                    contents=["Migration verification test"],
-                    embeddings=[],
-                    speaker_id="test",
-                    extraction_method="verification",
-                    confidence=1.0
+                # Clean up test node
+                await self.connection.db.query(
+                    "DELETE FROM m3_nodes WHERE node_id = $node_id",
+                    {"node_id": test_node_id}
                 )
                 
-                if test_node_id:
-                    logger.info(f"Test node created successfully: {test_node_id}")
-                    
-                    # Clean up test node
-                    await self.connection.db.query(
-                        "DELETE FROM m3_nodes WHERE node_id = $node_id",
-                        {"node_id": test_node_id}
-                    )
-                    
-                    return True
-                else:
-                    logger.error("Failed to create test node")
-                    return False
+                return True
             else:
-                logger.error("M3 migration verification failed - no result")
+                logger.error("Failed to create test node")
                 return False
                 
         except Exception as e:
