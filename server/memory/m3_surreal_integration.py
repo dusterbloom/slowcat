@@ -259,8 +259,8 @@ class M3SurrealIntegration:
             True if successful, False otherwise
         """
         try:
-            # Create edge directly 
-            result = await self.query(
+            # Use direct connection to avoid _extract_records_list issues
+            result = await self.connection.db.query(
                 """
                 LET $source_node = (SELECT * FROM m3_nodes WHERE node_id = $source_id)[0];
                 LET $target_node = (SELECT * FROM m3_nodes WHERE node_id = $target_id)[0];
@@ -281,11 +281,12 @@ class M3SurrealIntegration:
                 }
             )
             
-            if result is not None:
+            # Check if result is successful (should be a list with the created edge)
+            if isinstance(result, list) and len(result) > 0:
                 logger.info(f"Created edge {source_node_id} -> {target_node_id} (weight: {weight})")
                 return True
             else:
-                logger.warning(f"Edge creation result was None for {source_node_id} -> {target_node_id}")
+                logger.warning(f"Edge creation failed: {result}")
                 return False
             
         except Exception as e:
@@ -309,25 +310,30 @@ class M3SurrealIntegration:
             List of similar nodes with similarity scores
         """
         try:
-            # Use optimized direct query for better performance
+            # Filter out nodes with incorrect embedding dimensions (must be 384D)
             query_sql = """
             SELECT *,
                 vector::similarity::cosine($query_embedding, embeddings[0]) AS similarity
             FROM m3_nodes
             WHERE array::len(embeddings) > 0
+            AND array::len(embeddings[0]) = 384
             """ + (f" AND node_type = '{node_type}'" if node_type else "") + f"""
             AND vector::similarity::cosine($query_embedding, embeddings[0]) >= {min_similarity}
             ORDER BY similarity DESC 
             LIMIT {limit}
             """
             
-            result = await self.query(query_sql, {"query_embedding": query_embedding})
-            records = self._extract_records_list(result)
-            if records:
-                logger.debug(f"Found {len(records)} similar nodes with similarity >= {min_similarity}")
-                return records
+            # Use the connection manager directly instead of self.query to avoid _extract_records_list issues
+            result = await self.connection.db.query(query_sql, {"query_embedding": query_embedding})
+            
+            # result is already a list of dict records from SurrealConnectionManager
+            if isinstance(result, list) and all(isinstance(r, dict) for r in result):
+                logger.debug(f"Found {len(result)} similar nodes with similarity >= {min_similarity}")
+                return result
             else:
-                return []
+                logger.warning(f"Unexpected result format: {type(result)}, trying _extract_records_list...")
+                records = self._extract_records_list(result)
+                return records
                 
         except Exception as e:
             logger.error(f"Failed to search similar nodes: {e}")
