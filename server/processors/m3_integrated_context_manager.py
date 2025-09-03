@@ -27,7 +27,8 @@ except Exception:
 # Import M3 components with graceful fallback
 try:
     from memory.m3_similarity_search import M3SimilaritySearch
-    from memory.m3_equivalence_resolver import M3EquivalenceResolver  
+    from memory.m3_equivalence_resolver import M3EquivalenceResolver
+    from memory.m3_conversation_buffer import M3ConversationBuffer  
     from memory.m3_context_retriever import M3ContextRetriever
     from memory.surreal_connection import SurrealConnectionManager
     from memory.m3_surreal_integration import M3SurrealIntegration
@@ -105,6 +106,21 @@ class M3IntegratedContextManager(FrameProcessor):
         import os as _os
         self.session_metadata.speaker_id = _os.getenv('USER_ID', 'default_user') or 'default_user'
         self.session_metadata.user_id = self.session_metadata.speaker_id
+        
+        # M3 conversation buffer for batch processing
+        self.conversation_buffer = None
+        if M3_AVAILABLE:
+            try:
+                buffer_turns = int(_os.getenv('M3_BUFFER_TURNS', '5'))
+                buffer_seconds = float(_os.getenv('M3_BUFFER_SECONDS', '30.0'))
+                self.conversation_buffer = M3ConversationBuffer(
+                    max_turns=buffer_turns,
+                    max_seconds=buffer_seconds
+                )
+                logger.info(f"🔄 M3 conversation buffer enabled: {buffer_turns} turns OR {buffer_seconds}s")
+            except Exception as e:
+                logger.warning(f"Failed to initialize M3 conversation buffer: {e}")
+        
         # Session info cache
         self._session_count: int = 0
         # Try to attach existing global session id
@@ -230,7 +246,11 @@ class M3IntegratedContextManager(FrameProcessor):
             # Initialize embedding service for query embeddings
             try:
                 self.embedding_service = EmbeddingService()
-                await self.embedding_service.test_embedding_generation()
+                embedding_test = await self.embedding_service.test_embedding_generation()
+                if embedding_test:
+                    logger.info("✅ Embedding service initialized and tested successfully")
+                else:
+                    logger.warning("⚠️ Embedding service test failed, using fallback methods")
             except Exception as e:
                 logger.warning(f"EmbeddingService init failed, retrieval may be limited: {e}")
                 self.embedding_service = None
@@ -292,6 +312,19 @@ class M3IntegratedContextManager(FrameProcessor):
             if not user_text:
                 await self.push_frame(frame, direction)
                 return
+            
+            # M3 conversation buffering for batch processing
+            should_process_chunk = False
+            if self.conversation_buffer and self.m3_enabled:
+                should_process_chunk = self.conversation_buffer.add_turn(
+                    text=user_text,
+                    speaker_id=self.session_metadata.speaker_id
+                )
+                
+                if should_process_chunk:
+                    # Process conversation chunk asynchronously
+                    asyncio.create_task(self._process_conversation_chunk())
+            
             # Persist user message if enabled
             try:
                 if self.surreal_store:
@@ -309,12 +342,15 @@ class M3IntegratedContextManager(FrameProcessor):
                 if self.strict_context_mode:
                     # Build bounded context (system + relevant memories + last N pairs + current user)
                     if self.m3_enabled:
+                        logger.info(f"🔍 M3 ENABLED: Creating bounded context for query: '{user_text[:50]}...'")
                         context_frame = await self._create_m3_bounded_context_frame(user_text)
                         self.stats['m3_queries'] += 1
                     elif self.standard_memory_system:
+                        logger.info(f"🔍 STANDARD MEMORY: Using standard memory for query: '{user_text[:50]}...'")
                         context_frame = await self._create_standard_bounded_context_frame(user_text)
                         self.stats['standard_queries'] += 1
                     else:
+                        logger.info(f"🔍 BASIC CONTEXT: No memory system available for query: '{user_text[:50]}...'")
                         context_frame = await self._create_basic_context_frame(user_text)
                     retrieval_time = (time.time() - start_time) * 1000
                     self.stats['retrieval_time_ms'].append(retrieval_time)
@@ -358,10 +394,13 @@ class M3IntegratedContextManager(FrameProcessor):
         """Create context frame using M3 retrieval system"""
         try:
             # Retrieve context using M3 system
+            logger.info(f"🔍 M3 RETRIEVAL: Starting retrieval for query: '{user_text[:50]}...' speaker_id={self.session_metadata.speaker_id}")
             retrieved_context = await self.m3_context_retriever.retrieve_context(
                 query=user_text,
-                max_items=self.config.max_retrieval_items
+                max_items=self.config.max_retrieval_items,
+                speaker_id=self.session_metadata.speaker_id
             )
+            logger.info(f"🔍 M3 RETRIEVAL RESULT: {len(retrieved_context.items) if retrieved_context and retrieved_context.items else 0} items retrieved")
             items = self._filter_context_items(retrieved_context.items, user_text)
             
             # Build context messages
@@ -394,7 +433,8 @@ class M3IntegratedContextManager(FrameProcessor):
         try:
             retrieved_context = await self.m3_context_retriever.retrieve_context(
                 query=user_text,
-                max_items=self.config.max_retrieval_items
+                max_items=self.config.max_retrieval_items,
+                speaker_id=self.session_metadata.speaker_id
             )
             items = self._filter_context_items(retrieved_context.items, user_text)
             messages = []
@@ -486,6 +526,71 @@ class M3IntegratedContextManager(FrameProcessor):
         except Exception:
             return messages
     
+    async def _process_conversation_chunk(self):
+        """Process conversation chunk with M3 batch fact extraction"""
+        if not self.conversation_buffer:
+            return
+            
+        try:
+            # Get conversation chunk
+            chunk = self.conversation_buffer.get_chunk()
+            if not chunk:
+                return
+                
+            logger.info(f"🔄 Processing M3 conversation chunk: {chunk.total_turns} turns, {chunk.duration_seconds:.1f}s")
+            
+            # Get recent context for better extraction
+            recent_context = ""
+            try:
+                if self.m3_context_retriever:
+                    # Get some recent context for better understanding
+                    recent_clips = await self.m3_context_retriever.retrieve_context(
+                        query=chunk.combined_text[:100],  # Use beginning of chunk
+                        max_items=3,
+                        speaker_id=self.session_metadata.speaker_id
+                    )
+                    if recent_clips.items:
+                        recent_context = " ".join([item.content[:100] for item in recent_clips.items[:2]])
+            except Exception as e:
+                logger.debug(f"Failed to get recent context: {e}")
+            
+            # Extract facts from conversation chunk
+            try:
+                from memory.dspy_integration import extract_facts_from_chunk_dspy
+                
+                facts = extract_facts_from_chunk_dspy(
+                    chunk_text=chunk.combined_text,
+                    previous_context=recent_context
+                )
+                
+                if facts and self.surreal_store and self.surreal_store.surreal:
+                    logger.info(f"🧠 Storing {len(facts)} facts from conversation chunk")
+                    
+                    # Store facts extracted from chunk
+                    for fact in facts:
+                        try:
+                            await self.surreal_store.surreal.store_knowledge_relation(
+                                subject_name=fact.get('subject', 'user'),
+                                predicate=fact.get('predicate', 'related_to'),
+                                object_name=fact.get('value', ''),
+                                confidence=fact.get('confidence', 0.7)
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to store chunk fact: {e}")
+                
+                # Clear processed buffer
+                self.conversation_buffer.clear_buffer()
+                
+                logger.info(f"✅ M3 chunk processing complete: {len(facts)} facts extracted")
+                
+            except Exception as e:
+                logger.error(f"❌ M3 chunk fact extraction failed: {e}")
+                # Still clear buffer to avoid blocking
+                self.conversation_buffer.clear_buffer()
+                
+        except Exception as e:
+            logger.error(f"❌ M3 conversation chunk processing failed: {e}")
+    
     async def _create_standard_context_frame(self, user_text: str) -> Optional[LLMMessagesUpdateFrame]:
         """Create context frame using standard memory system"""
         try:
@@ -521,29 +626,53 @@ class M3IntegratedContextManager(FrameProcessor):
             "- Prefer concise, direct answers using relevant facts."
         )
         from datetime import datetime
+        import time as time_module
+        
         def _fmt(ts):
             try:
                 return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M') if ts else ''
             except Exception:
                 return ''
+        
+        # Current time information
+        current_time = datetime.now()
+        current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Session timing information
+        session_start_str = _fmt(self.session_metadata.session_start)
+        session_duration = time_module.time() - self.session_metadata.session_start
+        duration_mins = int(session_duration / 60)
+        
         first_str = _fmt(getattr(self, '_first_seen_ts', None))
         last_str = _fmt(getattr(self, '_last_interaction_ts', None))
-        info = f"\nSession info: Sessions {self._session_count}, Turn {self.session_metadata.turn_count}"
+        
+        # Build comprehensive timing context
+        info = f"\nCurrent time: {current_time_str}"
+        info += f"\nSession info: Sessions {self._session_count}, Turn {self.session_metadata.turn_count}"
+        info += f", Started: {session_start_str}, Duration: {duration_mins}min"
+        
         if first_str:
-            info += f", First: {first_str}"
+            info += f", First seen: {first_str}"
         if last_str:
-            info += f", Last: {last_str}"
+            info += f", Last interaction: {last_str}"
         if self.session_metadata.speaker_id and self.session_metadata.speaker_id != "unknown":
             info += f", Speaker: {self.session_metadata.speaker_id}"
         if self.session_metadata.session_id:
             info += f", Session: {self.session_metadata.session_id}"
+        
         return base_prompt + info
     
     def _format_m3_context(self, context_items) -> str:
-        """Format M3 context items for inclusion in prompt"""
+        """Format M3 context items for inclusion in prompt with simple de-duplication"""
         formatted_items = []
+        seen = set()
         for item in context_items:
-            formatted_items.append(f"- {item.content} (relevance: {item.relevance_score:.2f})")
+            content = (getattr(item, 'content', '') or '').strip()
+            key = content.lower()
+            if not content or key in seen:
+                continue
+            seen.add(key)
+            formatted_items.append(f"- {content} (relevance: {item.relevance_score:.2f})")
         return "\n".join(formatted_items)
     
     async def get_initial_context_frame(self) -> LLMMessagesUpdateFrame:
@@ -571,14 +700,19 @@ class M3IntegratedContextManager(FrameProcessor):
                 logger.info(f"📊 Session completed: {self.session_metadata.turn_count} turns, {session_duration:.1f}s")
                 # Could implement session summarization here
             
-            # Close connections
-            if self.surreal_connection:
-                await self.surreal_connection.close()
             # Finalize SurrealDB session if any
             if self.surreal_store:
                 try:
                     await self.surreal_store.finalize_session()
                 except Exception:
+                    pass
+
+            # Close connections (after finalizing session)
+            if self.surreal_connection:
+                try:
+                    await self.surreal_connection.close()
+                except Exception:
+                    # Be resilient during shutdown
                     pass
                 
         except Exception as e:

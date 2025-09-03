@@ -21,8 +21,8 @@ class DSPySingleCallExtractor:
         # Two-model strategy:
         # - relations model (strict JSON schema)
         # - general model (looser JSON object), used to backfill when strict fails
-        self.model_rel = os.getenv("DSPY_REL_MODEL", "qwen2.5-0.5b-instruct-mlx:2")
-        self.model_facts = os.getenv("DSPY_FACTS_MODEL", "qwen2.5-0.5b-instruct-mlx")
+        self.model_rel = os.getenv("DSPY_REL_MODEL", "qwen/qwen3-4b")
+        self.model_facts = os.getenv("DSPY_FACTS_MODEL", "qwen3-4b-instruct-2507")
     
     def _call_chat(self, model: str, messages: List[Dict[str, str]], response_format: Dict[str, Any], max_tokens: int = 300) -> Dict[str, Any]:
         payload = {
@@ -136,7 +136,7 @@ class DSPySingleCallExtractor:
 
     def extract_relations_strict(self, text: str) -> List[Dict[str, Any]]:
         """Extract relations using strict JSON schema (simple array format for qwen2.5-0.5b-instruct-mlx:2)."""
-        prompt = f"""Extract knowledge facts from this text in 'subject predicate object' format.
+        prompt = f"""[STRICT_MODEL:{self.model_rel}] Extract knowledge facts from this text in 'subject predicate object' format.
 
 Rules:
 - For personal statements (I, my, we): use 'user' as subject
@@ -150,7 +150,7 @@ Text: "{text}"
 Return JSON array of fact strings:"""
 
         messages = [
-            {"role": "system", "content": "You are a precise fact extractor. Extract only what is clearly stated in the text. Return valid JSON array."},
+            {"role": "system", "content": f"You are a precise fact extractor using {self.model_rel}. Extract only what is clearly stated in the text. Return valid JSON array."},
             {"role": "user", "content": prompt},
         ]
         # Use the correct schema for qwen2.5-0.5b-instruct-mlx:2 (simple array format)
@@ -173,7 +173,7 @@ Return JSON array of fact strings:"""
 
     def extract_relations_general(self, text: str) -> List[Dict[str, Any]]:
         """Extract relations using general model (complex object format for qwen2.5-0.5b-instruct-mlx)."""
-        prompt = f"""Analyze this text and extract structured knowledge.
+        prompt = f"""[GENERAL_MODEL:{self.model_facts}] Analyze this text and extract structured knowledge.
 
 Text: "{text}"
 
@@ -186,7 +186,7 @@ Return JSON with:
 Focus on what's actually stated in the text. Be conservative."""
 
         messages = [
-            {"role": "system", "content": "You are a knowledge extraction system. Analyze the text and return structured JSON. Be conservative and accurate."},
+            {"role": "system", "content": f"You are a knowledge extraction system using {self.model_facts}. Analyze the text and return structured JSON. Be conservative and accurate."},
             {"role": "user", "content": prompt},
         ]
         # Use the correct schema for qwen2.5-0.5b-instruct-mlx (complex object format)
@@ -221,7 +221,7 @@ Focus on what's actually stated in the text. Be conservative."""
                                     "object": {"type": "string"}
                                 },
                                 "required": ["subject", "predicate", "object"],
-                                "additionalProperties": false
+                                "additionalProperties": False
                             },
                             "description": "Relationships between entities"
                         },
@@ -232,7 +232,7 @@ Focus on what's actually stated in the text. Be conservative."""
                         }
                     },
                     "required": ["facts", "concepts", "relationships", "domain"],
-                    "additionalProperties": false
+                    "additionalProperties": False
                 }
             }
         }
@@ -366,6 +366,122 @@ Return ONLY JSON for the schema."""
                 return False
         
         return True
+
+    def extract_facts_from_chunk(self, chunk_text: str, previous_context: str = "") -> List[Dict[str, Any]]:
+        """Extract facts from conversation chunk with context awareness (M3-style)"""
+        
+        start_time = time.perf_counter()
+        print(f"🔍 M3 chunk extraction called: chunk_len={len(chunk_text)}, context_len={len(previous_context)}")
+        
+        # M3-inspired prompt for conversation chunk processing
+        context_section = f"Previous context: {previous_context}\n\n" if previous_context else ""
+        
+        prompt = f"""[CHUNK_MODEL:{self.model_rel}] Extract knowledge relations from this conversation segment.
+
+{context_section}New conversation: "{chunk_text}"
+
+Extract relationships considering the full conversational context:
+- Look for connections between statements across turns
+- Extract entity relationships (people, places, things)
+- Capture temporal and logical connections
+- Use 'user' as subject for first-person statements (I, me, my, we)
+- Return array of relation objects: [{{"subject": "X", "predicate": "Y", "object": "Z"}}]
+
+Focus on meaningful relationships that build understanding of the speaker."""
+
+        messages = [
+            {"role": "system", "content": f"You are a conversation-aware fact extractor using {self.model_rel}. Extract relationships from conversation chunks, understanding context across turns."},
+            {"role": "user", "content": prompt},
+        ]
+        
+        # Use strict relations format for consistency
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "chunk_relations",
+                "schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "subject": {"type": "string"},
+                            "predicate": {"type": "string"},
+                            "object": {"type": "string"},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+                        },
+                        "required": ["subject", "predicate", "object"],
+                        "additionalProperties": False
+                    },
+                    "description": "Array of knowledge relations from conversation chunk"
+                }
+            }
+        }
+        
+        try:
+            result = self._call_chat(self.model_rel, messages, response_format, max_tokens=500)
+            content = result["choices"][0]["message"]["content"]
+            
+            # Parse chunk relations
+            relations = self._parse_chunk_relations(content)
+            extraction_time = time.perf_counter() - start_time
+            
+            # Validate and format facts
+            facts = []
+            for relation in relations:
+                if self._validate_relation(relation, chunk_text):
+                    facts.append({
+                        'subject': relation['subject'].strip(),
+                        'predicate': relation['predicate'].strip(),
+                        'object': relation['object'].strip(),
+                        'confidence': relation.get('confidence', 0.8),
+                        'source': f"{self.name}-Chunk",
+                        'extraction_time': extraction_time
+                    })
+            
+            print(f"✅ M3 chunk extraction: {len(facts)} facts from conversation in {extraction_time:.3f}s")
+            return facts
+            
+        except Exception as e:
+            extraction_time = time.perf_counter() - start_time
+            print(f"❌ M3 chunk extraction failed: {e}")
+            return []
+    
+    def _parse_chunk_relations(self, raw: str) -> List[Dict[str, Any]]:
+        """Parse chunk relations from JSON response"""
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                relations = []
+                for item in parsed:
+                    if isinstance(item, dict) and all(key in item for key in ['subject', 'predicate', 'object']):
+                        relations.append({
+                            'subject': item['subject'],
+                            'predicate': item['predicate'],
+                            'object': item['object'],
+                            'confidence': item.get('confidence', 0.8)
+                        })
+                return relations
+        except json.JSONDecodeError:
+            # Try to extract array from truncated JSON
+            start = raw.find('[')
+            end = raw.rfind(']')
+            if start != -1 and end != -1 and end > start:
+                try:
+                    parsed2 = json.loads(raw[start:end+1])
+                    if isinstance(parsed2, list):
+                        relations = []
+                        for item in parsed2:
+                            if isinstance(item, dict) and all(key in item for key in ['subject', 'predicate', 'object']):
+                                relations.append({
+                                    'subject': item['subject'],
+                                    'predicate': item['predicate'], 
+                                    'object': item['object'],
+                                    'confidence': item.get('confidence', 0.8)
+                                })
+                        return relations
+                except json.JSONDecodeError:
+                    pass
+        return []
 
 
 # Performance test

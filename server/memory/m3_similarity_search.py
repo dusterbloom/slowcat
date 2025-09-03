@@ -56,13 +56,13 @@ class M3SimilaritySearch:
     for real-time voice agent usage.
     """
     
-    # M3-Agent proven thresholds from paper
+    # M3-Agent thresholds optimized for better recall in production
     MODALITY_THRESHOLDS = {
-        ModalityType.TEXT: 0.3,
-        ModalityType.VOICE: 0.6,
-        ModalityType.IMAGE: 0.3,
-        ModalityType.SEMANTIC: 0.3,
-        ModalityType.EPISODIC: 0.4
+        ModalityType.TEXT: 0.1,        # Lowered from 0.3 for better recall
+        ModalityType.VOICE: 0.2,       # Lowered from 0.6 for better recall
+        ModalityType.IMAGE: 0.1,       # Lowered from 0.3 for better recall
+        ModalityType.SEMANTIC: 0.1,    # Lowered from 0.3 for better recall
+        ModalityType.EPISODIC: 0.2     # Lowered from 0.4 for better recall
     }
     
     def __init__(self, m3_integration):

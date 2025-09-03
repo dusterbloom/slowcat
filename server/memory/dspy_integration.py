@@ -61,10 +61,17 @@ def extract_facts_from_text_dspy(text: str) -> List[Dict[str, Any]]:
         return []
     
     try:
-        # 1) Segment input into short, simple clauses for small models
+        # 1) Filter out meta-queries that shouldn't generate facts
         t = (text or '').strip()
         if not t:
             return []
+        
+        # Skip fact extraction for meta-conversational queries
+        if _is_meta_query(t):
+            logger.debug(f"🚫 Skipping fact extraction for meta-query: '{t[:50]}...'")
+            return []
+        
+        # 2) Segment input into short, simple clauses for small models
         # Sentence boundaries
         parts = re.split(r"(?<=[\.!\?])\s+", t)
         segs: List[str] = []
@@ -81,7 +88,7 @@ def extract_facts_from_text_dspy(text: str) -> List[Dict[str, Any]]:
         if not segs:
             segs = [t]
 
-        # 2) Extract per segment (the extractor prompt already limits to 1 relation)
+        # 3) Extract per segment (the extractor prompt already limits to 1 relation)
         triples: List[Dict[str, Any]] = []
         seen = set()
         pronouns = {"i","me","my","mine","we","us","our","ours","you","your","yours","he","him","his","she","her","hers","it","its","they","them","their","theirs"}
@@ -106,7 +113,7 @@ def extract_facts_from_text_dspy(text: str) -> List[Dict[str, Any]]:
             if len(triples) >= 3:
                 break
 
-        # 3) Convert to Slowcat expected format (value instead of object)
+        # 4) Convert to Slowcat expected format (value instead of object)
         converted_facts = [
             {
                 'subject': tr['subject'],
@@ -122,6 +129,42 @@ def extract_facts_from_text_dspy(text: str) -> List[Dict[str, Any]]:
         
     except Exception as e:
         logger.error(f"❌ DSPy fact extraction failed: {e}")
+        return []
+
+
+def extract_facts_from_chunk_dspy(chunk_text: str, previous_context: str = "") -> List[Dict[str, Any]]:
+    """
+    Extract facts from conversation chunk using M3-style batch processing
+    
+    Args:
+        chunk_text: Combined text from multiple conversation turns
+        previous_context: Recent conversation context for better understanding
+        
+    Returns:
+        List of fact dictionaries with subject, predicate, value, confidence
+    """
+    try:
+        extractor = get_dspy_extractor()
+        
+        # Use chunk-aware extraction method
+        triples = extractor.extract_facts_from_chunk(chunk_text, previous_context)
+        
+        # Convert to standard format expected by the system
+        converted_facts = [
+            {
+                'subject': tr['subject'],
+                'predicate': tr['predicate'],
+                'value': tr['object'],  # Map 'object' to 'value' for compatibility
+                'confidence': tr.get('confidence', 0.7),
+            }
+            for tr in triples
+        ]
+
+        logger.debug(f"🚀 DSPy chunk extracted {len(converted_facts)} facts from: '{chunk_text[:50]}...' (context: {len(previous_context)} chars)")
+        return converted_facts
+        
+    except Exception as e:
+        logger.error(f"❌ DSPy chunk extraction failed: {e}")
         return []
 
 
@@ -162,6 +205,42 @@ def enable_dspy_extraction():
         import traceback
         traceback.print_exc()
         return False
+
+
+def _is_meta_query(text: str) -> bool:
+    """Check if text is a meta-conversational query that shouldn't generate facts"""
+    text_lower = text.lower().strip()
+    
+    # Meta-conversational patterns
+    meta_patterns = [
+        # Continuation requests
+        'continue from', 'continue talking', 'left off', 'where we left off',
+        'pick up where', 'resume', 'go back to', 'return to',
+        
+        # Session references  
+        'last session', 'previous session', 'earlier session', 'from before',
+        'last time', 'earlier conversation',
+        
+        # Conversational flow
+        'what were we', 'what was i', 'what did we', 'what did i',
+        'were we talking', 'discussing', 'mentioned',
+        
+        # Greetings and basic interactions
+        'hello', 'hi there', 'good morning', 'good evening', 
+        'how are you', 'what\'s up', 'hey',
+        
+        # Questions about the system/assistant (not about user's life)
+        'who are you', 'what are you', 'what can you',
+        'are you able', 'are you capable', 'can you remember what happened',
+        'do you know what time', 'do you know who i am'
+    ]
+    
+    # Short queries (likely not factual)
+    if len(text.split()) <= 2:
+        return True
+    
+    # Check against patterns
+    return any(pattern in text_lower for pattern in meta_patterns)
 
 
 def test_dspy_integration():

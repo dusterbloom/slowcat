@@ -203,6 +203,11 @@ class SurrealConnectionManager:
                 logger.info("Disconnected from SurrealDB")
             except Exception as e:
                 logger.error(f"Error disconnecting: {e}")
+
+    # Backwards-compatible alias used across the codebase/tests
+    async def close(self):
+        """Alias for disconnect() to preserve existing call sites"""
+        await self.disconnect()
     
     async def ensure_connected(self):
         """Ensure database connection is active"""

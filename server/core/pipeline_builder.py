@@ -613,6 +613,8 @@ class PipelineBuilder:
             processors['dictation_mode'],  # Must be after STT but before LLM
             processors['music_mode'],  # Music mode filtering (after STT, before LLM)
             processors['dj_config_handler'],  # Handle DJ mode voice/prompt changes
+            # Server keepalive (inject periodic MetricsFrame to avoid idle cancellation)
+            self._create_keepalive_processor(),
             processors['audio_player'],  # Music player with ducking
             processors['time_executor'],  # Time-aware task execution
             processors['speaker_context'],
@@ -663,6 +665,19 @@ class PipelineBuilder:
         
         return filtered_components
     
+    def _create_keepalive_processor(self):
+        """Create keepalive processor if enabled via env."""
+        import os
+        try:
+            enabled = os.getenv('ENABLE_SERVER_KEEPALIVE', 'true').lower() == 'true'
+            if not enabled:
+                return None
+            interval = float(os.getenv('SERVER_KEEPALIVE_INTERVAL_SECS', '12'))
+            from processors.keepalive_processor import KeepAliveProcessor
+            return KeepAliveProcessor(interval_seconds=interval)
+        except Exception:
+            return None
+    
     def _create_pipeline(self, components: List[Any]) -> Pipeline:
         """Create pipeline from components"""
         return Pipeline(components)
@@ -688,6 +703,19 @@ class PipelineBuilder:
             idle_timeout = int(idle_env) if idle_env.isdigit() else 0
         except Exception:
             idle_timeout = 0
+
+        # Safety clamp: very low idle timeouts cause mid-conversation drops
+        # Unless explicitly allowed, disable idle cancellation for values < 30s
+        try:
+            allow_low = os.getenv("ALLOW_LOW_IDLE_TIMEOUT", "false").lower() == "true"
+            if idle_timeout > 0 and idle_timeout < 30 and not allow_low:
+                logger.warning(
+                    f"⛔ Idle timeout too low ({idle_timeout}s) can drop active conversations; disabling. "
+                    f"Set ALLOW_LOW_IDLE_TIMEOUT=true to keep it."
+                )
+                idle_timeout = 0
+        except Exception:
+            pass
 
         task = PipelineTask(
             pipeline,

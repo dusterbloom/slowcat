@@ -81,32 +81,43 @@ class M3SurrealIntegration:
         try:
             # Try to verify M3 migration was applied
             try:
-                result = await self.query("RETURN fn::verify_m3_migration()")
-                logger.debug(f"Migration verification result: {result}")
-                
-                if result:
-                    verification_result = self._first(result)
-                    if isinstance(verification_result, dict) and verification_result.get('status') == 'success':
-                        logger.info("✅ M3 schema verified successfully")
-                    elif verification_result == True or verification_result == 'T':
-                        # Some SurrealDB versions return boolean true as 'T'
-                        logger.info("✅ M3 schema verified (boolean response)")
+                # Check if the verification function exists first
+                result = await self.query("SELECT * FROM fn::verify_m3_migration LIMIT 1")
+                if result and len(result) > 0:
+                    # Function exists, call it
+                    result = await self.query("RETURN fn::verify_m3_migration()")
+                    logger.debug(f"Migration verification result: {result}")
+                    
+                    if result:
+                        verification_result = self._first(result)
+                        if isinstance(verification_result, dict) and verification_result.get('status') == 'success':
+                            logger.info("✅ M3 schema verified successfully")
+                        elif verification_result == True or verification_result == 'T':
+                            # Some SurrealDB versions return boolean true as 'T'
+                            logger.info("✅ M3 schema verified (boolean response)")
+                        else:
+                            logger.warning(f"⚠️ M3 verification unexpected format: {verification_result}")
                     else:
-                        logger.warning(f"⚠️ M3 verification unexpected format: {verification_result}")
+                        logger.warning("⚠️ M3 schema verification returned no result")
                 else:
-                    logger.warning("⚠️ M3 schema verification returned no result")
+                    # Function doesn't exist, use basic table check
+                    logger.debug("M3 verification function not found, checking tables directly")
+                    table_check = await self.query("SELECT * FROM m3_clips LIMIT 1")
+                    if table_check is not None:
+                        logger.info("✅ M3 schema verified (basic table check)")
+                    else:
+                        logger.warning("⚠️ M3 tables not found - schema may not be applied")
                     
             except Exception as verify_error:
-                logger.warning(f"⚠️ M3 schema verification failed: {verify_error}")
-                logger.info("🔄 Attempting to continue with basic M3 table check...")
-                
-                # Fallback: Check if basic M3 tables exist
+                # Fallback to basic existence check if function call fails
                 try:
-                    table_check = await self.query("SELECT * FROM m3_nodes LIMIT 1")
-                    logger.info("✅ M3 tables appear to be accessible")
-                except Exception as table_error:
-                    logger.error(f"❌ M3 tables not accessible: {table_error}")
-                    return False
+                    table_check = await self.query("SELECT * FROM m3_clips LIMIT 1")
+                    if table_check is not None:
+                        logger.info("✅ M3 schema verified (fallback table check)")
+                    else:
+                        logger.warning(f"⚠️ M3 schema verification failed: {verify_error}")
+                except Exception as final_error:
+                    logger.warning(f"⚠️ M3 schema verification completely failed: {final_error}")
             
             # Initialize or get current clip
             await self._ensure_current_clip()
@@ -682,14 +693,21 @@ class M3SurrealIntegration:
             if not central_node:
                 return {"nodes": [], "edges": [], "central_node": None}
             
-            # Get connected nodes via graph traversal
+            # Get connected nodes via graph traversal using correct SurrealDB syntax
             result = await self.query("""
                 LET $central = (SELECT * FROM m3_nodes WHERE node_id = $node_id)[0];
-                LET $connected = SELECT * FROM (
-                    TRAVERSE $central.id->m3_edges->m3_nodes MAXDEPTH $max_depth
-                    UNION
-                    TRAVERSE $central.id<-m3_edges<-m3_nodes MAXDEPTH $max_depth
-                ) LIMIT $max_nodes;
+                
+                -- Get outbound connected nodes (central -> edges -> nodes)
+                LET $outbound = SELECT ->m3_edges->target AS connected_nodes FROM $central.id;
+                LET $outbound_nodes = SELECT * FROM m3_nodes WHERE id IN $outbound[*].connected_nodes;
+                
+                -- Get inbound connected nodes (nodes -> edges -> central)  
+                LET $inbound = SELECT <-m3_edges<-source AS connected_nodes FROM $central.id;
+                LET $inbound_nodes = SELECT * FROM m3_nodes WHERE id IN $inbound[*].connected_nodes;
+                
+                -- Combine and limit results
+                LET $all_connected = array::union($outbound_nodes, $inbound_nodes);
+                LET $connected = array::slice($all_connected, 0, $max_nodes);
                 
                 LET $node_ids = array::flatten([[$central.id], $connected[*].id]);
                 LET $edges = SELECT * FROM m3_edges 
@@ -826,4 +844,26 @@ class M3SurrealIntegration:
             
         except Exception as e:
             logger.error(f"Failed to get recent nodes: {e}")
+            return []
+    
+    def _normalize_query_result(self, result):
+        """Normalize SurrealDB query outputs into a list of dict records."""
+        try:
+            if result is None:
+                return []
+            if isinstance(result, list):
+                if len(result) == 1 and isinstance(result[0], dict) and 'result' in result[0]:
+                    inner = result[0]['result']
+                    return inner if isinstance(inner, list) else []
+                if all(isinstance(x, dict) for x in result):
+                    return result
+                if len(result) == 1 and isinstance(result[0], list):
+                    inner = result[0]
+                    return inner if all(isinstance(x, dict) for x in inner) else []
+                return []
+            if isinstance(result, dict) and 'result' in result and isinstance(result['result'], list):
+                inner = result['result']
+                return inner if all(isinstance(x, dict) for x in inner) else []
+            return []
+        except Exception:
             return []

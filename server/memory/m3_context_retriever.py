@@ -117,7 +117,8 @@ class M3ContextRetriever:
                              max_items: int = 10,
                              strategy: RetrievalStrategy = RetrievalStrategy.HYBRID,
                              entity_filter: Optional[List[str]] = None,
-                             time_range: Optional[Tuple[float, float]] = None) -> RetrievalContext:
+                             time_range: Optional[Tuple[float, float]] = None,
+                             speaker_id: Optional[str] = None) -> RetrievalContext:
         """
         Main context retrieval function with relevance ranking
         
@@ -150,20 +151,28 @@ class M3ContextRetriever:
             # Execute retrieval strategy
             if strategy == RetrievalStrategy.SIMILARITY_FIRST:
                 context_items = await self._similarity_first_retrieval(
-                    query, query_embedding, context_type, max_items, entity_filter, time_range
+                    query, query_embedding, context_type, max_items, entity_filter, time_range, speaker_id
                 )
             elif strategy == RetrievalStrategy.ENTITY_FIRST:
                 context_items = await self._entity_first_retrieval(
-                    query, query_embedding, context_type, max_items, entity_filter, time_range
+                    query, query_embedding, context_type, max_items, entity_filter, time_range, speaker_id
                 )
             elif strategy == RetrievalStrategy.TEMPORAL_FIRST:
                 context_items = await self._temporal_first_retrieval(
-                    query, query_embedding, context_type, max_items, entity_filter, time_range
+                    query, query_embedding, context_type, max_items, entity_filter, time_range, speaker_id
                 )
             else:  # HYBRID
                 context_items = await self._hybrid_retrieval(
-                    query, query_embedding, context_type, max_items, entity_filter, time_range
+                    query, query_embedding, context_type, max_items, entity_filter, time_range, speaker_id
                 )
+            
+            # Apply graceful fallback if no results found
+            if not context_items and strategy != RetrievalStrategy.TEMPORAL_FIRST:
+                logger.debug(f"🔄 {strategy.value} returned no results, falling back to temporal-first")
+                context_items = await self._temporal_first_retrieval(
+                    query, query_embedding, context_type, max_items, entity_filter, time_range, speaker_id
+                )
+                strategy = RetrievalStrategy.TEMPORAL_FIRST  # Update strategy for reporting
             
             # Apply relevance ranking and final filtering
             ranked_items = await self._rank_and_filter_context(context_items, query, max_items)
@@ -210,7 +219,8 @@ class M3ContextRetriever:
                                         context_type: Optional[ContextType],
                                         max_items: int,
                                         entity_filter: Optional[List[str]],
-                                        time_range: Optional[Tuple[float, float]]) -> List[ContextItem]:
+                                        time_range: Optional[Tuple[float, float]],
+                                        speaker_id: Optional[str] = None) -> List[ContextItem]:
         """Similarity-first retrieval strategy"""
         try:
             context_items = []
@@ -255,14 +265,29 @@ class M3ContextRetriever:
                     context_items.extend(expanded_items)
             
             else:
-                # Fallback to text-based search
+                # Fallback to text-based search when no embeddings available
+                logger.debug("🔄 No embedding service available, using text-based fallback search")
                 context_items = await self._text_based_fallback_search(query, max_items)
+            
+            # Additional fallback if still no results - try temporal search
+            if not context_items:
+                logger.debug("🔄 Text search failed, trying temporal fallback")
+                temporal_items = await self._temporal_first_retrieval(
+                    query, None, context_type, max_items, entity_filter, time_range, speaker_id
+                )
+                context_items.extend(temporal_items)
             
             return context_items
             
         except Exception as e:
             logger.error(f"Similarity-first retrieval failed: {e}")
-            return []
+            # Final fallback - return temporal results
+            try:
+                return await self._temporal_first_retrieval(
+                    query, None, context_type, max_items, entity_filter, time_range, speaker_id
+                )
+            except Exception:
+                return []
     
     async def _entity_first_retrieval(self,
                                     query: str,
@@ -270,7 +295,8 @@ class M3ContextRetriever:
                                     context_type: Optional[ContextType],
                                     max_items: int,
                                     entity_filter: Optional[List[str]],
-                                    time_range: Optional[Tuple[float, float]]) -> List[ContextItem]:
+                                    time_range: Optional[Tuple[float, float]],
+                                    speaker_id: Optional[str] = None) -> List[ContextItem]:
         """Entity-first retrieval strategy"""
         try:
             context_items = []
@@ -312,7 +338,7 @@ class M3ContextRetriever:
             if query_embedding and len(context_items) < max_items:
                 similar_items = await self._similarity_first_retrieval(
                     query, query_embedding, context_type, 
-                    max_items - len(context_items), entity_filter, time_range
+                    max_items - len(context_items), entity_filter, time_range, speaker_id
                 )
                 context_items.extend(similar_items)
             
@@ -328,29 +354,72 @@ class M3ContextRetriever:
                                       context_type: Optional[ContextType],
                                       max_items: int,
                                       entity_filter: Optional[List[str]],
-                                      time_range: Optional[Tuple[float, float]]) -> List[ContextItem]:
-        """Temporal-first retrieval strategy"""
+                                      time_range: Optional[Tuple[float, float]],
+                                      speaker_id: Optional[str] = None) -> List[ContextItem]:
+        """Temporal-first retrieval strategy with speaker filtering and session awareness"""
         try:
             context_items = []
             
-            # Get recent clips first
-            recent_clips_query = "SELECT * FROM m3_clips ORDER BY start_time DESC LIMIT 10"
-            if time_range:
+            # Check if this is a "last session" query
+            is_last_session_query = self._is_last_session_query(query)
+            
+            # Build speaker-aware clip query using SurrealDB syntax
+            if is_last_session_query and speaker_id:
+                # Get clips from the second-most-recent session (previous session)
+                # Avoid SELECT VALUE with ORDER BY (SurrealDB requires the ordered idiom be in selection)
                 recent_clips_query = """
                     SELECT * FROM m3_clips 
-                    WHERE start_time >= $start_time AND start_time <= $end_time
+                    WHERE session_id = (
+                        SELECT session_id FROM sessions 
+                        WHERE speaker_id = $speaker_id 
+                        ORDER BY start_time DESC 
+                        LIMIT 1 START 1
+                    )[0].session_id
                     ORDER BY start_time DESC
                     LIMIT 20
                 """
+                params = {"speaker_id": speaker_id}
+            elif speaker_id:
+                # Get recent clips for this speaker by filtering sessions first
+                if time_range:
+                    recent_clips_query = """
+                        SELECT * FROM m3_clips 
+                        WHERE session_id IN (SELECT VALUE id FROM sessions WHERE speaker_id = $speaker_id)
+                        AND start_time >= $start_time AND start_time <= $end_time
+                        ORDER BY start_time DESC
+                        LIMIT 20
+                    """
+                    params = {"speaker_id": speaker_id, "start_time": time_range[0], "end_time": time_range[1]}
+                else:
+                    recent_clips_query = """
+                        SELECT * FROM m3_clips 
+                        WHERE session_id IN (SELECT VALUE id FROM sessions WHERE speaker_id = $speaker_id)
+                        ORDER BY start_time DESC
+                        LIMIT 10
+                    """
+                    params = {"speaker_id": speaker_id}
+            else:
+                # Fallback to global clips (original behavior)
+                if time_range:
+                    recent_clips_query = """
+                        SELECT * FROM m3_clips 
+                        WHERE start_time >= $start_time AND start_time <= $end_time
+                        ORDER BY start_time DESC
+                        LIMIT 20
+                    """
+                    params = {"start_time": time_range[0], "end_time": time_range[1]}
+                else:
+                    recent_clips_query = "SELECT * FROM m3_clips ORDER BY start_time DESC LIMIT 10"
+                    params = {}
             
-            raw_clips = await self.m3_integration.query(
-                recent_clips_query,
-                {"start_time": time_range[0], "end_time": time_range[1]} if time_range else {}
-            )
+            raw_clips = await self.m3_integration.query(recent_clips_query, params)
             clips_result = self._normalize_query_result(raw_clips)
             
-            # Get nodes from recent clips
-            for clip in clips_result[:5]:  # Limit to 5 most recent clips
+            # Implement conversation turn buffering - prioritize recent context
+            recent_conversation_limit = 6  # Keep last 6 clips (approximately 30 seconds of context)
+            
+            # Get nodes from recent clips with buffering strategy
+            for clip in clips_result[:recent_conversation_limit]:
                 if not isinstance(clip, dict):
                     continue
                 clip_id = clip.get('clip_id')
@@ -389,14 +458,15 @@ class M3ContextRetriever:
                               context_type: Optional[ContextType],
                               max_items: int,
                               entity_filter: Optional[List[str]],
-                              time_range: Optional[Tuple[float, float]]) -> List[ContextItem]:
+                              time_range: Optional[Tuple[float, float]],
+                              speaker_id: Optional[str] = None) -> List[ContextItem]:
         """Hybrid retrieval combining multiple strategies"""
         try:
             # Run multiple strategies concurrently
             tasks = [
-                self._similarity_first_retrieval(query, query_embedding, context_type, max_items//3, entity_filter, time_range),
-                self._entity_first_retrieval(query, query_embedding, context_type, max_items//3, entity_filter, time_range),
-                self._temporal_first_retrieval(query, query_embedding, context_type, max_items//3, entity_filter, time_range)
+                self._similarity_first_retrieval(query, query_embedding, context_type, max_items//3, entity_filter, time_range, speaker_id),
+                self._entity_first_retrieval(query, query_embedding, context_type, max_items//3, entity_filter, time_range, speaker_id),
+                self._temporal_first_retrieval(query, query_embedding, context_type, max_items//3, entity_filter, time_range, speaker_id)
             ]
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -626,8 +696,9 @@ class M3ContextRetriever:
         return str(content)
     
     def _calculate_temporal_relevance(self, node: Dict, query: str) -> float:
-        """Calculate temporal relevance score"""
-        # Simple implementation - could be enhanced with temporal analysis
+        """Calculate temporal relevance score with improved weighting"""
+        import time
+        
         base_score = 0.5
         
         # Check for temporal keywords in query
@@ -635,7 +706,29 @@ class M3ContextRetriever:
         if any(keyword in query.lower() for keyword in temporal_keywords):
             base_score = 0.8
         
-        return base_score
+        # Additional boost based on node recency (if timestamp available)
+        try:
+            node_timestamp = node.get('metadata', {}).get('timestamp')
+            if node_timestamp:
+                # Calculate how recent this node is (last hour gets max boost)
+                current_time = time.time()
+                age_hours = (current_time - float(node_timestamp)) / 3600
+                
+                if age_hours < 1:  # Last hour
+                    base_score *= 1.3
+                elif age_hours < 6:  # Last 6 hours
+                    base_score *= 1.2
+                elif age_hours < 24:  # Last day
+                    base_score *= 1.1
+                # Older content keeps base score
+        except (ValueError, TypeError):
+            pass
+        
+        # Boost for "last session" queries
+        if self._is_last_session_query(query):
+            base_score *= 1.4
+        
+        return min(base_score, 1.0)  # Cap at 1.0
     
     def _calculate_age_factor(self, timestamp: float) -> float:
         """Calculate age decay factor"""
@@ -696,6 +789,16 @@ class M3ContextRetriever:
         union = len(words1 | words2)
         
         return intersection / union if union > 0 else 0.0
+    
+    def _is_last_session_query(self, query: str) -> bool:
+        """Detect queries asking about the last/previous session"""
+        query_lower = query.lower()
+        last_session_indicators = [
+            'last session', 'previous session', 'earlier session', 
+            'continue from where', 'left off', 'continue talking',
+            'where we left off', 'from before', 'last time'
+        ]
+        return any(indicator in query_lower for indicator in last_session_indicators)
     
     async def _text_based_fallback_search(self, query: str, max_items: int) -> List[ContextItem]:
         """Fallback search when embeddings not available"""

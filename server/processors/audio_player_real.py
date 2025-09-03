@@ -267,6 +267,16 @@ class AudioPlayerRealProcessor(FrameProcessor):
         
         # Cleanup simple player
         if self.simple_player:
-            self.simple_player.cleanup()
+            # cleanup() is async on SimpleMusicPlayer; await to avoid runtime warnings
+            try:
+                import inspect
+                if inspect.iscoroutinefunction(self.simple_player.cleanup):
+                    await self.simple_player.cleanup()
+                else:
+                    # Backward-compat if implementation changes to sync
+                    self.simple_player.cleanup()
+            except Exception:
+                # Be resilient during shutdown
+                pass
         
         await super().cleanup()

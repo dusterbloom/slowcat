@@ -293,6 +293,47 @@ class ConsciousnessConfig:
         return config
 
 
+@dataclass 
+class M3Config:
+    """Configuration for M3 memory system"""
+    enabled: bool = field(default_factory=lambda: os.getenv('USE_M3_MEMORY', 'true').lower() == 'true')
+    use_m3_context: bool = field(default_factory=lambda: os.getenv('USE_M3_CONTEXT', 'true').lower() == 'true')
+    
+    # SurrealDB connection settings
+    surrealdb_host: str = field(default_factory=lambda: os.getenv('SURREALDB_HOST', '127.0.0.1'))
+    surrealdb_port: int = field(default_factory=lambda: int(os.getenv('SURREALDB_PORT', '8000')))
+    surrealdb_namespace: str = field(default_factory=lambda: os.getenv('SURREALDB_NS', 'slowcat'))
+    surrealdb_database: str = field(default_factory=lambda: os.getenv('SURREALDB_DB', 'memory_graph'))
+    
+    # Connection and retry settings
+    startup_retry_attempts: int = 3
+    startup_retry_delay_seconds: float = 2.0
+    connection_timeout_seconds: float = 10.0
+    
+    # Performance settings
+    max_context_items: int = 20
+    max_retrieval_items: int = 10  # Missing attribute that M3IntegratedContextManager needs
+    max_context_tokens: int = 4096  # Missing attribute for token budget management
+    similarity_threshold: float = 0.1
+    
+    # Fallback settings
+    fallback_to_standard_memory: bool = True
+    enable_performance_monitoring: bool = True
+    
+    def validate(self) -> bool:
+        """Validate M3 configuration"""
+        try:
+            if self.surrealdb_port <= 0 or self.surrealdb_port > 65535:
+                return False
+            if self.startup_retry_attempts <= 0:
+                return False
+            if self.connection_timeout_seconds <= 0:
+                return False
+            return True
+        except Exception:
+            return False
+
+
 @dataclass
 class LanguageVoiceMapping:
     """Language to voice mapping"""
@@ -747,12 +788,12 @@ class Config:
     models: ModelConfig = field(default_factory=ModelConfig)
     voice_recognition: VoiceRecognitionConfig = field(default_factory=VoiceRecognitionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    m3: M3Config = field(default_factory=M3Config)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     conversation_timer: ConversationTimerConfig = field(default_factory=ConversationTimerConfig)
     dictation_mode: DictationModeConfig = field(default_factory=DictationModeConfig)
     dj_mode: DJModeConfig = field(default_factory=DJModeConfig)
     consciousness: ConsciousnessConfig = field(default_factory=ConsciousnessConfig)
+    m3: M3Config = field(default_factory=M3Config)
     
     # Language settings
     default_language: str = "en"

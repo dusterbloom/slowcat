@@ -293,8 +293,8 @@ class SurrealMessageStore(FrameProcessor):
             logger.info(f"🎬 Session updated: {session_id}")
     
     async def finalize_session(self, summary: str = None):
-        """End the current session"""
-        if self.surreal and self.session_id and self._session_created:
+        """End the current session (best-effort)."""
+        if self.surreal and self.session_id:
             try:
                 await self.surreal.end_session(self.session_id, summary)
                 logger.info(f"🏁 Session finalized: {self.session_id}")
